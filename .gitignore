@@ -1,0 +1,81 @@
+# ─── Python ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ─── IDE / Editors ──────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+*.sublime-project
+*.sublime-workspace
+
+# ─── OS ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+ehthumbs.db
+*.lnk
+
+# ─── Secrets / Env ──────────────────────────────────
+# Never commit API keys or credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+secrets.*
+credentials.*
+.secrets/
+
+# ─── Competition data (size + potential copyright) ──
+# Phase 1 demo dataset is downloaded separately; do not redistribute
+data/
+!data/.gitkeep
+
+# ─── Runtime artifacts ──────────────────────────────
+artifacts/
+logs/
+*.log
+trace.json
+prediction.csv
+summary.json
+
+# ─── Docker images / archives ───────────────────────
+*.tar
+*.tar.gz
+*.zip
+*.7z
+
+# ─── Temporary vendor / research files ──────────────
+vendor/
+tmp/
+_tmp/
+scratch/
+
+# ─── Claude / AI tools local state ──────────────────
+.claude/
+.cursor/
