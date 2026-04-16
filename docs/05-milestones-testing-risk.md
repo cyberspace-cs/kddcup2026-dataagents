@@ -20,13 +20,13 @@
 | 任务 | 负责 | 退出标准 |
 |---|---|---|
 | 注册比赛（队长） | 用户 | 收到 team_id 邮件（4/21-23 窗口） |
-| 队员身份验证（若组队） | 全员 | 每人完成 Informed Consent Form |
-| 下载 Phase 1 demo 数据 | 用户 | 百度网盘 `ymdc` 或 Google Drive 获取；数据在 `E:/KDD比赛/data/public/input/` 下 |
+| 队员身份验证 | 用户 + 搭档 | 两人各自完成 Informed Consent Form |
+| 下载 Phase 1 demo 数据 | 用户 | 百度网盘 `ymdc` 或 Google Drive 获取；数据在 `data/public/input/` 与 `data/public/output/` 下 |
 | 装 Python 3.11 + uv | 用户 | `uv --version` 可执行 |
-| 装 Docker Desktop（WSL2） | 用户 | `docker run hello-world` 成功 |
+| 装 Docker Desktop（WSL2） | 用户 | `docker run hello-world` 成功；`.wslconfig` 调好 |
 | 申请 **Qwen-Max** API key（DashScope） | 用户 | 可调通 `qwen-max-latest` 测试请求 |
-| 加入官方 Discord / 微信群 | 用户 | 能发问（稍后用它澄清 Q1-Q6） |
-| 发邮件/Discord 问清 Q1-Q6 | 用户+我 | 起草内容我来写；发出后继续推进 |
+| 加入官方 Discord / 微信群 | 用户 | 能发问（用它澄清 Q2-Q7） |
+| Discord 问清 Q2-Q7 | 用户（发）/ 我（起草） | Q2、Q3 至少其一回复（最关键）；其余异步追 |
 
 **退出标准（门禁）**：`uv`、`docker`、`Qwen-Max API`、`demo 数据` 四项 100% 可用。
 
@@ -220,8 +220,8 @@ python scripts/score_predictions.py \
 
 | ID | 风险 | 概率 | 影响 | 预防 | 缓解 | Trigger（触发时切到缓解） |
 |---|---|---|---|---|---|---|
-| R1 | 评测端 Qwen 禁用视觉 | 中 | 高 | Discord 问 Q3 | CPU OCR 兜底（Tesseract+pdfplumber） | v2 提交后若 hard 任务 0 分，切 OCR 路径 |
-| R2 | 评分公式不确定 | 中 | 中 | Discord 问 Q1,Q2 | 连续公式优化兼容二值 | — |
+| R1 | 评测端 Qwen 禁用视觉 | 中 | 高 | Discord 问 Q3 | CPU OCR 兜底（Tesseract+pdfplumber），ADR-006 v1 就做 | v2 提交后若 hard/extreme 0 分，切主路径到 OCR |
+| R2 | λ 具体值未知 | 中 | 低-中 | Discord 问 Q2（Q1 已裁决为连续公式） | 先用 λ=0.1 假设；leaderboard 反推 | 本地分 vs leaderboard 差 >0.1 时反推 |
 | R3 | Qwen tool call 格式兼容 | 低 | 中 | 文本 JSON 协议绕过 | — | — |
 | R4 | 镜像超 10 GB | 中 | 高 | `python:3.11-slim` base；分层构建 | 砍依赖（如去 polars，留 pandas） | `docker save` 输出 >8 GB 即预警 |
 | R5 | 12h 总超时 | 中 | 高 | 每任务硬超时；即写即存 | 全局预算监控 → 降级策略 | 剩余 <2h 剩任务 >10，激活降级 |

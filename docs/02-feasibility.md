@@ -47,14 +47,31 @@
 
 ### 2.2.1 开发环境
 
-| 资源 | 现状 | 需要补充 |
+| 资源 | 现状（2026-04-16 确认） | 需要补充 |
 |---|---|---|
-| 本机 OS | Windows 11，Git Bash | — |
+| 本机 OS | Windows 11 Home，Git Bash 可用 | — |
+| 本机 CPU | **24 逻辑核（估 12C24T）** | — |
+| 本机 RAM | **16 GB**（评测目标 64 GB，见下 §2.2.3） | — |
 | Python | 未验证 | 安装 3.11（uv 会管理） |
 | Docker | 未验证 | Docker Desktop (WSL2 后端) |
-| LLM API | 未配置 | **DeepSeek-V3** 或 **Qwen-Max** API 账号（开发阶段替身） |
+| LLM API | 未配置 | **Qwen-Max**（DashScope）API key（D2 确定） |
 | 磁盘 | — | 镜像构建 + 测试 ≥ 30 GB 预留 |
 | 网络 | — | 下载 Phase 1 demo（百度网盘 `ymdc` 或 Google Drive） |
+
+### 2.2.3 本地评测 vs 评测端规格差距
+
+| 维度 | 本机 | 评测端 | 影响 |
+|---|---|---|---|
+| vCPU | 24 | 16 | 不受限（本机多） |
+| RAM | 16 GB | 64 GB | **本机只能做 correctness 测试**；大 CSV/PDF 可能本地 OOM 但评测端能过 |
+| GPU | 无 | 无 | 对齐 |
+| 网络 | 有外网 | 无外网 | 本地测用 `--network=bridge` + 真 API；真断网测是可选专项 |
+| 可运行 Docker 容器 | `--cpus=12 --memory=10g`（给 WSL2 留余量） | `--cpus=16 --memory=64g` | 见下 |
+
+**应对**：
+- 代码层：polars/duckdb streaming 规避 OOM
+- M5-M6 关键提交前租 **云服务器 16C64G**（阿里云/AWS ¥5-15/h）做 dry run 1-2 小时
+- `.wslconfig` 建议 `memory=12GB swap=8GB processors=20`
 
 ### 2.2.2 开发替身 LLM 选型
 
@@ -82,18 +99,20 @@
 
 ## 2.4 关键风险前置识别
 
+> 完整 15 条风险登记 + 触发条件见 `05-milestones-testing-risk.md §5.3`。本节只列前置高优。
+
 | # | 风险 | 发生概率 | 影响 | 早期应对 |
 |---|---|---|---|---|
-| R1 | 评测端 Qwen 未启用视觉 | 中 | 高（hard/extreme 图表任务归零） | 本周内问 Discord；**同时准备 CPU OCR 兜底**（pdfplumber+PyMuPDF 抽图；embedding + 规则） |
-| R2 | 评分公式不确定（二值 vs 连续） | 中 | 中（影响冗余列策略） | Discord 问；代码以连续公式优化，天然覆盖二值 |
-| R3 | Qwen `qwen3_coder` XML 格式与 OpenAI SDK 不完全兼容（罕见字段/长参数） | 低 | 中 | 文本 JSON 协议（starter kit 已用）绕过原生 tool call，彻底规避 |
-| R4 | Docker 镜像超 10 GB | 中 | 高（被拒） | 用 `python:3.11-slim` base；分层构建；不装 torch-cuda/cpu（评测无 GPU，不做本地推理） |
-| R5 | 12h 总超时被打爆 | 中 | 高 | 每任务 5-10 分钟硬超时；即写 prediction，不集中写；Agent 步数上限 16→按难度动态 |
-| R6 | 注册卡审核 | 低 | 致命（无法提交） | **今明两天**先走注册流程 |
-| R7 | 提交次数被浪费（30 次极限） | 中 | 中 | 每次提交前本地 eval_local.sh 模拟跑通 demo；改动有版本号与回归测 |
-| R8 | pandas/polars/duckdb 版本与 Python 3.11 不兼容 | 低 | 中 | uv sync 锁版本；Docker 用 uv.lock |
-| R9 | PDF/图像 token 爆上下文 | 中 | 中 | 分页抽取 + 分段总结，仅把相关区域送模型 |
-| R10 | 某些任务 `task.json` 多字段导致 starter 校验 fail | 低 | 高 | 放宽 schema.py 到 subset 检查 |
+| R1 | 评测端 Qwen 未启用视觉（Q3 未答） | 中 | 高（hard/extreme 图表任务归零） | Discord 问；**同时准备 CPU OCR 兜底**（ADR-006，v1 就做） |
+| R2 | λ 具体值未知（Q2 未答） | 中 | 低-中 | 公式已确认连续（Q1 已裁决）；λ 先假设 0.1，leaderboard 出分后反推 |
+| R3 | Qwen `qwen3_coder` XML 格式兼容性 | 低 | 中 | 文本 JSON 协议（ADR-001）彻底绕过原生 tool call |
+| R4 | Docker 镜像超 10 GB | 中 | 高（被拒） | `python:3.11-slim` + 多阶段（ADR-003） |
+| R5 | 12h 总超时被打爆 | 中 | 高 | 每任务硬超时；即写即存；降级策略（见 §10.6） |
+| R6 | 注册卡审核 | 低 | 致命（无法提交） | 4/19 前发起 |
+| R7 | 提交次数浪费（30 次极限） | 中 | 中 | `pre_submit_check.sh` + 回归对拍（§9.3, §11.4） |
+| R8 | 依赖版本与 Python 3.11 不兼容 | 低 | 中 | uv.lock + Docker pin |
+| R9 | PDF/图像 token 爆上下文 | 中 | 中 | Profiler 抽样 + context folding |
+| R10 | `task.json` 多字段导致 schema 校验 fail | 低 | 高 | subset 校验（fork 时改 `schema.py`） |
 
 ## 2.5 可行性结论
 

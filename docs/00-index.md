@@ -1,10 +1,11 @@
 # KDD Cup 2026 Data Agents — 项目开发计划
 
 > **项目**：KDD Cup 2026: Data Agents for Complex Data Analysis
+> **仓库**：<https://github.com/Reverse-7/kddcup2026-dataagents>（private）
 > **基准日期**：2026-04-16
-> **Phase 1 开赛**：2026-04-24（距今 8 天）
+> **Phase 1 开赛**：2026-04-24
 > **方法**：标准 SDLC — 需求 → 可行性 → 架构 → 详细设计 → 里程碑/测试/风险
-> **上一版讨论计划**：`C:\Users\16321\.claude\plans\immutable-whistling-storm.md`（作为输入，已被本套文档取代）
+> **上一版讨论计划**：`C:\Users\16321\.claude\plans\immutable-whistling-storm.md`（输入源，已被本套文档完全取代）
 
 ## 文档清单
 
@@ -64,7 +65,9 @@ KDD 颁奖   : 8/9
 - **Q6** Qwen 服务是否启用 `enable_thinking=True`，输出是否含 `<think>` 块？
 - **Q7** `MODEL_API_URL` 接口契约细节：是否严格 OpenAI `chat/completions`？是否支持 `vision` messages（`type: image_url`）？
 
-## 关键决策已定（ADR）
+## 关键决策已定（ADR + D）
+
+### ADR（架构层）
 
 - **ADR-001** ReAct 用文本 JSON 协议（不用 OpenAI 原生 tool calling）
 - **ADR-002** Planner 分层：easy/medium 用 ReAct；hard/extreme 用 Plan-and-Execute
@@ -73,29 +76,36 @@ KDD 颁奖   : 8/9
 - **ADR-005** 输出归一化在 OutputWriter 集中做
 - **ADR-006** 视觉主路径走 Qwen vision，CPU OCR 作兜底（v1 就要有）
 
-## 待用户决策（开工前）
+### 用户决策（2026-04-16 全部敲定）
 
-下列决策尚未敲定，影响后续方向：
-
-| # | 决策点 | 选项 | 我的建议 |
+| # | 决策点 | 结论 | 备注 |
 |---|---|---|---|
-| D1 | 独自参赛还是拉队友？ | 1-5 人 | 独自（小团队决策快；30 次提交限制与规模无关） |
-| D2 | 开发 LLM 主力选谁？ | Qwen-Max / DeepSeek-V3 / GPT-4.1-mini | **Qwen-Max**（格式最接近评测） |
-| D3 | Fork starter kit 还是重写？ | Fork / 从零 / 混合 | **Fork + 定向重构**（见 §4.1 模块命名） |
-| D4 | 是否立刻写代码？ | 立即 / 先等 Q1-Q7 回应 / M1 再写 | **M0 完成后立即 M1 并行问 Q** |
-| D5 | 先做 OCR 兜底还是假设视觉可用？ | 两路径并行 / 先主路径 | **主路径先做，OCR 列入 M5 必做项**（若 Q3 确认视觉禁用，M2 就补） |
+| D1 | 参赛规模 | ✅ **两人组队** | 队员身份验证最晚 4/23；搭档待定 |
+| D2 | 开发替身 LLM | ✅ **Qwen-Max（DashScope）** | 格式最接近评测端；DeepSeek-V3 做对比验证 |
+| D3 | 官方 starter kit 处理 | ✅ **Fork + 定向重构** | 参 §4.1 / §6.1 模块结构 |
+| D4 | 是否等 Q 回应再开工 | ✅ **并行推进** | M0 完 → M1 直接开干，Q2-Q7 Discord 异步问 |
+| D5 | 视觉兜底 OCR 路径 | ✅ **v1 就做** | 不等 Q3 回应；双路径并行 |
 
-## 下一步（立刻可以做的事）
+### 本机规格（影响本地评测）
 
-按优先级：
+- CPU：24 核（估 12C24T）
+- RAM：**16 GB**（评测目标 64 GB；本地只能 correctness 测；capacity 测 M5-M6 前租云 16C64G 做 dry run）
+- OS：Windows 11 + Git Bash + Docker Desktop (WSL2)
+- `.wslconfig` 推荐：`memory=12GB swap=8GB processors=20`
 
-1. **用户**：今天或明天开始注册流程（避免审核卡住，4/23 截止）
-2. **用户**：下载 Phase 1 demo 数据到 `E:/KDD比赛/data/public/input/`
-3. **用户**：申请 DashScope（Qwen-Max）API key
-4. **用户**：装 Docker Desktop + WSL2；调 `.wslconfig`（memory=12GB）
-5. **我**：起草 Q2-Q7 的 Discord 提问文案
-6. **我**：M1 开始时 fork starter kit 到 `vendor/starter/`
-7. **我们**：M0 完成后进入 M1（fork 与定制开发）
+## 下一步（M0 执行清单）
+
+### 用户（并行）
+1. 注册流程：4/23 前提交（队长 + 搭档双人验证）
+2. 下载 Phase 1 demo → `data/public/input/` 与 `data/public/output/`（百度网盘 `ymdc` / Google Drive）
+3. 申请 DashScope（Qwen-Max）API key → 测试 `qwen-max-latest`
+4. 装 Python 3.11 + uv + Docker Desktop (WSL2)；调 `.wslconfig`
+5. 搭档确认邮箱 → 决定加 collaborator 时机
+
+### 我（并行）
+1. 起草 Q2-Q7 的 Discord 提问文案
+2. M0 门禁通过后立刻 fork starter kit 到 `vendor/starter/`，进入 M1
+3. 维护文档、同步仓库
 
 ## 项目目录规划（将在 M1-M2 建起）
 

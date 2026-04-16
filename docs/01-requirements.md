@@ -138,9 +138,10 @@
 
 | # | 问题 | 理由 | 状态 |
 |---|---|---|---|
-| ~~Q1~~ | ~~评分是二值还是连续？~~ | ~~直接影响优化目标~~ | ✅ 已裁决：以规则页 §6.3 连续公式为准 |
+| ~~Q1~~ | ~~评分是二值还是连续？~~ | ~~直接影响优化目标~~ | ✅ 2026-04-16 裁决：以规则页 §6.3 连续公式为准 |
 | Q2 | λ 的具体数值 | 决定冗余列惩罚强度 | 待问 |
-| Q3 | 评测 vLLM 服务是否启用视觉（即 chart PNG 能否直接当 image_url 传）？官方 deployment 参数里未写 `--language-model-only` | 决定架构是否需 CPU OCR 回退 | 待问 |
+| Q3 | 评测 vLLM 服务是否启用视觉（chart PNG 能否直接当 image_url 传）？官方 deployment 参数里未写 `--language-model-only` | 决定架构是否需 CPU OCR 回退 | 待问 |
 | Q4 | `doc/` 是否会出现非 PDF/MD 的格式（docx/xlsx/pptx）？ | 决定需加载哪些解析器 | 待问 |
 | Q5 | 单任务超时与总超时的关系：是否允许某任务超时后继续下一个？ | 决定调度策略 | 待问 |
 | Q6 | Qwen 服务是否启用 `enable_thinking=True`？输出是否含 `<think>` 块？ | 决定 prompt 解析 | 待问 |
+| Q7 | `MODEL_API_URL` 接口契约细节：是否严格 OpenAI `chat/completions`？是否支持 `vision` messages（`type: image_url`）？ | 决定多模态调用方式 | 待问 |
