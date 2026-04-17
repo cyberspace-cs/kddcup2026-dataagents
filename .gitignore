@@ -5,20 +5,25 @@ __pycache__/
 *.so
 .Python
 .venv/
+.venv
 venv/
 env/
 *.egg-info/
+*.egg-info
 .eggs/
 dist/
 build/
+wheels/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .coverage
+coverage.xml
 htmlcov/
 .tox/
 pip-log.txt
 pip-delete-this-directory.txt
+.python-version
 
 # ─── IDE / Editors ──────────────────────────────────
 .vscode/
@@ -38,18 +43,22 @@ desktop.ini
 $RECYCLE.BIN/
 ehthumbs.db
 *.lnk
+.ipynb_checkpoints/
 
 # ─── Secrets / Env ──────────────────────────────────
 # Never commit API keys or credentials
 .env
 .env.*
 !.env.example
+.env.local
+.env.*.local
 *.key
 *.pem
 *.p12
 secrets.*
 credentials.*
 .secrets/
+.codex
 
 # ─── Competition data (size + potential copyright) ──
 # Phase 1 demo dataset is downloaded separately; do not redistribute
@@ -57,12 +66,18 @@ data/
 !data/.gitkeep
 
 # ─── Runtime artifacts ──────────────────────────────
-artifacts/
+artifacts/*
+!artifacts/.gitkeep
 logs/
 *.log
 trace.json
 prediction.csv
 summary.json
+evaluation/
+
+# ─── Local configs (only example config is tracked) ─
+configs/*
+!configs/react_baseline.example.yaml
 
 # ─── Docker images / archives ───────────────────────
 *.tar
