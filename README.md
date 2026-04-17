@@ -40,8 +40,9 @@ Full project plan under [`docs/`](docs/). Start at [`docs/00-index.md`](docs/00-
 
 ## Status
 
-- [x] Planning & research（2026-04-16）— 12 docs, ~3700 lines
-- [ ] **M0** — 环境就绪 + 注册（截止 4/23）
+- [x] Planning & research（2026-04-16）
+- [x] **M0 — 注册完成**（2026-04-18）
+- [ ] **M0** — 环境就绪（demo 数据 + Docker + API key）
 - [ ] **M1** — Fork starter kit 并跑通（4/20-4/22）
 - [ ] **M2** — Docker 化 + 本地评测闭环（4/20-4/23）
 - [ ] **M3** — 首次提交占位（4/24，Phase 1 开赛）

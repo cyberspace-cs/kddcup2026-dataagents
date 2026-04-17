@@ -23,6 +23,7 @@
 | 10 | [任务手册](10-task-playbooks.md) | easy/medium/hard/extreme 四档处理路径与 prompt 变体 | ✅ |
 | 11 | [运维 Playbook](11-ops.md) | 两人 git 工作流、提交 checklist、回滚、实验跟踪、Phase 1 执行节奏 | ✅ |
 | 12 | [两人作战计划](12-two-person-plan.md) | 逐日分工、并行度分析、沟通协议、onboarding checklist | ✅ |
+| 13 | [Gantt 图](13-gantt.md) | Mermaid 甘特图：总览 / 华vs吴并行 / 里程碑+提交节奏 | ✅ |
 
 ## 核心事实卡（Cheat Sheet）
 

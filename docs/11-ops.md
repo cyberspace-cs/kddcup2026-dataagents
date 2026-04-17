@@ -23,7 +23,7 @@ main            ← 稳定分支；仅通过 PR 合入；每个 tag v<N> 对应�
 **分工**（详见 `12-two-person-plan.md`）：
 | 领域 | 华 | 吴 |
 |---|---|---|
-| Agent 核心 / Planner / LLM Client | 🔵 | 🟢 |
+| Agent 核心 / Planner / LLM Client / Reflection / Folding | 🟢🔵 | 🟢🔵 |
 | Tools 结构化 / Profiler / Scorer | 🟢 | 🔵 |
 | Tools 非结构化 (PDF/Image/RAG) | 🔵 | 🟢 |
 | Docker / scripts / 提交 | 🟢 | 🔵 |

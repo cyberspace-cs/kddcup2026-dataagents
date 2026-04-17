@@ -22,9 +22,9 @@
 
 | 模块 | 华 | 吴 | 说明 |
 |---|---|---|---|
-| **Agent 核心循环** (react.py / plan_execute.py) | 🔵 | 🟢 | 推理循环、DAG 调度、状态机 |
-| **LLM Client** (client.py / env.py / 重试) | 🔵 | 🟢 | 与 Agent 耦合，一起写 |
-| **ResponseParser** (JSON fence + `<think>` 剥离) | 🔵 | 🟢 | — |
+| **Agent 核心循环** (react.py / plan_execute.py) | 🟢🔵 | 🟢🔵 | **两人一起做**：结对/mob 编程 |
+| **LLM Client** (client.py / env.py / 重试) | 🟢🔵 | 🟢🔵 | **两人一起做**：与 Agent 耦合 |
+| **ResponseParser** (JSON fence + `<think>` 剥离) | 🟢🔵 | 🟢🔵 | **两人一起做** |
 | **Tools — 结构化** (filesystem / sqlite / python_exec) | 🟢 | 🔵 | — |
 | **Tools — 非结构化** (pdf / image / rag) | 🔵 | 🟢 | — |
 | **DataProfiler** (scan.py) | 🟢 | 🔵 | — |
@@ -32,15 +32,15 @@
 | **OutputWriter + 本地 Scorer** | 🟢 | 🔵 | — |
 | **Docker / Dockerfile / scripts** | 🟢 | 🔵 | — |
 | **TaskOrchestrator / Runner** | 🟢 | 🔵 | — |
-| **Context Folding + Reflection** | 🔵 | 🟢 | — |
+| **Context Folding + Reflection** | 🟢🔵 | 🟢🔵 | **两人一起做** |
 | **测试** (unit / integration) | 🟢🔵 各写各的 | 🟢🔵 交叉审 | — |
 | **数据探索 / demo 分析 / 对拍** | 🟢 | 🔵 | — |
 | **文档 / 提交 / CHANGELOG** | 🟢🔵 | 🟢🔵 | 谁做的谁写 |
 
 **简记**：
-- **吴** = Agent 循环 + LLM Client + Parser + 非结构化 Tools + Reflection + Folding
-- **华** = Profiler + 结构化 Tools + OutputWriter + Scorer + Docker + 提交 + 调度
-- **共同** = Prompt 调优 + 测试
+- **两人一起** = Agent 循环 + LLM Client + Parser + Reflection + Folding + Prompt 调优 + 测试
+- **华** = Profiler + 结构化 Tools + OutputWriter + Scorer + Docker + 提交 + 调度 + 数据探索
+- **吴** = 非结构化 Tools（PDF / Image / RAG）
 
 ---
 
@@ -318,6 +318,7 @@ B:
 
 ## 12.9 总结——两人一句话
 
-> **吴：Agent 循环 / LLM Client / Parser / 非结构化 Tools / Reflection / Folding。
-> 华：Profiler / 结构化 Tools / Scorer / Docker / 提交 / 调度。
-> 共同：Prompt 调优 / 测试。通过 PR 互审和每日 sync 对齐。**
+> **一起做：Agent 循环 / LLM Client / Parser / Reflection / Folding / Prompt / 测试。
+> 华：Profiler / 结构化 Tools / Scorer / Docker / 提交 / 调度 / 数据探索。
+> 吴：非结构化 Tools（PDF / Image / RAG）。
+> 通过 PR 互审和每日 sync 对齐。**
