@@ -20,16 +20,16 @@ main            ← 稳定分支；仅通过 PR 合入；每个 tag v<N> 对应�
 - PR 合并前必须本地 `scripts/pre_submit_check.sh` 等价检查通过（CI 若未配好，口头约定）
 - commit message 用 Conventional Commits：`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
 
-**分工示例**：
-| 领域 | 主 owner | 备 owner |
-|---|---|---|
-| Agent 循环 / Planner / prompts | 用户 | 搭档 |
-| Tools（python_exec / sql / pdf / image） | 搭档 | 用户 |
-| Docker / scripts / 评分 | 用户 | 搭档 |
-| 数据探索 / 对拍分析 | 搭档 | 用户 |
-| 文档维护（本 docs/ 目录） | 用户 | — |
+**分工**（详见 `12-two-person-plan.md`）：
+| 领域 | 华 | 吴 | 说明 |
+|---|---|---|---|
+| Agent 核心 / Planner / LLM Client | 🔵 | 🟢 | 复杂推理交吴 |
+| Tools 结构化 / Profiler / Scorer | 🟢 | 🔵 | 华做工程保障 |
+| Tools 非结构化 (PDF/Image/RAG) | 🔵 | 🟢 | OCR + vision 交吴 |
+| Docker / scripts / 提交 | 🟢 | 🔵 | 华负责打包 |
+| Prompt 工程 / 测试 / 文档 | 🟢🔵 | 🟢🔵 | 共同 |
 
-分工不强制——谁先有 idea 谁写；owner 是出问题时先找谁排查。
+两人平等，不设队长。谁先有 idea 谁做；owner 是出问题时先找谁排查。
 
 ## 11.2 CHANGELOG 维护
 

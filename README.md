@@ -51,8 +51,8 @@ Full project plan under [`docs/`](docs/). Start at [`docs/00-index.md`](docs/00-
 
 ## Team
 
-- [@Reverse-7](https://github.com/Reverse-7) — lead
-- TBD — teammate（pending）
+- **华** [@Reverse-7](https://github.com/Reverse-7) — 工程保障（Profiler / 结构化 Tools / Scorer / Docker / 提交）
+- **吴** TBD — 推理引擎（Agent / LLM Client / Plan-Execute / 非结构化 Tools）
 
 ---
 
