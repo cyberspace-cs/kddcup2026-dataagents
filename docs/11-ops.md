@@ -21,15 +21,15 @@ main            ← 稳定分支；仅通过 PR 合入；每个 tag v<N> 对应�
 - commit message 用 Conventional Commits：`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
 
 **分工**（详见 `12-two-person-plan.md`）：
-| 领域 | 华 | 吴 | 说明 |
-|---|---|---|---|
-| Agent 核心 / Planner / LLM Client | 🔵 | 🟢 | 复杂推理交吴 |
-| Tools 结构化 / Profiler / Scorer | 🟢 | 🔵 | 华做工程保障 |
-| Tools 非结构化 (PDF/Image/RAG) | 🔵 | 🟢 | OCR + vision 交吴 |
-| Docker / scripts / 提交 | 🟢 | 🔵 | 华负责打包 |
-| Prompt 工程 / 测试 / 文档 | 🟢🔵 | 🟢🔵 | 共同 |
+| 领域 | 华 | 吴 |
+|---|---|---|
+| Agent 核心 / Planner / LLM Client | 🔵 | 🟢 |
+| Tools 结构化 / Profiler / Scorer | 🟢 | 🔵 |
+| Tools 非结构化 (PDF/Image/RAG) | 🔵 | 🟢 |
+| Docker / scripts / 提交 | 🟢 | 🔵 |
+| Prompt / 测试 / 文档 | 🟢🔵 | 🟢🔵 |
 
-两人平等，不设队长。谁先有 idea 谁做；owner 是出问题时先找谁排查。
+谁先有 idea 谁做；🟢 是出问题时先找谁。
 
 ## 11.2 CHANGELOG 维护
 
@@ -197,8 +197,8 @@ Decision: merge exp branch; enable plan_execute for hard+extreme in v<N>
 
 | 时段 | 做什么 |
 |---|---|
-| 工作日晚 20:00-24:00 | 主力开发 + 跑本地 demo |
-| 工作日白天 | 主力思考 / 读别人论文 / 写 prompt 变体 |
+| 工作日晚 20:00-24:00 | 开发 + 跑本地 demo |
+| 工作日白天 | 思考 / 读论文 / 写 prompt 变体 |
 | 周末 | 高强度开发 + 当日提交 |
 | 提交日（任何日）  | 17:00 前跑完 pre_submit_check，18:00 前发邮件；留出回复窗口 |
 

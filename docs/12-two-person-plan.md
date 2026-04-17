@@ -1,7 +1,7 @@
 # 12. 两人作战计划（Two-吴attle Plan）
 
-> 本文件是 M0-M6 全周期的两人逐日分工计划。两人**平等协作**，按模块/任务分工，不设队长。
-> **华**（@Reverse-7）与 **吴**（搭档）= 平等协作，不分队长。吴擅长复杂任务，核心推理/Agent 模块交给他。
+> 本文件是 M0-M6 全周期的两人逐日分工计划。按模块分工。
+> **华**（@Reverse-7）与 **吴**（搭档）——按模块分工，各管各的线。
 > 角色定义灵活——搭档入队后可根据实际能力交换特定模块。
 
 ---
@@ -9,7 +9,7 @@
 ## 12.1 角色与职责划分
 
 ### 核心原则
-1. **平等分工**：不设队长，按模块能力自选认领；谁先有 idea 谁做
+1. **按模块分工**：各管各的线；谁先有 idea 谁做
 2. **并行最大化**：同一时间段两人做不同模块，避免串行等待
 3. **接口先行**：先定好模块接口（§06），各自实现，最后集成
 4. **每日同步**：晚 21:00 微信 10 分钟——"做了啥 / 卡在哪 / 明天干啥"
@@ -18,30 +18,29 @@
 
 ### 职责矩阵
 
-> 🟢 = 主力负责 | 🔵 = review + 兜底 | 🟢🔵 = 共同
-> 复杂模块（Agent 推理核心、Plan-Execute、非结构化处理）交给吴。
+> 🟢 = 负责 | 🔵 = review / 兜底 | 🟢🔵 = 共同
 
 | 模块 | 华 | 吴 | 说明 |
 |---|---|---|---|
-| **Agent 核心循环** (react.py / plan_execute.py) | 🔵 | 🟢 | 最复杂——推理循环、DAG 调度、状态机 |
-| **LLM Client** (client.py / env.py / 重试) | 🔵 | 🟢 | 与 Agent 强耦合，吴一起写 |
-| **ResponseParser** (JSON fence + `<think>` 剥离) | 🔵 | 🟢 | 解析逻辑复杂 |
-| **Tools — 结构化** (filesystem / sqlite / python_exec) | 🟢 | 🔵 | 接口清晰，华独立做 |
-| **Tools — 非结构化** (pdf / image / rag) | 🔵 | 🟢 | OCR + 视觉 + embedding，复杂 |
-| **DataProfiler** (scan.py) | 🟢 | 🔵 | 华做扫描 → 吴集成进 Agent |
+| **Agent 核心循环** (react.py / plan_execute.py) | 🔵 | 🟢 | 推理循环、DAG 调度、状态机 |
+| **LLM Client** (client.py / env.py / 重试) | 🔵 | 🟢 | 与 Agent 耦合，一起写 |
+| **ResponseParser** (JSON fence + `<think>` 剥离) | 🔵 | 🟢 | — |
+| **Tools — 结构化** (filesystem / sqlite / python_exec) | 🟢 | 🔵 | — |
+| **Tools — 非结构化** (pdf / image / rag) | 🔵 | 🟢 | — |
+| **DataProfiler** (scan.py) | 🟢 | 🔵 | — |
 | **Prompt 工程** (所有 prompt 调优) | 🟢🔵 | 🟢🔵 | 两人独立实验 → 对比合并 |
-| **OutputWriter + 本地 Scorer** | 🟢 | 🔵 | 华对规则 §6 熟 |
-| **Docker / Dockerfile / scripts** | 🟢 | 🔵 | 华负责打包和提交流程 |
-| **TaskOrchestrator / Runner** | 🟢 | 🔵 | 全局调度（相对简单，华做） |
-| **Context Folding + Reflection** | 🔵 | 🟢 | extreme 档核心，吴做 |
+| **OutputWriter + 本地 Scorer** | 🟢 | 🔵 | — |
+| **Docker / Dockerfile / scripts** | 🟢 | 🔵 | — |
+| **TaskOrchestrator / Runner** | 🟢 | 🔵 | — |
+| **Context Folding + Reflection** | 🔵 | 🟢 | — |
 | **测试** (unit / integration) | 🟢🔵 各写各的 | 🟢🔵 交叉审 | — |
-| **数据探索 / demo 分析 / 对拍** | 🟢 | 🔵 | 华出数据洞察 |
-| **文档 / 提交 / CHANGELOG** | 🟢🔵 | 🟢🔵 | 谁做的改动谁写 |
+| **数据探索 / demo 分析 / 对拍** | 🟢 | 🔵 | — |
+| **文档 / 提交 / CHANGELOG** | 🟢🔵 | 🟢🔵 | 谁做的谁写 |
 
 **简记**：
-- **吴的主线** = Agent 推理引擎（ReAct → Plan-Exec → Reflection → Context Folding）+ LLM Client + 非结构化 Tools
-- **华的主线** = 工程保障（Profiler + 结构化 Tools + OutputWriter + Scorer + Docker + 提交 + 调度）
-- **交叉区** = Prompt 调优 + 测试
+- **吴** = Agent 循环 + LLM Client + Parser + 非结构化 Tools + Reflection + Folding
+- **华** = Profiler + 结构化 Tools + OutputWriter + Scorer + Docker + 提交 + 调度
+- **共同** = Prompt 调优 + 测试
 
 ---
 
@@ -53,7 +52,7 @@
 
 | 日期 | 华 | 吴 |
 |---|---|---|
-| **4/17 周四** | 注册 Google Form（队长发起）; 装 Docker Desktop + WSL2 调 .wslconfig; 申请 DashScope API key | 确认 GitHub 邮箱、clone 仓库; 装 Python 3.11 + uv; 装 Docker Desktop |
+| **4/17 周四** | 注册 Google Form; 装 Docker Desktop + WSL2 调 .wslconfig; 申请 DashScope API key | 确认 GitHub 邮箱、clone 仓库; 装 Python 3.11 + uv; 装 Docker Desktop |
 | **4/18 周五** | 测试 `docker run hello-world`; 测试 Qwen-Max API 调通; 下载 Phase 1 demo 数据（百度网盘 ymdc） | 同步下载 demo 数据; 加入 Discord / 微信群; 浏览 starter kit README |
 | **4/19 周六** | 发 Discord 提问 Q2-Q7（我帮起草文案）; 验证 demo 数据目录结构正确; 队员身份验证（若 B 已注册） | 完成身份验证（Informed Consent Form）; 阅读 docs/00-12 全套文档熟悉架构; 列出自己的 skill gaps 告知 A |
 
@@ -319,6 +318,6 @@ B:
 
 ## 12.9 总结——两人一句话
 
-> **吴攻 Agent 推理引擎（ReAct → Plan-Exec → Reflection → Folding）+ 非结构化 Tools。
-> 华保工程（Profiler → 结构化 Tools → Scorer → Docker → 提交 → 调度）。
-> 两人平等决策，通过 PR 互审和每日 sync 对齐。**
+> **吴：Agent 循环 / LLM Client / Parser / 非结构化 Tools / Reflection / Folding。
+> 华：Profiler / 结构化 Tools / Scorer / Docker / 提交 / 调度。
+> 共同：Prompt 调优 / 测试。通过 PR 互审和每日 sync 对齐。**
