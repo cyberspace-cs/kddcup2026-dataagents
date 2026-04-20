@@ -48,11 +48,11 @@ class AgentConfig:
     而不是写进版本化的配置文件。
     """
 
-    model: str = "gpt-4.1-mini"              # OpenAI 兼容 chat.completions 的模型标识符
+    model: str = "gpt-4.1-mini"  # OpenAI 兼容 chat.completions 的模型标识符
     api_base: str = "https://api.openai.com/v1"  # 兼容 OpenAI 协议的推理服务根地址
-    api_key: str = ""                        # 认证 Key；空串会在实际调用时抛 RuntimeError
-    max_steps: int = 16                      # 单任务 ReAct 循环上限，防止无限思考
-    temperature: float = 0.0                 # 采样温度；0 保证可复现
+    api_key: str = ""  # 认证 Key；空串会在实际调用时抛 RuntimeError
+    max_steps: int = 16  # 单任务 ReAct 循环上限，防止无限思考
+    temperature: float = 0.0  # 采样温度；0 保证可复现
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,9 +60,9 @@ class RunConfig:
     """批量运行（run-benchmark / run-task）的调度与产物落盘配置。"""
 
     output_dir: Path = field(default_factory=_default_run_output_dir)  # 运行产物落盘根目录
-    run_id: str | None = None                # 显式指定的 run 子目录名；None 时按 UTC 时间戳生成
-    max_workers: int = 4                     # 并行线程数（ThreadPoolExecutor 大小）
-    task_timeout_seconds: int = 600          # 单任务硬超时，超时会 kill 子进程
+    run_id: str | None = None  # 显式指定的 run 子目录名；None 时按 UTC 时间戳生成
+    max_workers: int = 4  # 并行线程数（ThreadPoolExecutor 大小）
+    task_timeout_seconds: int = 600  # 单任务硬超时，超时会 kill 子进程
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +134,8 @@ def load_app_config(config_path: Path) -> AppConfig:
         output_dir=_path_value(run_payload.get("output_dir"), run_defaults.output_dir),
         run_id=run_id,
         max_workers=int(run_payload.get("max_workers", run_defaults.max_workers)),
-        task_timeout_seconds=int(run_payload.get("task_timeout_seconds", run_defaults.task_timeout_seconds)),
+        task_timeout_seconds=int(
+            run_payload.get("task_timeout_seconds", run_defaults.task_timeout_seconds)
+        ),
     )
     return AppConfig(dataset=dataset_config, agent=agent_config, run=run_config)

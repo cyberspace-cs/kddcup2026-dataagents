@@ -197,7 +197,7 @@ class ReActAgent:
                 if tool_result.is_terminal:
                     state.answer = tool_result.answer
                     break
-            except Exception as exc:  # noqa: BLE001 — 故意吞所有异常以保证循环鲁棒
+            except Exception as exc:
                 # 典型原因：JSON 解析失败、未知工具名、工具入参不合法
                 # 不终止循环，让模型在下一轮看到错误观察并自我修正
                 observation = {
@@ -207,8 +207,8 @@ class ReActAgent:
                 state.steps.append(
                     StepRecord(
                         step_index=step_index,
-                        thought="",                 # 异常分支拿不到原始 thought
-                        action="__error__",         # 哨兵值：trace 上便于筛选
+                        thought="",  # 异常分支拿不到原始 thought
+                        action="__error__",  # 哨兵值：trace 上便于筛选
                         action_input={},
                         raw_response=raw_response,
                         observation=observation,

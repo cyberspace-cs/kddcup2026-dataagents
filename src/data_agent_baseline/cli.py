@@ -29,7 +29,12 @@ from rich.table import Table
 
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import load_app_config
-from data_agent_baseline.run.runner import TaskRunArtifacts, create_run_output_dir, run_benchmark, run_single_task
+from data_agent_baseline.run.runner import (
+    TaskRunArtifacts,
+    create_run_output_dir,
+    run_benchmark,
+    run_single_task,
+)
 from data_agent_baseline.tools.filesystem import list_context_tree
 
 # 关键路径常量：全部以 PROJECT_ROOT 为基，方便 status 报告和默认配置回落
@@ -121,7 +126,11 @@ def status(
     table.add_row("configs_dir", str(CONFIGS_DIR), _status_value(CONFIGS_DIR))
     table.add_row("artifacts_dir", str(ARTIFACTS_DIR), _status_value(ARTIFACTS_DIR))
     table.add_row("runs_dir", str(ARTIFACT_RUNS_DIR), _status_value(ARTIFACT_RUNS_DIR))
-    table.add_row("dataset_root", str(app_config.dataset.root_path), _status_value(app_config.dataset.root_path))
+    table.add_row(
+        "dataset_root",
+        str(app_config.dataset.root_path),
+        _status_value(app_config.dataset.root_path),
+    )
     table.add_row("config_path", str(config_path), _status_value(config_path))
 
     console.print(table)
@@ -174,7 +183,9 @@ def run_task_command(
     # 即便只跑一个任务，也复用 run-benchmark 的目录结构：
     # <output_dir>/<run_id>/<task_id>/{trace.json, prediction.csv}
     try:
-        _, run_output_dir = create_run_output_dir(app_config.run.output_dir, run_id=app_config.run.run_id)
+        _, run_output_dir = create_run_output_dir(
+            app_config.run.output_dir, run_id=app_config.run.run_id
+        )
     except (ValueError, FileExistsError) as exc:
         # run_id 非法或已存在时转化为 Typer 友好的错误提示
         raise typer.BadParameter(str(exc), param_hint="run.run_id") from exc

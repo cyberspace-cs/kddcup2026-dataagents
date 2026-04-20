@@ -21,13 +21,13 @@ from data_agent_baseline.agents.runtime import AgentRunResult, AgentRuntimeState
 
 # 显式 __all__ 控制 `from ... import *` 的暴露面
 __all__ = [
+    "REACT_SYSTEM_PROMPT",
     "AgentRunResult",
     "AgentRuntimeState",
     "ModelAdapter",
     "ModelMessage",
     "ModelStep",
     "OpenAIModelAdapter",
-    "REACT_SYSTEM_PROMPT",
     "ReActAgent",
     "ReActAgentConfig",
     "StepRecord",

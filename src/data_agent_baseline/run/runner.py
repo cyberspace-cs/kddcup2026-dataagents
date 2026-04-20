@@ -46,10 +46,10 @@ class TaskRunArtifacts:
 
     task_id: str
     task_output_dir: Path
-    prediction_csv_path: Path | None     # 未提交 answer 时为 None
+    prediction_csv_path: Path | None  # 未提交 answer 时为 None
     trace_path: Path
-    succeeded: bool                      # Agent 是否正常调用 answer 工具
-    failure_reason: str | None           # 失败时的可读原因
+    succeeded: bool  # Agent 是否正常调用 answer 工具
+    failure_reason: str | None  # 失败时的可读原因
 
     def to_dict(self) -> dict[str, Any]:
         """序列化进 summary.json 的任务条目。
@@ -59,7 +59,9 @@ class TaskRunArtifacts:
         return {
             "task_id": self.task_id,
             "task_output_dir": str(self.task_output_dir),
-            "prediction_csv_path": str(self.prediction_csv_path) if self.prediction_csv_path else None,
+            "prediction_csv_path": str(self.prediction_csv_path)
+            if self.prediction_csv_path
+            else None,
             "trace_path": str(self.trace_path),
             "succeeded": self.succeeded,
             "failure_reason": self.failure_reason,
@@ -174,7 +176,9 @@ def _run_single_task_core(
     return run_result.to_dict()
 
 
-def _run_single_task_in_subprocess(task_id: str, config: AppConfig, queue: multiprocessing.Queue[Any]) -> None:
+def _run_single_task_in_subprocess(
+    task_id: str, config: AppConfig, queue: multiprocessing.Queue[Any]
+) -> None:
     """子进程入口：跑核心逻辑并把结果/异常扔回主进程 Queue。
 
     注意 BaseException 而非 Exception——要兜住 KeyboardInterrupt / SystemExit，
@@ -187,7 +191,7 @@ def _run_single_task_in_subprocess(task_id: str, config: AppConfig, queue: multi
                 "run_result": _run_single_task_core(task_id=task_id, config=config),
             }
         )
-    except BaseException as exc:  # noqa: BLE001 — 刻意吞一切以回传错误
+    except BaseException as exc:
         queue.put(
             {
                 "ok": False,
@@ -226,7 +230,9 @@ def _run_single_task_with_timeout(*, task_id: str, config: AppConfig) -> dict[st
         if process.is_alive():
             process.kill()
             process.join()
-        return _failure_run_result_payload(task_id, f"Task timed out after {timeout_seconds} seconds.")
+        return _failure_run_result_payload(
+            task_id, f"Task timed out after {timeout_seconds} seconds."
+        )
 
     # Case 2: 进程已退出但没 put 任何结果
     if queue.empty():
@@ -245,10 +251,14 @@ def _run_single_task_with_timeout(*, task_id: str, config: AppConfig) -> dict[st
     if result.get("ok"):
         # dict(...) 拷贝一次，脱离 Queue 的底层 pickle 壳
         return dict(result["run_result"])
-    return _failure_run_result_payload(task_id, f"Task failed with uncaught error: {result['error']}")
+    return _failure_run_result_payload(
+        task_id, f"Task failed with uncaught error: {result['error']}"
+    )
 
 
-def _write_task_outputs(task_id: str, run_output_dir: Path, run_result: dict[str, Any]) -> TaskRunArtifacts:
+def _write_task_outputs(
+    task_id: str, run_output_dir: Path, run_result: dict[str, Any]
+) -> TaskRunArtifacts:
     """把单任务结果落盘为 trace.json（必出）+ prediction.csv（仅当有 answer）。
 
     trace.json 保留完整 ReAct 轨迹用于离线分析；prediction.csv 是评测面向的唯一产物。
@@ -327,7 +337,9 @@ def run_benchmark(
     `progress_callback` 在每个任务完成时触发，主要供 CLI 渲染进度条。
     """
     # 先建目录再做其他事：run_id 冲突要立刻暴露
-    effective_run_id, run_output_dir = create_run_output_dir(config.run.output_dir, run_id=config.run.run_id)
+    effective_run_id, run_output_dir = create_run_output_dir(
+        config.run.output_dir, run_id=config.run.run_id
+    )
 
     dataset = DABenchPublicDataset(config.dataset.root_path)
     tasks = dataset.iter_tasks()

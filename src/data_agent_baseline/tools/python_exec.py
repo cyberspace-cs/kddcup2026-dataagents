@@ -138,7 +138,7 @@ def _run_python_code(
             exec(code, namespace, namespace)
         # 顺利执行完：仅回传 success 标志；stdout/stderr 由主进程读文件取
         queue.put({"success": True})
-    except BaseException as exc:  # noqa: BLE001 — 刻意捕获所有异常，包括 SystemExit
+    except BaseException as exc:
         # 回传错误文本和 traceback，让主进程能在 observation 里暴露给模型
         queue.put(
             {
@@ -149,7 +149,9 @@ def _run_python_code(
         )
 
 
-def execute_python_code(context_root: Path, code: str, *, timeout_seconds: int = 30) -> dict[str, Any]:
+def execute_python_code(
+    context_root: Path, code: str, *, timeout_seconds: int = 30
+) -> dict[str, Any]:
     """主入口：在子进程中跑代码，带超时和结果回收。
 
     返回结构（各 case 保持同形）：

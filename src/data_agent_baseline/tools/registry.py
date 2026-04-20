@@ -11,8 +11,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
 from data_agent_baseline.tools.filesystem import (
@@ -134,7 +135,11 @@ def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
     """
     columns = action_input.get("columns")
     rows = action_input.get("rows")
-    if not isinstance(columns, list) or not columns or not all(isinstance(item, str) for item in columns):
+    if (
+        not isinstance(columns, list)
+        or not columns
+        or not all(isinstance(item, str) for item in columns)
+    ):
         raise ValueError("answer.columns must be a non-empty list of strings.")
     if not isinstance(rows, list):
         raise ValueError("answer.rows must be a list.")
@@ -159,7 +164,7 @@ def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
             "row_count": len(normalized_rows),
         },
         is_terminal=True,  # 触发 ReAct 循环退出
-        answer=answer,     # 答案对象交给循环，最终写入 prediction.csv
+        answer=answer,  # 答案对象交给循环，最终写入 prediction.csv
     )
 
 
@@ -186,7 +191,9 @@ class ToolRegistry:
             lines.append(f"  input_schema: {spec.input_schema}")
         return "\n".join(lines)
 
-    def execute(self, task: PublicTask, action: str, action_input: dict[str, Any]) -> ToolExecutionResult:
+    def execute(
+        self, task: PublicTask, action: str, action_input: dict[str, Any]
+    ) -> ToolExecutionResult:
         """按工具名分发到对应 handler。
 
         未知工具名直接 KeyError，由 ReAct 循环吞入记录成错误步——模型下一轮能看到纠错信号。
@@ -224,7 +231,11 @@ def create_default_tool_registry() -> ToolRegistry:
         "execute_context_sql": ToolSpec(
             name="execute_context_sql",
             description="Run a read-only SQL query against a sqlite/db file inside context.",
-            input_schema={"path": "relative/path/to/file.sqlite", "sql": "SELECT ...", "limit": 200},
+            input_schema={
+                "path": "relative/path/to/file.sqlite",
+                "sql": "SELECT ...",
+                "limit": 200,
+            },
         ),
         "execute_python": ToolSpec(
             name="execute_python",

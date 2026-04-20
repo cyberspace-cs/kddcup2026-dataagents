@@ -85,8 +85,10 @@ class OpenAIModelAdapter:
             response = client.chat.completions.create(
                 model=self.model,
                 # 把 ModelMessage 转成 SDK 期望的 dict 形式
-                messages=[{"role": message.role, "content": message.content} for message in messages],
-                temperature=self.temperature
+                messages=[
+                    {"role": message.role, "content": message.content} for message in messages
+                ],
+                temperature=self.temperature,
             )
         except APIError as exc:
             # 把供应商错误统一包成 RuntimeError，便于 ReAct 循环的通用异常分支处理

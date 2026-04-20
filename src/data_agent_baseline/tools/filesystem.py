@@ -68,7 +68,9 @@ def list_context_tree(task: PublicTask, *, max_depth: int = 4) -> dict[str, obje
     }
 
 
-def read_csv_preview(task: PublicTask, relative_path: str, *, max_rows: int = 20) -> dict[str, object]:
+def read_csv_preview(
+    task: PublicTask, relative_path: str, *, max_rows: int = 20
+) -> dict[str, object]:
     """读取 CSV 的表头与前 N 行。
 
     用 `csv.reader` 逐行读：不依赖 pandas，避免超大 CSV 引入内存风险。
@@ -96,11 +98,13 @@ def read_csv_preview(task: PublicTask, relative_path: str, *, max_rows: int = 20
         "path": relative_path,
         "columns": header,
         "rows": data_rows[:max_rows],  # 仅前 N 行，防止 observation 膨胀
-        "row_count": len(data_rows),   # 实际总行数：让模型评估是否需要更深查询
+        "row_count": len(data_rows),  # 实际总行数：让模型评估是否需要更深查询
     }
 
 
-def read_json_preview(task: PublicTask, relative_path: str, *, max_chars: int = 4000) -> dict[str, object]:
+def read_json_preview(
+    task: PublicTask, relative_path: str, *, max_chars: int = 4000
+) -> dict[str, object]:
     """读取 JSON 并按字符数截断预览。
 
     先 loads → dumps：一来验证 JSON 合法性，二来统一缩进让模型更易阅读。
@@ -117,7 +121,9 @@ def read_json_preview(task: PublicTask, relative_path: str, *, max_chars: int = 
     }
 
 
-def read_doc_preview(task: PublicTask, relative_path: str, *, max_chars: int = 4000) -> dict[str, object]:
+def read_doc_preview(
+    task: PublicTask, relative_path: str, *, max_chars: int = 4000
+) -> dict[str, object]:
     """读取任意文本类文档（md / txt）并按字符数截断。
 
     errors="replace" 把非法字节替换为 U+FFFD，避免个别文件乱码让整个调用崩溃。

@@ -15,7 +15,6 @@ import json
 
 from data_agent_baseline.benchmark.schema import PublicTask
 
-
 # ReAct 系统提示词基座：权限边界 + 输出契约
 # 关键约束点：
 #  - 只能通过工具读取 context/ 下文件（防止越权推理）
