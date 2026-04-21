@@ -21,8 +21,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -45,6 +47,9 @@ from data_agent_baseline.tools.registry import ToolRegistry
 
 # 支持的协议字面量：在类型层阻止拼错
 ToolProtocol = Literal["native", "text"]
+
+# 每次 state.steps 发生变化时回调；供 runner 做增量 trace 落盘（防子进程被硬 kill 时 trace 全丢）
+StepCallback = Callable[[AgentRuntimeState], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +152,7 @@ class ReActAgent:
         config: ReActAgentConfig | None = None,
         system_prompt: str | None = None,
         protocol: ToolProtocol = "native",
+        step_callback: StepCallback | None = None,
     ) -> None:
         self.model = model
         self.tools = tools
@@ -155,6 +161,23 @@ class ReActAgent:
         self.protocol = protocol
         # 允许外部替换 prompt 基座用于 A/B，缺省根据协议选合适的模板
         self.system_prompt = system_prompt
+        # 每步回调：runner 在子进程里会注入 "把 state 落到 trace.json" 的 writer，
+        # 这样即便子进程因超时被硬 kill，磁盘上仍保留最后一次 append 后的部分 trace
+        self.step_callback = step_callback
+
+    # ----------------------------- 步骤落定辅助 -----------------------------
+
+    def _record_step(self, state: AgentRuntimeState, record: StepRecord) -> None:
+        """统一的"落定一步"通道：append 到 state 并通知外部 callback。
+
+        callback 的异常绝对不允许污染 Agent 主循环——任何失败都吞掉。
+        """
+        state.steps.append(record)
+        if self.step_callback is None:
+            return
+        # 观测回调挂掉不应该炸任务；静默忽略
+        with contextlib.suppress(Exception):
+            self.step_callback(state)
 
     # ----------------------------- 消息构造 -----------------------------
 
@@ -300,7 +323,8 @@ class ReActAgent:
             except Exception as exc:
                 # 网络错误 / API 失败：记一条 __error__，让循环在下一轮重试
                 step_counter += 1
-                state.steps.append(
+                self._record_step(
+                    state,
                     StepRecord(
                         step_index=step_counter,
                         turn_index=turn_index,
@@ -312,7 +336,7 @@ class ReActAgent:
                         ok=False,
                         tool_call_id=None,
                         raw_tool_calls=None,
-                    )
+                    ),
                 )
                 continue
 
@@ -322,7 +346,8 @@ class ReActAgent:
             except Exception as exc:
                 # text 协议的 fence 解析失败，或 native 协议下缺 tool_calls
                 step_counter += 1
-                state.steps.append(
+                self._record_step(
+                    state,
                     StepRecord(
                         step_index=step_counter,
                         turn_index=turn_index,
@@ -334,7 +359,7 @@ class ReActAgent:
                         ok=False,
                         tool_call_id=None,
                         raw_tool_calls=None,
-                    )
+                    ),
                 )
                 continue
 
@@ -342,7 +367,8 @@ class ReActAgent:
                 # native 协议下模型回了空 tool_calls（纯文本 content）：
                 # 给一条 observation 提示 "请调用工具"，下一轮让模型重试
                 step_counter += 1
-                state.steps.append(
+                self._record_step(
+                    state,
                     StepRecord(
                         step_index=step_counter,
                         turn_index=turn_index,
@@ -357,7 +383,7 @@ class ReActAgent:
                         ok=False,
                         tool_call_id=None,
                         raw_tool_calls=None,
-                    )
+                    ),
                 )
                 continue
 
@@ -383,7 +409,8 @@ class ReActAgent:
                         "tool": tool_call.name,
                         "content": tool_result.content,
                     }
-                    state.steps.append(
+                    self._record_step(
+                        state,
                         StepRecord(
                             step_index=step_counter,
                             turn_index=turn_index,
@@ -395,7 +422,7 @@ class ReActAgent:
                             ok=tool_result.ok,
                             tool_call_id=step_tool_call_id,
                             raw_tool_calls=step_raw_tool_calls,
-                        )
+                        ),
                     )
                     # 终止工具（目前仅 answer）：记录答案后短路，**跳过同 turn 后续 tool_calls**
                     if tool_result.is_terminal:
@@ -404,7 +431,8 @@ class ReActAgent:
                         break
                 except Exception as exc:
                     # 工具执行异常：未知工具名 / 参数非法 / handler 抛错等
-                    state.steps.append(
+                    self._record_step(
+                        state,
                         StepRecord(
                             step_index=step_counter,
                             turn_index=turn_index,
@@ -416,7 +444,7 @@ class ReActAgent:
                             ok=False,
                             tool_call_id=step_tool_call_id,
                             raw_tool_calls=step_raw_tool_calls,
-                        )
+                        ),
                     )
 
             if terminated:

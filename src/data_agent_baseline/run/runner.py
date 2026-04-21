@@ -168,16 +168,80 @@ def _failure_run_result_payload(task_id: str, failure_reason: str) -> dict[str, 
     }
 
 
+def _agent_state_to_payload(task_id: str, state: Any) -> dict[str, Any]:
+    """把运行中的 `AgentRuntimeState` 快照成 trace.json 兼容的 dict。
+
+    用于增量落盘：结构与 `AgentRunResult.to_dict()` 对齐，但因为尚未终止：
+    - `succeeded` 永远写 False（真正成功时，父进程会用 queue 返回的完整 payload 覆盖）
+    - `answer` 在 answer 工具命中那一步之后由 callback 自然带上
+
+    兼容 typing：state 参数走 Any 是为了避免在 runner 层引入对 AgentRuntimeState 的硬依赖
+    （保留 runner 与 agent 内部类型的解耦）。
+    """
+    answer = state.answer.to_dict() if state.answer is not None else None
+    return {
+        "task_id": task_id,
+        "answer": answer,
+        "steps": [step.to_dict() for step in state.steps],
+        "failure_reason": state.failure_reason,
+        "succeeded": False,
+    }
+
+
+def _make_partial_trace_writer(task_id: str, trace_path: Path):
+    """构造"把当前 state 写成 trace.json"的 StepCallback。
+
+    每次 state.steps 变化都同步落盘：代价是几 KB 写 I/O，换来子进程被硬 kill 时
+    主进程可以读到最后一次 append 后的部分 trace，不至于丢失全部上下文。
+
+    写失败（磁盘满/权限）只静默记一下——不能让观测逻辑弄挂 Agent。
+    """
+
+    def _write(state: Any) -> None:
+        try:
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = _agent_state_to_payload(task_id, state)
+            trace_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            )
+        except Exception:
+            # 观测失败不能影响任务本身
+            pass
+
+    return _write
+
+
+def _load_partial_trace(task_id: str, trace_path: Path) -> dict[str, Any] | None:
+    """尝试从磁盘读出子进程写过的部分 trace；失败时返回 None。
+
+    用于子进程超时/crash 后，从落盘快照里恢复 "死前最后一步" 的 steps 列表。
+    """
+    if not trace_path.exists():
+        return None
+    try:
+        payload = json.loads(trace_path.read_text())
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    # 必须是同一个任务的 trace，避免跨任务误取
+    if payload.get("task_id") != task_id:
+        return None
+    return payload
+
+
 def _run_single_task_core(
     *,
     task_id: str,
     config: AppConfig,
     model=None,
     tools: ToolRegistry | None = None,
+    step_callback=None,
 ) -> dict[str, Any]:
     """纯业务逻辑：加载任务 → 构造 Agent → 跑循环 → 返回 dict。
 
     model/tools 若外部传入则复用（并行/测试场景），否则现建。
+    `step_callback` 允许 runner 在子进程里注入增量 trace 落盘逻辑。
     """
     # 每次都现 new 一个 dataset 对象：它是 frozen dataclass，几乎零成本
     public_dataset = DABenchPublicDataset(config.dataset.root_path)
@@ -191,24 +255,40 @@ def _run_single_task_core(
         tools=effective_tools,
         config=ReActAgentConfig(max_steps=config.agent.max_steps),
         protocol=config.agent.tool_protocol,  # type: ignore[arg-type]
+        step_callback=step_callback,
     )
     run_result = agent.run(task)
     return run_result.to_dict()
 
 
 def _run_single_task_in_subprocess(
-    task_id: str, config: AppConfig, queue: multiprocessing.Queue[Any]
+    task_id: str,
+    config: AppConfig,
+    queue: multiprocessing.Queue[Any],
+    partial_trace_path: Path | None = None,
 ) -> None:
     """子进程入口：跑核心逻辑并把结果/异常扔回主进程 Queue。
+
+    若 `partial_trace_path` 非 None，则每步结束都把当前状态同步写到该路径下。
+    父进程在超时/crash 后可以从那里读出 "死前最后一步"。
 
     注意 BaseException 而非 Exception——要兜住 KeyboardInterrupt / SystemExit，
     否则子进程退出码非 0 但 Queue 为空，主进程很难诊断。
     """
+    step_callback = (
+        _make_partial_trace_writer(task_id, partial_trace_path)
+        if partial_trace_path is not None
+        else None
+    )
     try:
         queue.put(
             {
                 "ok": True,
-                "run_result": _run_single_task_core(task_id=task_id, config=config),
+                "run_result": _run_single_task_core(
+                    task_id=task_id,
+                    config=config,
+                    step_callback=step_callback,
+                ),
             }
         )
     except BaseException as exc:
@@ -220,12 +300,17 @@ def _run_single_task_in_subprocess(
         )
 
 
-def _run_single_task_with_timeout(*, task_id: str, config: AppConfig) -> dict[str, Any]:
+def _run_single_task_with_timeout(
+    *,
+    task_id: str,
+    config: AppConfig,
+    partial_trace_path: Path | None = None,
+) -> dict[str, Any]:
     """跨进程执行带硬超时的单任务。
 
     三类退出路径：
-    1. 超时还活着 → terminate + 兜底 kill，返回"超时"失败结果
-    2. 退出但 Queue 为空 → 进程死于 OS kill / segfault，返回"无结果"失败
+    1. 超时还活着 → terminate + 兜底 kill；如果子进程已经写过部分 trace，则回收那些 steps
+    2. 退出但 Queue 为空 → 进程死于 OS kill / segfault；同样先尝试回收 partial trace
     3. Queue 有数据 → 按 ok/error 决定是 pass-through 还是再包一层失败
 
     `timeout_seconds <= 0` 时绕过子进程机制，直接在当前进程跑——
@@ -238,7 +323,7 @@ def _run_single_task_with_timeout(*, task_id: str, config: AppConfig) -> dict[st
     queue: multiprocessing.Queue[Any] = multiprocessing.Queue()
     process = multiprocessing.Process(
         target=_run_single_task_in_subprocess,
-        args=(task_id, config, queue),
+        args=(task_id, config, queue, partial_trace_path),
     )
     process.start()
     process.join(timeout_seconds)
@@ -250,30 +335,69 @@ def _run_single_task_with_timeout(*, task_id: str, config: AppConfig) -> dict[st
         if process.is_alive():
             process.kill()
             process.join()
-        return _failure_run_result_payload(
-            task_id, f"Task timed out after {timeout_seconds} seconds."
-        )
+        return _timeout_payload(task_id, partial_trace_path, timeout_seconds)
 
     # Case 2: 进程已退出但没 put 任何结果
     if queue.empty():
         exit_code = process.exitcode
         if exit_code not in (None, 0):
-            # 非 0 退出码一般意味着 native crash 或被 OS 干掉
-            return _failure_run_result_payload(
+            # 非 0 退出码一般意味着 native crash 或被 OS 干掉；尝试拿 partial trace 续命
+            return _crash_payload(
                 task_id,
+                partial_trace_path,
                 f"Task exited unexpectedly with exit code {exit_code}.",
             )
         # 退出码 0 但 Queue 空：逻辑异常（理论上不会发生，留个明确错误信息）
-        return _failure_run_result_payload(task_id, "Task exited without returning a result.")
+        return _crash_payload(
+            task_id, partial_trace_path, "Task exited without returning a result."
+        )
 
     # Case 3: 正常拿到 Queue 数据
     result = queue.get()
     if result.get("ok"):
         # dict(...) 拷贝一次，脱离 Queue 的底层 pickle 壳
         return dict(result["run_result"])
-    return _failure_run_result_payload(
-        task_id, f"Task failed with uncaught error: {result['error']}"
+    return _crash_payload(
+        task_id,
+        partial_trace_path,
+        f"Task failed with uncaught error: {result['error']}",
     )
+
+
+def _timeout_payload(
+    task_id: str, partial_trace_path: Path | None, timeout_seconds: int
+) -> dict[str, Any]:
+    """构造超时失败 payload，优先带上 partial trace 里的 steps。"""
+    failure_reason = f"Task timed out after {timeout_seconds} seconds."
+    return _merge_partial_with_failure(task_id, partial_trace_path, failure_reason)
+
+
+def _crash_payload(
+    task_id: str, partial_trace_path: Path | None, failure_reason: str
+) -> dict[str, Any]:
+    """构造子进程崩溃失败 payload，优先带上 partial trace 里的 steps。"""
+    return _merge_partial_with_failure(task_id, partial_trace_path, failure_reason)
+
+
+def _merge_partial_with_failure(
+    task_id: str, partial_trace_path: Path | None, failure_reason: str
+) -> dict[str, Any]:
+    """合并规则：有 partial trace 就保留其 steps/answer；失败字段由 runner 覆写。
+
+    拿到的 partial 是子进程写的快照；我们在父侧再加 failure_reason、强制 succeeded=False，
+    不覆盖已有 answer（若 agent 恰好在 answer 一步之后才被 kill，保留那个 answer 不失真）。
+    """
+    if partial_trace_path is not None:
+        partial = _load_partial_trace(task_id, partial_trace_path)
+        if partial is not None and isinstance(partial.get("steps"), list):
+            merged = dict(partial)
+            merged["task_id"] = task_id
+            merged["failure_reason"] = failure_reason
+            # answer 保留 partial 原值（None 或已有对象）；succeeded 强制 False——
+            # 失败路径下 partial 里的 answer 仅作诊断用
+            merged["succeeded"] = False
+            return merged
+    return _failure_run_result_payload(task_id, failure_reason)
 
 
 def _write_task_outputs(
@@ -323,10 +447,19 @@ def run_single_task(
     - 两者都为 None（默认）：走 `_run_single_task_with_timeout`（子进程 + 硬超时）
     - 任一不为 None：走 `_run_single_task_core`（当前进程，复用共享资源；
       用于 workers=1 或测试场景）
+
+    子进程路径下，`partial_trace_path` 在任务开始前就确定了，子进程每步增量写，
+    父进程在 kill/crash 后可从磁盘回收"死前"状态——避免 600s 超时的任务 steps=0。
     """
     started_at = perf_counter()
     if model is None and tools is None:
-        run_result = _run_single_task_with_timeout(task_id=task_id, config=config)
+        # 子进程路径：预先确定 trace.json 位置，供子进程增量写 + 父进程超时时读
+        partial_trace_path = run_output_dir / task_id / "trace.json"
+        run_result = _run_single_task_with_timeout(
+            task_id=task_id,
+            config=config,
+            partial_trace_path=partial_trace_path,
+        )
     else:
         run_result = _run_single_task_core(task_id=task_id, config=config, model=model, tools=tools)
     # end-to-end 耗时给 trace.json 记一笔，便于后续做性能分析
