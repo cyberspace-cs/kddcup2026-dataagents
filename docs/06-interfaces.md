@@ -80,7 +80,8 @@ class ToolsConfig:
     execute_python_mem_limit_mb: int = 8192
     read_csv_default_max_rows: int = 50
     read_csv_large_file_threshold_mb: int = 100
-    read_doc_max_chars: int = 4000
+    read_doc_default_line_count: int = 80
+    read_doc_max_line_count: int = 300
 
 @dataclass(frozen=True, slots=True)
 class AppConfig:

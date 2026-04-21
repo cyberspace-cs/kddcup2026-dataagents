@@ -186,7 +186,7 @@ The baseline exposes these tools to the model:
 | `list_context` | List files and directories under `context/`. | `max_depth` |
 | `read_csv` | Read a CSV preview. | `path`, `max_rows` |
 | `read_json` | Read a JSON preview. | `path`, `max_chars` |
-| `read_doc` | Read a text document preview. | `path`, `max_chars` |
+| `read_doc` | Read a text document by line page, with optional keyword search. | `path`, `start_line`, `line_count`, `keyword` |
 | `inspect_sqlite_schema` | Inspect tables in a SQLite / DB file. | `path` |
 | `execute_context_sql` | Execute read-only SQL against a SQLite / DB file in `context/`. | `path`, `sql`, `limit` |
 | `execute_python` | Execute arbitrary Python code inside the task `context/` directory. | `code` |

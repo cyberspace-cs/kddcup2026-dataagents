@@ -286,7 +286,7 @@ FAIL: OutputWriter.write_empty(task) + log failure_reason
 | `list_context` | `{max_depth?:int}` | 文件树 JSON | 默认 max_depth=3 |
 | `read_csv` | `{path, max_rows?, columns?}` | 预览 + dtype | 加 `columns` 选列；用 polars 应对大文件 |
 | `read_json` | `{path, max_chars?}` | 字符串预览 + top keys | — |
-| `read_doc` | `{path, max_chars?, page?}` | 字符串预览 | 加 `page` 参数 |
+| `read_doc` | `{path, start_line?, line_count?, keyword?}` | 行分页预览 + 总行数/范围/has_more | 支持 keyword 首个命中窗口 |
 | `inspect_sqlite_schema` | `{path}` | 表与列列表 | — |
 | `execute_context_sql` | `{path, sql, limit?}` | 行列表 | — |
 | `execute_python` | `{code, timeout?}` | stdout/stderr/return | timeout 可调 30-120s |

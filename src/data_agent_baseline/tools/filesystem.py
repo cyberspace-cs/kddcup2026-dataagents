@@ -121,17 +121,83 @@ def read_json_preview(
     }
 
 
+def _normalize_line_count(line_count: int) -> int:
+    """把读取行数限制在稳定的 observation 范围内。"""
+    return min(300, max(1, int(line_count)))
+
+
 def read_doc_preview(
-    task: PublicTask, relative_path: str, *, max_chars: int = 4000
+    task: PublicTask,
+    relative_path: str,
+    *,
+    start_line: int = 1,
+    line_count: int = 80,
+    keyword: str | None = None,
 ) -> dict[str, object]:
-    """读取任意文本类文档（md / txt）并按字符数截断。
+    """按行读取任意文本类文档（md / txt），可从指定行开始搜索关键词。
 
     errors="replace" 把非法字节替换为 U+FFFD，避免个别文件乱码让整个调用崩溃。
+    返回的 `preview` 不加行号，避免污染文档正文语义；行范围通过结构化字段表达。
     """
     path = resolve_context_path(task, relative_path)
-    text = path.read_text(errors="replace")
+    lines = path.read_text(errors="replace").splitlines()
+    total_lines = len(lines)
+
+    if total_lines == 0:
+        return {
+            "path": relative_path,
+            "total_lines": 0,
+            "returned_range": None,
+            "has_more": False,
+            "keyword_match": None,
+            "preview": "",
+        }
+
+    normalized_start_line = max(1, int(start_line))
+    normalized_line_count = _normalize_line_count(line_count)
+
+    start_index = normalized_start_line - 1
+    keyword_match: dict[str, object] | None = None
+
+    if keyword is not None and keyword != "":
+        lowered_keyword = keyword.lower()
+        match_index = next(
+            (
+                index
+                for index in range(start_index, total_lines)
+                if lowered_keyword in lines[index].lower()
+            ),
+            None,
+        )
+        if match_index is None:
+            keyword_match = {
+                "keyword": keyword,
+                "found": False,
+                "line": None,
+            }
+        else:
+            context_before = normalized_line_count // 3
+            start_index = max(0, match_index - context_before)
+            keyword_match = {
+                "keyword": keyword,
+                "found": True,
+                "line": match_index + 1,
+            }
+
+    end_index = min(total_lines, start_index + normalized_line_count)
+    selected_lines = lines[start_index:end_index]
+    returned_range = None
+    if selected_lines:
+        returned_range = {
+            "start_line": start_index + 1,
+            "end_line": end_index,
+        }
+
     return {
         "path": relative_path,
-        "preview": text[:max_chars],
-        "truncated": len(text) > max_chars,
+        "total_lines": total_lines,
+        "returned_range": returned_range,
+        "has_more": end_index < total_lines,
+        "keyword_match": keyword_match,
+        "preview": "\n".join(selected_lines),
     }

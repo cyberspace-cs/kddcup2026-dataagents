@@ -288,17 +288,26 @@ Input schema:
 ```
 ### read_doc
 Read a text document (Markdown, TXT). For PDFs use read_pdf instead.
-Returns up to max_chars characters.
+Returns a line-based page and metadata: total line count, returned line range,
+and whether more lines are available. Use `has_more` and the next `start_line`
+to continue reading. Optionally provide `keyword` to search case-insensitively
+from `start_line` and return a page around the first match.
 
 Input schema:
 {
   "type": "object",
   "properties": {
     "path": {"type": "string"},
-    "max_chars": {"type": "integer", "default": 4000}
+    "start_line": {"type": "integer", "default": 1},
+    "line_count": {"type": "integer", "default": 80, "minimum": 1, "maximum": 300},
+    "keyword": {"type": "string"}
   },
   "required": ["path"]
 }
+
+Examples:
+{"action": "read_doc", "action_input": {"path": "knowledge.md", "start_line": 81, "line_count": 80}}
+{"action": "read_doc", "action_input": {"path": "knowledge.md", "keyword": "Thrombosis"}}
 ```
 
 ### 7.9.6 `inspect_sqlite_schema`

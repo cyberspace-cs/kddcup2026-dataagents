@@ -89,10 +89,22 @@ def _read_json(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionR
 
 
 def _read_doc(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
-    """`read_doc`: 读取任意文本（md/txt），按字符数截断。"""
+    """`read_doc`: 按行分页读取任意文本（md/txt），可选关键词检索。"""
     path = str(action_input["path"])
-    max_chars = int(action_input.get("max_chars", 4000))
-    return ToolExecutionResult(ok=True, content=read_doc_preview(task, path, max_chars=max_chars))
+    start_line = int(action_input.get("start_line", 1))
+    line_count = int(action_input.get("line_count", 80))
+    raw_keyword = action_input.get("keyword")
+    keyword = None if raw_keyword is None or raw_keyword == "" else str(raw_keyword)
+    return ToolExecutionResult(
+        ok=True,
+        content=read_doc_preview(
+            task,
+            path,
+            start_line=start_line,
+            line_count=line_count,
+            keyword=keyword,
+        ),
+    )
 
 
 def _inspect_sqlite_schema(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
@@ -266,8 +278,17 @@ def create_default_tool_registry() -> ToolRegistry:
         ),
         "read_doc": ToolSpec(
             name="read_doc",
-            description="Read a text-like document inside context.",
-            input_schema={"path": "relative/path/to/file.md", "max_chars": 4000},
+            description=(
+                "Read a text-like document inside context by line page, or search for "
+                "the first case-insensitive keyword match. Use `has_more` and the next "
+                "`start_line` to continue reading."
+            ),
+            input_schema={
+                "path": "relative/path/to/file.md",
+                "start_line": 1,
+                "line_count": 80,
+                "keyword": "optional search text",
+            },
         ),
         "read_json": ToolSpec(
             name="read_json",
