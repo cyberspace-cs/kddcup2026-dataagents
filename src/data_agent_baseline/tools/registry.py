@@ -1,12 +1,18 @@
 """工具注册表（Tool Registry）。
 
-- `ToolSpec`:             工具对 prompt 的呈现（名字 / 描述 / 入参示例）
+- `ToolSpec`:             工具对 prompt 的呈现（名字 / 描述 / 入参示例 / 严格 JSON Schema）
 - `ToolExecutionResult`:  工具执行结果（ok 标志、content、是否终止、answer）
 - `ToolRegistry`:         把 specs（给模型看的）和 handlers（给 Python 调的）绑成一体
 - `create_default_tool_registry()`: 默认 8 件套工具集合
 
 每个 `_xxx` 私有函数是一个工具的 handler，签名统一为 `(task, action_input) → ToolExecutionResult`，
 方便按名字查表分发。`answer` 是唯一 `is_terminal=True` 的工具，触发后 ReAct 循环结束。
+
+`input_schema` vs `json_schema` 的区分：
+- `input_schema` 是**给文本 ReAct prompt 看的演示示例**（不是严格 JSON Schema），用于提示模型
+  入参长什么样；保持为非严格形式，是为了实测里发现其比严谨 schema 更不易让模型出错
+- `json_schema` 是**给 OpenAI 原生 function calling 用的严格 JSON Schema**，由 `to_openai_tools`
+  拼进请求体，vLLM 侧可在生成时做 constrained decoding
 """
 
 from __future__ import annotations
@@ -32,16 +38,19 @@ EXECUTE_PYTHON_TIMEOUT_SECONDS = 30
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
-    """工具对模型的 "规格说明"，用于拼接 system prompt。
+    """工具对模型的 "规格说明"，同时承载 prompt 文案与原生 function calling 的严格 schema。
 
     - name:          Agent 在 action 字段里写的名字
     - description:   一句话说明用途
-    - input_schema:  action_input 的最小示例（不是严格 JSON Schema，故意用轻量形式）
+    - input_schema:  action_input 的最小示例（文本 ReAct prompt 用，非严格 JSON Schema）
+    - json_schema:   严格 JSON Schema，供 native function calling 下推给模型；
+                     None 表示不支持原生调用（默认工具都已填充）
     """
 
     name: str
     description: str
     input_schema: dict[str, Any]
+    json_schema: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +189,207 @@ def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
     )
 
 
+# ------------------------- 严格 JSON Schema（native function calling 用） -------------------------
+# 所有 schema 保持 `additionalProperties: false`，让 vLLM 可做 constrained decoding。
+# 注意：对纯整数计数/上限参数，明确允许的最小值以兜住模型误填 0 / 负数。
+
+
+# 所有工具的 `path` 字段共用同一条路径约定：
+# - 必须相对于任务的 context 目录
+# - **不要** 带 `context/` 前缀，哪怕 system prompt 里提到过 `context/`
+# 用常量收敛文案，后续调整只改一处，保证 8 个 schema 描述一致，减少模型的歧义。
+_PATH_CONVENTION_NOTE = (
+    "Paths are relative to the task context directory; DO NOT prepend 'context/'. "
+    "For example use 'knowledge.md' or 'csv/foo.csv', not 'context/knowledge.md'."
+)
+
+
+_LIST_CONTEXT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "max_depth": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 4,
+            "description": "Maximum directory depth to walk when listing files.",
+        },
+    },
+    "required": [],
+    "additionalProperties": False,
+}
+
+
+_READ_CSV_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": (
+                "Relative path to a CSV file. "
+                "Examples: 'csv/member.csv', 'data/train.csv'. "
+                + _PATH_CONVENTION_NOTE
+            ),
+        },
+        "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 20,
+            "description": "Maximum number of preview rows to return.",
+        },
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+_READ_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": (
+                "Relative path to a JSON file. "
+                "Examples: 'json/Patient.json', 'zip_code.json'. "
+                + _PATH_CONVENTION_NOTE
+            ),
+        },
+        "max_chars": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 4000,
+            "description": "Maximum number of characters to return from the JSON preview.",
+        },
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+_READ_DOC_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": (
+                "Relative path to a text document (md/txt/...). "
+                "Examples: 'knowledge.md', 'docs/readme.txt'. "
+                + _PATH_CONVENTION_NOTE
+            ),
+        },
+        "start_line": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1,
+            "description": "1-based line number to start reading from.",
+        },
+        "line_count": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 80,
+            "description": "Number of lines to return in this page.",
+        },
+        "keyword": {
+            "type": ["string", "null"],
+            "default": None,
+            "description": "Optional keyword; when set, returns a context window around the first match.",
+        },
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+_INSPECT_SQLITE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": (
+                "Relative path to a sqlite database file. "
+                "Examples: 'db/clinical.sqlite', 'main.db'. "
+                + _PATH_CONVENTION_NOTE
+            ),
+        },
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+_EXECUTE_CONTEXT_SQL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": (
+                "Relative path to the sqlite/db file. "
+                "Examples: 'db/clinical.sqlite', 'main.db'. "
+                + _PATH_CONVENTION_NOTE
+            ),
+        },
+        "sql": {
+            "type": "string",
+            "description": "Read-only SQL query to execute.",
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 200,
+            "description": "Maximum number of rows to return.",
+        },
+    },
+    "required": ["path", "sql"],
+    "additionalProperties": False,
+}
+
+
+_EXECUTE_PYTHON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "code": {
+            "type": "string",
+            "description": (
+                "Python source to execute with the task context directory as CWD. "
+                f"Execution timeout is {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds."
+            ),
+        },
+    },
+    "required": ["code"],
+    "additionalProperties": False,
+}
+
+
+# answer.rows 的单元格允许 string / number / boolean / null 这四种 JSON 标量
+_ANSWER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "columns": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"},
+            "description": "Column header names (non-empty).",
+        },
+        "rows": {
+            "type": "array",
+            "items": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "number"},
+                        {"type": "boolean"},
+                        {"type": "null"},
+                    ]
+                },
+            },
+            "description": "Answer rows; each row's length must match the columns array.",
+        },
+    },
+    "required": ["columns", "rows"],
+    "additionalProperties": False,
+}
+
+
 @dataclass(slots=True)
 class ToolRegistry:
     """把 ToolSpec（prompt 侧）与 ToolHandler（执行侧）绑在一起的查找表。
@@ -214,6 +424,29 @@ class ToolRegistry:
             raise KeyError(f"Unknown tool: {action}")
         return self.handlers[action](task, action_input)
 
+    def to_openai_tools(self) -> list[dict[str, Any]]:
+        """把所有带 `json_schema` 的 specs 打包成 OpenAI `tools=[...]` 请求字段。
+
+        - 按工具名排序，保证请求体稳定（便于 prompt cache 命中）
+        - 缺少 `json_schema` 的工具会被跳过 —— 即不暴露给 native function calling
+        """
+        tools: list[dict[str, Any]] = []
+        for name in sorted(self.specs):
+            spec = self.specs[name]
+            if spec.json_schema is None:
+                continue
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": spec.name,
+                        "description": spec.description,
+                        "parameters": spec.json_schema,
+                    },
+                }
+            )
+        return tools
+
 
 def create_default_tool_registry() -> ToolRegistry:
     """构造默认 8 件套工具注册表。
@@ -230,6 +463,7 @@ def create_default_tool_registry() -> ToolRegistry:
 
     `input_schema` 里的示例值是"演示"形式（不是真实 JSON Schema），模型看到
     `"columns": ["column_name"]` 会按模式填自己的数据，实测比严谨 schema 更不易出错。
+    `json_schema` 则是给 OpenAI function calling 用的严格 schema。
     """
     specs = {
         "answer": ToolSpec(
@@ -239,6 +473,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 "columns": ["column_name"],
                 "rows": [["value_1"]],
             },
+            json_schema=_ANSWER_SCHEMA,
         ),
         "execute_context_sql": ToolSpec(
             name="execute_context_sql",
@@ -248,6 +483,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 "sql": "SELECT ...",
                 "limit": 200,
             },
+            json_schema=_EXECUTE_CONTEXT_SQL_SCHEMA,
         ),
         "execute_python": ToolSpec(
             name="execute_python",
@@ -260,21 +496,25 @@ def create_default_tool_registry() -> ToolRegistry:
             input_schema={
                 "code": "import os\nprint(sorted(os.listdir('.')))",
             },
+            json_schema=_EXECUTE_PYTHON_SCHEMA,
         ),
         "inspect_sqlite_schema": ToolSpec(
             name="inspect_sqlite_schema",
             description="Inspect tables and columns in a sqlite/db file inside context.",
             input_schema={"path": "relative/path/to/file.sqlite"},
+            json_schema=_INSPECT_SQLITE_SCHEMA,
         ),
         "list_context": ToolSpec(
             name="list_context",
             description="List files and directories available under context.",
             input_schema={"max_depth": 4},
+            json_schema=_LIST_CONTEXT_SCHEMA,
         ),
         "read_csv": ToolSpec(
             name="read_csv",
             description="Read a preview of a CSV file inside context.",
             input_schema={"path": "relative/path/to/file.csv", "max_rows": 20},
+            json_schema=_READ_CSV_SCHEMA,
         ),
         "read_doc": ToolSpec(
             name="read_doc",
@@ -289,11 +529,13 @@ def create_default_tool_registry() -> ToolRegistry:
                 "line_count": 80,
                 "keyword": "optional search text",
             },
+            json_schema=_READ_DOC_SCHEMA,
         ),
         "read_json": ToolSpec(
             name="read_json",
             description="Read a preview of a JSON file inside context.",
             input_schema={"path": "relative/path/to/file.json", "max_chars": 4000},
+            json_schema=_READ_JSON_SCHEMA,
         ),
     }
     # handlers 的键必须与 specs 对齐；新增工具时同步改两处

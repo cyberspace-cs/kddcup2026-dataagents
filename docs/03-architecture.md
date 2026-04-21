@@ -226,12 +226,18 @@ E:\KDD比赛\
 ## 3.6 关键设计决策（ADR 简版）
 
 ### ADR-001: ReAct 文本 JSON 协议 vs OpenAI 原生 tool calling
-- **选择**：文本 JSON 协议（沿用 starter kit）
-- **理由**：
-  - Qwen3.5-35B-A3B 的 tool calling 用 `qwen3_coder` 解析器，vLLM 在响应端自动转成 OpenAI 风格；**但**若启用 `enable_thinking`，`<think>` 块与 `tool_calls` 结构交互未知，有踩坑风险
-  - 文本协议更可控：我们完全掌握解析；可在 prompt 里精确描述 JSON schema
-  - 失败时容易降级：解析失败可重提示
-- **代价**：失去 OpenAI tool choice 的自动化优势（少量 token 收益）
+- **选择**：**原生 function calling 为默认，文本 JSON 协议为降级**（原决定翻转）
+- **背景**：starter kit 原本沿用文本协议，M4+ 冲分阶段切为原生以提升格式稳定性并解锁 parallel tool calls
+- **理由（翻转决定）**：
+  - 评测端 vLLM 已启用 `--enable-auto-tool-choice --tool-call-parser qwen3_coder`（见 `docs/01-requirements.md:73`），原生协议在比赛环境是一等公民
+  - Qwen3.5-35B-A3B 后训练对 tool use 格式做了专门强化，原生协议的格式错误率系统性低于文本协议；每个 JSON fence 解析失败都会吃掉一个 `max_steps` 预算，这是硬损失
+  - 原顾虑「`enable_thinking` + `tool_calls` 交互未知」已被 vLLM `--reasoning-parser qwen3` 把 `<think>` 块塞进 `message.reasoning_content`、不污染 `message.content` / `message.tool_calls` 的事实消解
+  - 支持一轮多 `tool_calls`（parallel），有机会压缩步数预算
+- **文本路径保留**为：
+  - 端点不支持 `tools=` 字段时的兜底
+  - 离线调试 / 非 Qwen 开发替身
+  - A/B 对比时的基线
+- **切换开关**：`AgentConfig.tool_protocol: "native" | "text"`（默认 `native`）
 
 ### ADR-002: Planner 分层（ReAct + Plan-Execute）
 - **选择**：easy/medium 用 ReAct，hard/extreme 用 Plan-and-Execute

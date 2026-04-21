@@ -20,13 +20,19 @@ from data_agent_baseline.benchmark.schema import AnswerTable
 class StepRecord:
     """一次 ReAct 循环的落定步骤。
 
-    - step_index:    从 1 开始的步号（human-friendly）
-    - thought:       模型输出的自然语言思考（JSON payload 里的 `thought`）
-    - action:        被调用的工具名；错误分支使用哨兵值 `__error__`
-    - action_input:  工具入参（来自模型输出的 `action_input`）
-    - raw_response:  模型原始输出字符串（含 ```json fence），保留以便排错
-    - observation:   工具执行后回填给下一轮的观察结果
-    - ok:            本步是否成功（失败时 observation 里带 error 字段）
+    - step_index:       从 1 开始的步号（human-friendly），跨 turn 在同一任务内唯一递增
+    - turn_index:       同一 assistant 回合共享一个 turn_index；native 协议下一回合可以
+                        产生多条 StepRecord（并行 tool_calls）
+    - thought:          模型输出的自然语言思考（JSON payload 的 `thought`，native 下复用 content）
+    - action:           被调用的工具名；错误分支使用哨兵值 `__error__`
+    - action_input:     工具入参（来自模型输出的 `action_input`，native 下是 tool_call.arguments）
+    - raw_response:     模型原始输出字符串（含 ```json fence），同一 turn 的多条记录共享
+    - observation:      工具执行后回填给下一轮的观察结果
+    - ok:               本步是否成功（失败时 observation 里带 error 字段）
+    - tool_call_id:     native 协议下是上游 tool_call_id（重放 tool 消息时必需）；
+                        text 协议下为 None
+    - raw_tool_calls:   仅在同 turn 的**首条** StepRecord 上填写，用于 native 协议下重放
+                        assistant 消息的 tool_calls 字段；其他记录留 None 以节省空间
     """
 
     step_index: int
@@ -36,6 +42,10 @@ class StepRecord:
     raw_response: str
     observation: dict[str, Any]
     ok: bool
+    # 默认值保持向后兼容：老的测试/调用只传 step_index...ok 也能构造成功
+    turn_index: int = 0
+    tool_call_id: str | None = None
+    raw_tool_calls: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """asdict 把 dataclass 递归转成普通 dict（用于 JSON 序列化）。"""

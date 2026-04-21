@@ -44,8 +44,12 @@ class DatasetConfig:
 class AgentConfig:
     """ReAct Agent 及底层模型调用的配置。
 
-    api_key 作为**明文**从 YAML 读取；生产部署应通过环境变量或 secret store 注入，
+    api_key 作为**明文**从 YAML 读取；生产部署应通过环境变量或 secret store 注入,
     而不是写进版本化的配置文件。
+
+    tool_protocol 决定使用哪种 LLM 协议：
+    - "native":  OpenAI 原生 function calling（默认，vLLM 需 --enable-auto-tool-choice）
+    - "text":    文本 JSON fence ReAct 协议（端点不支持 tools= 时的降级路径）
     """
 
     model: str = "gpt-4.1-mini"  # OpenAI 兼容 chat.completions 的模型标识符
@@ -53,6 +57,9 @@ class AgentConfig:
     api_key: str = ""  # 认证 Key；空串会在实际调用时抛 RuntimeError
     max_steps: int = 16  # 单任务 ReAct 循环上限，防止无限思考
     temperature: float = 0.0  # 采样温度；0 保证可复现
+    tool_protocol: str = "native"  # "native" | "text"；默认原生，text 仅作降级
+    # 原生协议下，是否允许模型一轮返回多个 tool_calls；个别 OpenAI-兼容后端不支持该字段，可关闭
+    allow_parallel_tool_calls: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,12 +122,23 @@ def load_app_config(config_path: Path) -> AppConfig:
     )
 
     # Agent 字段全部显式 str/int/float 转换，避免 YAML 把裸数值当成 int/float 时类型错位
+    tool_protocol_raw = (
+        str(agent_payload.get("tool_protocol", agent_defaults.tool_protocol)).strip().lower()
+    )
+    if tool_protocol_raw not in {"native", "text"}:
+        raise ValueError(
+            f"agent.tool_protocol must be either 'native' or 'text'; got {tool_protocol_raw!r}."
+        )
     agent_config = AgentConfig(
         model=str(agent_payload.get("model", agent_defaults.model)),
         api_base=str(agent_payload.get("api_base", agent_defaults.api_base)),
         api_key=str(agent_payload.get("api_key", agent_defaults.api_key)),
         max_steps=int(agent_payload.get("max_steps", agent_defaults.max_steps)),
         temperature=float(agent_payload.get("temperature", agent_defaults.temperature)),
+        tool_protocol=tool_protocol_raw,
+        allow_parallel_tool_calls=bool(
+            agent_payload.get("allow_parallel_tool_calls", agent_defaults.allow_parallel_tool_calls)
+        ),
     )
 
     # run_id 的特殊处理：显式写了空白串也视为 None（触发自动生成）

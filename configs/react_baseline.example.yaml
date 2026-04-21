@@ -7,6 +7,13 @@ agent:
   api_key: YOUR_API_KEY
   max_steps: 16
   temperature: 0.0
+  # 默认：OpenAI 原生 function calling。要求 vLLM 启用
+  # --enable-auto-tool-choice --tool-call-parser qwen3_coder
+  tool_protocol: native
+  # 关到 false 可兼容个别 OpenAI 兼容后端（不支持 parallel_tool_calls 字段时）
+  allow_parallel_tool_calls: true
+  # 降级路径：端点不支持 tools= 时，改为文本 JSON fence ReAct
+  # tool_protocol: text
 
 run:
   output_dir: artifacts/runs

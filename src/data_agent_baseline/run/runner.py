@@ -29,7 +29,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from data_agent_baseline.agents.model import OpenAIModelAdapter
+from data_agent_baseline.agents.model import NativeToolsOpenAIAdapter, OpenAIModelAdapter
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import AppConfig
@@ -104,11 +104,27 @@ def create_run_output_dir(output_root: Path, *, run_id: str | None = None) -> tu
     return effective_run_id, run_output_dir
 
 
-def build_model_adapter(config: AppConfig):
-    """根据 `config.agent` 构造 OpenAI 适配器。
+def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None):
+    """根据 `config.agent` 构造模型适配器。
+
+    按 `tool_protocol` 分发：
+    - "native": 需要传入 `tools` 以把工具 schema 下推到 OpenAI `tools=[...]` 字段
+    - "text":   传统文本协议，不需要 tools 参数
 
     独立成函数主要是为了测试：可以 monkeypatch 掉这里注入 `ScriptedModelAdapter`。
     """
+    if config.agent.tool_protocol == "native":
+        if tools is None:
+            # 给一个防御性错误：native 协议必须提供 tools
+            raise ValueError("NativeToolsOpenAIAdapter requires a ToolRegistry; pass `tools=...`.")
+        return NativeToolsOpenAIAdapter(
+            model=config.agent.model,
+            api_base=config.agent.api_base,
+            api_key=config.agent.api_key,
+            temperature=config.agent.temperature,
+            tools=tools,
+            allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
+        )
     return OpenAIModelAdapter(
         model=config.agent.model,
         api_base=config.agent.api_base,
@@ -167,10 +183,14 @@ def _run_single_task_core(
     public_dataset = DABenchPublicDataset(config.dataset.root_path)
     task = public_dataset.get_task(task_id)
 
+    effective_tools = tools or create_default_tool_registry()
+    effective_model = model or build_model_adapter(config, tools=effective_tools)
+
     agent = ReActAgent(
-        model=model or build_model_adapter(config),
-        tools=tools or create_default_tool_registry(),
+        model=effective_model,
+        tools=effective_tools,
         config=ReActAgentConfig(max_steps=config.agent.max_steps),
+        protocol=config.agent.tool_protocol,  # type: ignore[arg-type]
     )
     run_result = agent.run(task)
     return run_result.to_dict()
@@ -359,8 +379,8 @@ def run_benchmark(
     task_artifacts: list[TaskRunArtifacts]
     if effective_workers == 1:
         # 串行路径：共享 model/tools 减少重复初始化开销
-        shared_model = model or build_model_adapter(config)
         shared_tools = tools or create_default_tool_registry()
+        shared_model = model or build_model_adapter(config, tools=shared_tools)
         task_artifacts = []
         for task_id in task_ids:
             artifact = run_single_task(
