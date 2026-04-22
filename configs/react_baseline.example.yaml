@@ -21,6 +21,25 @@ agent:
   # 降级路径：端点不支持 tools= 时，改为文本 JSON fence ReAct
   # tool_protocol: text
 
+  # ---- PR-2: 本地 Key 池 + 限速（仅本地调百炼 Qwen3.5 时启用；线上 vLLM 留空）----
+  # 下面两个块必须"要么都写、要么都不写"，load_app_config 会拒绝只写其一的配置。
+  # 启用后 runner 会按 task_index % len(api_keys) 轮询 Key，每个 Key 独立走
+  # RPM+TPM 双令牌桶；同任务的所有 ReAct 轮次共用一个 Key（保留 prefix 缓存）。
+  #
+  # api_keys:
+  #   - sk-aliyun-key-A
+  #   - sk-aliyun-key-B
+  # rate_limit:
+  #   rpm_per_key: 600              # 单 Key 的名义 RPM 上限
+  #   tpm_per_key: 1000000          # 单 Key 的名义 TPM 上限
+  #   safety_factor: 0.85           # 实际容量 = cap * 0.85，留 15% 作突发 buffer
+  #   reserve_output_tokens: 16384  # 预扣输出上限；建议与 max_tokens 对齐
+  #   max_retries: 6                # 429/5xx 重试上限；超出抛 RateLimitExhausted
+  #   backoff_initial_seconds: 1.0
+  #   backoff_max_seconds: 30.0
+  #   # state_dir: 留空则自动落在 artifacts/ratelimit/<run_id>/
+  #   # state_dir: /tmp/ratelimit/my-run
+
 run:
   output_dir: artifacts/runs
   run_id: example_run_id

@@ -23,13 +23,14 @@ import json
 import multiprocessing
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
 from data_agent_baseline.agents.model import NativeToolsOpenAIAdapter, OpenAIModelAdapter
+from data_agent_baseline.agents.rate_limit import RateLimitedAdapter
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import AppConfig
@@ -111,13 +112,17 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None):
     - "native": 需要传入 `tools` 以把工具 schema 下推到 OpenAI `tools=[...]` 字段
     - "text":   传统文本协议，不需要 tools 参数
 
+    当 `config.agent.rate_limit` 非 None 且 `api_key` 非空时，外面再套一层
+    `RateLimitedAdapter`（PR-2）。线上 vLLM 路径留空 rate_limit 即跳过。
+
     独立成函数主要是为了测试：可以 monkeypatch 掉这里注入 `ScriptedModelAdapter`。
     """
+    inner: NativeToolsOpenAIAdapter | OpenAIModelAdapter
     if config.agent.tool_protocol == "native":
         if tools is None:
             # 给一个防御性错误：native 协议必须提供 tools
             raise ValueError("NativeToolsOpenAIAdapter requires a ToolRegistry; pass `tools=...`.")
-        return NativeToolsOpenAIAdapter(
+        inner = NativeToolsOpenAIAdapter(
             model=config.agent.model,
             api_base=config.agent.api_base,
             api_key=config.agent.api_key,
@@ -127,14 +132,54 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None):
             max_tokens=config.agent.max_tokens,
             enable_thinking=config.agent.enable_thinking,
         )
-    return OpenAIModelAdapter(
-        model=config.agent.model,
-        api_base=config.agent.api_base,
-        api_key=config.agent.api_key,
-        temperature=config.agent.temperature,
-        max_tokens=config.agent.max_tokens,
-        enable_thinking=config.agent.enable_thinking,
-    )
+    else:
+        inner = OpenAIModelAdapter(
+            model=config.agent.model,
+            api_base=config.agent.api_base,
+            api_key=config.agent.api_key,
+            temperature=config.agent.temperature,
+            max_tokens=config.agent.max_tokens,
+            enable_thinking=config.agent.enable_thinking,
+        )
+
+    # PR-2：有 rate_limit 就包一层限速壳；没有就返回裸 adapter（线上路径不变）
+    if config.agent.rate_limit is not None and config.agent.api_key:
+        return RateLimitedAdapter(
+            inner=inner,
+            api_key=config.agent.api_key,
+            rate_limit=config.agent.rate_limit,
+        )
+    return inner
+
+
+def _resolve_ratelimit_state_dir(config: AppConfig, effective_run_id: str) -> Path:
+    """推导 `state_dir` 默认值：`<output_dir.parent>/ratelimit/<run_id>/`。
+
+    默认 `output_dir = artifacts/runs`，所以默认状态目录是 `artifacts/ratelimit/<run_id>/`，
+    与 `artifacts/runs/<run_id>/` 做兄弟目录——run 粒度隔离，避免跨 run 残留污染令牌桶。
+    """
+    return config.run.output_dir.parent / "ratelimit" / effective_run_id
+
+
+def _pin_key_on_config(config: AppConfig, *, task_index: int, effective_run_id: str) -> AppConfig:
+    """返回 "单 Key 视图" 的子配置：按 task_index 轮询 api_keys 并写回 agent.api_key，
+    同时把 rate_limit.state_dir 从 None 解成具体路径、把 run.run_id 从 None 解成真实值。
+
+    用 `dataclasses.replace` 逐层生成新的 frozen dataclass；原 config 不变，可被多个
+    子进程按不同 task_index 独立派生。
+
+    若 `api_keys` 为空（未启用池），原样返回 config——对线上单 Key 路径无副作用。
+    """
+    if not config.agent.api_keys:
+        return config
+    picked = config.agent.api_keys[task_index % len(config.agent.api_keys)]
+    rl = config.agent.rate_limit
+    if rl is not None and rl.state_dir is None:
+        rl = replace(rl, state_dir=_resolve_ratelimit_state_dir(config, effective_run_id))
+    agent = replace(config.agent, api_key=picked, rate_limit=rl)
+    # run_id 也落实：子进程 trace 里能看到真实 run_id，便于调试
+    run = replace(config.run, run_id=effective_run_id)
+    return replace(config, agent=agent, run=run)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -454,7 +499,19 @@ def run_single_task(
 
     子进程路径下，`partial_trace_path` 在任务开始前就确定了，子进程每步增量写，
     父进程在 kill/crash 后可从磁盘回收"死前"状态——避免 600s 超时的任务 steps=0。
+
+    PR-2：CLI `dabench run-task <id>` 不经 run_benchmark，没人替它按 task_index 固定 Key。
+    这里若检测到 "配了 api_keys 但 rate_limit.state_dir 仍是 None"（= 未被上游 pin 过），
+    就按 `api_keys[0]` 决定性选 Key。上游 benchmark 路径已经做过 pin 的 config 不受影响。
     """
+    if (
+        config.agent.api_keys
+        and config.agent.rate_limit is not None
+        and config.agent.rate_limit.state_dir is None
+    ):
+        effective_run_id = resolve_run_id(config.run.run_id)
+        config = _pin_key_on_config(config, task_index=0, effective_run_id=effective_run_id)
+
     started_at = perf_counter()
     if model is None and tools is None:
         # 子进程路径：预先确定 trace.json 位置，供子进程增量写 + 父进程超时时读
@@ -513,16 +570,28 @@ def run_benchmark(
 
     task_ids = [task.task_id for task in tasks]
 
+    # PR-2：配了 api_keys 就走 "按 task_index 轮询 Key" 的路径；否则保持 PR-1 单 Key 行为
+    use_key_pool = bool(config.agent.api_keys) and model is None
+
     task_artifacts: list[TaskRunArtifacts]
     if effective_workers == 1:
         # 串行路径：共享 model/tools 减少重复初始化开销
         shared_tools = tools or create_default_tool_registry()
-        shared_model = model or build_model_adapter(config, tools=shared_tools)
+        # 启用 Key 池时，model 需要按 task 轮询 Key 重建——放弃共享 model；
+        # 但共享 tools 仍然成立（tool registry 是无状态的）
+        shared_model = (
+            None if use_key_pool else (model or build_model_adapter(config, tools=shared_tools))
+        )
         task_artifacts = []
-        for task_id in task_ids:
+        for index, task_id in enumerate(task_ids):
+            iter_config = (
+                _pin_key_on_config(config, task_index=index, effective_run_id=effective_run_id)
+                if use_key_pool
+                else config
+            )
             artifact = run_single_task(
                 task_id=task_id,
-                config=config,
+                config=iter_config,
                 run_output_dir=run_output_dir,
                 model=shared_model,
                 tools=shared_tools,
@@ -537,7 +606,10 @@ def run_benchmark(
                 executor.submit(
                     run_single_task,
                     task_id=task_id,
-                    config=config,
+                    # PR-2：按 task_index 固定 Key；池未启用时 _pin_key_on_config 原样返回
+                    config=_pin_key_on_config(
+                        config, task_index=index, effective_run_id=effective_run_id
+                    ),
                     run_output_dir=run_output_dir,
                 ): index
                 for index, task_id in enumerate(task_ids)

@@ -41,6 +41,31 @@ class DatasetConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RateLimitConfig:
+    """本地调限速 LLM 时的速率限制参数（RPM + TPM 双桶）。
+
+    只在 `AgentConfig.rate_limit` 被显式配置时启用；线上 vLLM 路径请留空以保持 PR-1 行为。
+
+    - rpm_per_key / tpm_per_key: 单 Key 的名义上限（与上游账号配额一致）
+    - safety_factor: 实际容量 = cap * safety_factor，留出突发/时钟抖动的 buffer（0 < f <= 1）
+    - reserve_output_tokens: 调用前按 "estimate_prompt + reserve_output" 预扣 TPM；
+      实际 usage 回来后按差值补扣或退款，因此这里给的是输出上限的近似值（与 max_tokens 对齐）
+    - max_retries: 429/5xx 重试次数上限（不含首次），>=0
+    - backoff_initial_seconds / backoff_max_seconds: 指数退避起步和封顶；若响应带 Retry-After 则优先用 header
+    - state_dir: 状态/锁文件根目录；None 时由 runner 自动推导为 `<artifacts_root>/ratelimit/<run_id>/`
+    """
+
+    rpm_per_key: int = 600
+    tpm_per_key: int = 1_000_000
+    safety_factor: float = 0.85
+    reserve_output_tokens: int = 16384
+    max_retries: int = 6
+    backoff_initial_seconds: float = 1.0
+    backoff_max_seconds: float = 30.0
+    state_dir: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class AgentConfig:
     """ReAct Agent 及底层模型调用的配置。
 
@@ -60,6 +85,11 @@ class AgentConfig:
     - None:  不发送该字段，沿用服务端默认（vLLM `--reasoning-parser qwen3` 为 on）
     - True:  显式开；与线上行为对齐
     - False: 显式关；本地省 token 时可选，但线上不可用→慎用
+
+    api_keys / rate_limit 是 PR-2 新增的 "本地 Key 池 + 限速" 入口：
+    - 两者都为空/None（默认）: 走单 Key 直连路径，与 PR-1 行为一致
+    - 两者均配置:             runner 按 task_index 轮询 api_keys，并用 RateLimitedAdapter 包壳
+    - 只有其一:               load 时报错，避免 "只池不限" / "只限无池" 的误配
     """
 
     model: str = "gpt-4.1-mini"  # OpenAI 兼容 chat.completions 的模型标识符
@@ -72,6 +102,10 @@ class AgentConfig:
     allow_parallel_tool_calls: bool = True
     max_tokens: int = 16384  # 单次输出上限；0=不下发（用服务端默认）
     enable_thinking: bool | None = None  # None=不下发；True/False=走 extra_body 透传
+    # PR-2：本地 Key 池；runner 按 task_index 轮询并下推单 Key 视图给子进程。空元组=禁用
+    api_keys: tuple[str, ...] = ()
+    # PR-2：限速配置；None=不启用限速器（线上 vLLM 路径默认如此）
+    rate_limit: RateLimitConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +189,96 @@ def load_app_config(config_path: Path) -> AppConfig:
             f"got {type(raw_enable_thinking).__name__}."
         )
 
+    max_tokens_value = int(agent_payload.get("max_tokens", agent_defaults.max_tokens))
+
+    # api_keys：严格要求 list-of-str，非字符串立即拒收；空串、重复也拒（YAML 误配非常好修）
+    api_keys_raw = agent_payload.get("api_keys", None)
+    api_keys: tuple[str, ...] = ()
+    if api_keys_raw is not None:
+        if not isinstance(api_keys_raw, list):
+            raise ValueError("agent.api_keys must be a list of strings.")
+        parsed_keys: list[str] = []
+        for idx, item in enumerate(api_keys_raw):
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"agent.api_keys[{idx}] must be a string; got {type(item).__name__}."
+                )
+            stripped = item.strip()
+            if not stripped:
+                raise ValueError(f"agent.api_keys[{idx}] must be a non-empty string.")
+            parsed_keys.append(stripped)
+        if len(parsed_keys) != len(set(parsed_keys)):
+            raise ValueError("agent.api_keys contains duplicate entries.")
+        api_keys = tuple(parsed_keys)
+
+    # rate_limit：缺省为 None；显式写了子节则逐字段解析+校验
+    rate_limit_raw = agent_payload.get("rate_limit", None)
+    rate_limit: RateLimitConfig | None = None
+    if rate_limit_raw is not None:
+        if not isinstance(rate_limit_raw, dict):
+            raise ValueError("agent.rate_limit must be a mapping.")
+        rl_defaults = RateLimitConfig()
+        rpm_per_key = int(rate_limit_raw.get("rpm_per_key", rl_defaults.rpm_per_key))
+        tpm_per_key = int(rate_limit_raw.get("tpm_per_key", rl_defaults.tpm_per_key))
+        safety_factor = float(rate_limit_raw.get("safety_factor", rl_defaults.safety_factor))
+        reserve_output_tokens = int(
+            rate_limit_raw.get("reserve_output_tokens", rl_defaults.reserve_output_tokens)
+        )
+        max_retries = int(rate_limit_raw.get("max_retries", rl_defaults.max_retries))
+        backoff_initial = float(
+            rate_limit_raw.get("backoff_initial_seconds", rl_defaults.backoff_initial_seconds)
+        )
+        backoff_max = float(
+            rate_limit_raw.get("backoff_max_seconds", rl_defaults.backoff_max_seconds)
+        )
+        state_dir_raw = rate_limit_raw.get("state_dir")
+        state_dir: Path | None = None
+        if state_dir_raw is not None:
+            # 复用 _path_value 的语义：空串视为未填；相对路径以 PROJECT_ROOT 为基
+            state_dir_str = str(state_dir_raw).strip()
+            if state_dir_str:
+                candidate = Path(state_dir_str)
+                state_dir = candidate if candidate.is_absolute() else (PROJECT_ROOT / candidate)
+
+        if rpm_per_key <= 0:
+            raise ValueError("agent.rate_limit.rpm_per_key must be positive.")
+        if tpm_per_key <= 0:
+            raise ValueError("agent.rate_limit.tpm_per_key must be positive.")
+        if not (0 < safety_factor <= 1):
+            raise ValueError("agent.rate_limit.safety_factor must be in the interval (0, 1].")
+        if reserve_output_tokens <= 0:
+            raise ValueError("agent.rate_limit.reserve_output_tokens must be positive.")
+        if max_tokens_value > 0 and reserve_output_tokens > max_tokens_value:
+            raise ValueError(
+                "agent.rate_limit.reserve_output_tokens must not exceed agent.max_tokens."
+            )
+        if max_retries < 0:
+            raise ValueError("agent.rate_limit.max_retries must be >= 0.")
+        if backoff_initial <= 0:
+            raise ValueError("agent.rate_limit.backoff_initial_seconds must be positive.")
+        if backoff_max < backoff_initial:
+            raise ValueError(
+                "agent.rate_limit.backoff_max_seconds must be >= backoff_initial_seconds."
+            )
+
+        rate_limit = RateLimitConfig(
+            rpm_per_key=rpm_per_key,
+            tpm_per_key=tpm_per_key,
+            safety_factor=safety_factor,
+            reserve_output_tokens=reserve_output_tokens,
+            max_retries=max_retries,
+            backoff_initial_seconds=backoff_initial,
+            backoff_max_seconds=backoff_max,
+            state_dir=state_dir,
+        )
+
+    # 池与限速必须成对启用/关闭：避免 "只有池无限速" / "只限速不分池" 的误配
+    if (api_keys and rate_limit is None) or (rate_limit is not None and not api_keys):
+        raise ValueError(
+            "agent.api_keys and agent.rate_limit must be configured together; "
+            "leave both unset for the single-key / no-limit default path."
+        )
+
     agent_config = AgentConfig(
         model=str(agent_payload.get("model", agent_defaults.model)),
         api_base=str(agent_payload.get("api_base", agent_defaults.api_base)),
@@ -165,8 +289,10 @@ def load_app_config(config_path: Path) -> AppConfig:
         allow_parallel_tool_calls=bool(
             agent_payload.get("allow_parallel_tool_calls", agent_defaults.allow_parallel_tool_calls)
         ),
-        max_tokens=int(agent_payload.get("max_tokens", agent_defaults.max_tokens)),
+        max_tokens=max_tokens_value,
         enable_thinking=enable_thinking,
+        api_keys=api_keys,
+        rate_limit=rate_limit,
     )
 
     # run_id 的特殊处理：显式写了空白串也视为 None（触发自动生成）
