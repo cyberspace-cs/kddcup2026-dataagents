@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from data_agent_baseline.agents.model import TokenUsage
 from data_agent_baseline.benchmark.schema import AnswerTable
 
 
@@ -33,6 +34,10 @@ class StepRecord:
                         text 协议下为 None
     - raw_tool_calls:   仅在同 turn 的**首条** StepRecord 上填写，用于 native 协议下重放
                         assistant 消息的 tool_calls 字段；其他记录留 None 以节省空间
+    - reasoning:        vLLM `--reasoning-parser qwen3` / 百炼 Qwen3 返回的思维链；
+                        与 `raw_tool_calls` 同约定，仅在同 turn 的首条 StepRecord 上填写
+    - usage:            对应本 turn 那次 chat.completions 调用的 token 用量；
+                        同样仅在首条 StepRecord 承载，后续并行 tool_call 留 default（全 0）
     """
 
     step_index: int
@@ -46,6 +51,8 @@ class StepRecord:
     turn_index: int = 0
     tool_call_id: str | None = None
     raw_tool_calls: list[dict[str, Any]] | None = None
+    reasoning: str = ""
+    usage: TokenUsage = field(default_factory=TokenUsage)
 
     def to_dict(self) -> dict[str, Any]:
         """asdict 把 dataclass 递归转成普通 dict（用于 JSON 序列化）。"""
@@ -87,6 +94,19 @@ class AgentRunResult:
         """
         return self.answer is not None and self.failure_reason is None
 
+    def total_usage(self) -> TokenUsage:
+        """把各 StepRecord 的 usage 按字段求和。
+
+        同 turn 只有首条 step 承载真实 usage，后续并行 step 默认全 0，直接求和无双计。
+        """
+        return TokenUsage(
+            prompt_tokens=sum(step.usage.prompt_tokens for step in self.steps),
+            completion_tokens=sum(step.usage.completion_tokens for step in self.steps),
+            total_tokens=sum(step.usage.total_tokens for step in self.steps),
+            cached_tokens=sum(step.usage.cached_tokens for step in self.steps),
+            reasoning_tokens=sum(step.usage.reasoning_tokens for step in self.steps),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """序列化为 runner 可直接落盘的 dict。"""
         return {
@@ -95,4 +115,5 @@ class AgentRunResult:
             "steps": [step.to_dict() for step in self.steps],
             "failure_reason": self.failure_reason,
             "succeeded": self.succeeded,
+            "total_usage": self.total_usage().to_dict(),
         }

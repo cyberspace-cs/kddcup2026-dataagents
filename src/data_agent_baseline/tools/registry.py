@@ -226,8 +226,7 @@ _READ_CSV_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Relative path to a CSV file. "
-                "Examples: 'csv/member.csv', 'data/train.csv'. "
-                + _PATH_CONVENTION_NOTE
+                "Examples: 'csv/member.csv', 'data/train.csv'. " + _PATH_CONVENTION_NOTE
             ),
         },
         "max_rows": {
@@ -249,8 +248,7 @@ _READ_JSON_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Relative path to a JSON file. "
-                "Examples: 'json/Patient.json', 'zip_code.json'. "
-                + _PATH_CONVENTION_NOTE
+                "Examples: 'json/Patient.json', 'zip_code.json'. " + _PATH_CONVENTION_NOTE
             ),
         },
         "max_chars": {
@@ -272,8 +270,7 @@ _READ_DOC_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Relative path to a text document (md/txt/...). "
-                "Examples: 'knowledge.md', 'docs/readme.txt'. "
-                + _PATH_CONVENTION_NOTE
+                "Examples: 'knowledge.md', 'docs/readme.txt'. " + _PATH_CONVENTION_NOTE
             ),
         },
         "start_line": {
@@ -306,8 +303,7 @@ _INSPECT_SQLITE_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Relative path to a sqlite database file. "
-                "Examples: 'db/clinical.sqlite', 'main.db'. "
-                + _PATH_CONVENTION_NOTE
+                "Examples: 'db/clinical.sqlite', 'main.db'. " + _PATH_CONVENTION_NOTE
             ),
         },
     },
@@ -323,8 +319,7 @@ _EXECUTE_CONTEXT_SQL_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Relative path to the sqlite/db file. "
-                "Examples: 'db/clinical.sqlite', 'main.db'. "
-                + _PATH_CONVENTION_NOTE
+                "Examples: 'db/clinical.sqlite', 'main.db'. " + _PATH_CONVENTION_NOTE
             ),
         },
         "sql": {

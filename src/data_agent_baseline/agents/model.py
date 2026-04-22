@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Protocol
 
 from openai import APIError, OpenAI
@@ -81,6 +82,29 @@ class ModelToolCall:
 
 
 @dataclass(frozen=True, slots=True)
+class TokenUsage:
+    """单次 chat.completions 调用的 token 用量快照。
+
+    覆盖 OpenAI 兼容后端常见字段（含 Qwen3 经由百炼/vLLM 时的嵌套扩展）：
+    - prompt_tokens / completion_tokens / total_tokens：`usage.*` 顶层字段
+    - cached_tokens:    `usage.prompt_tokens_details.cached_tokens`（前缀缓存命中量）
+    - reasoning_tokens: `usage.completion_tokens_details.reasoning_tokens`（思维链耗量）
+
+    全部默认 0，方便构造空实例（未捕获 usage / Scripted 测试路径）。
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        """asdict 包一层，保证 JSON 序列化时字段顺序与命名稳定。"""
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class ModelResponse:
     """模型一次调用的统一返回结构。
 
@@ -89,12 +113,19 @@ class ModelResponse:
     - raw_response:     原始 content（text 模式下用于回放成 assistant 消息）
     - raw_tool_calls:   原始 OpenAI tool_calls payload（SDK 对象的 dict 形式），
                         native 模式下用来把 assistant 消息重放回 messages 数组
+    - reasoning_content:vLLM `--reasoning-parser qwen3` / Qwen 百炼会把 <think> 拆到
+                        `message.reasoning_content`；这里留作透传用于 trace 可观测
+    - usage:            单次调用的 token 用量（供限流器校准与成本统计）
+    - latency_ms:       API 往返耗时（含 SDK 解析），0 表示未测
     """
 
     content: str
     tool_calls: list[ModelToolCall] = field(default_factory=list)
     raw_response: str = ""
     raw_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    reasoning_content: str = ""
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    latency_ms: int = 0
 
 
 class ModelAdapter(Protocol):
@@ -124,6 +155,65 @@ def _message_to_payload(message: ModelMessage) -> dict[str, Any]:
     return payload
 
 
+def _extract_reasoning_content(message: Any) -> str:
+    """从 `choices[0].message` 里防御性提取 `reasoning_content`。
+
+    vLLM `--reasoning-parser qwen3` 与百炼 Qwen3 均会把思维链塞进这个字段。
+    OpenAI 官方 SDK 的 pydantic 模型不一定声明该字段，兜底走 `model_extra`。
+    """
+    direct = getattr(message, "reasoning_content", None)
+    if isinstance(direct, str) and direct:
+        return direct
+    extras = getattr(message, "model_extra", None)
+    if isinstance(extras, dict):
+        value = extras.get("reasoning_content")
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _as_int(value: Any) -> int:
+    """把 usage 里的数值字段强制转 int，None/非法值归零。
+
+    百炼偶尔返回字符串数字；SDK 基本保证 int，但做一层保护成本微乎其微。
+    """
+    try:
+        if value is None:
+            return 0
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_usage(response: Any) -> TokenUsage:
+    """从 `chat.completions` 响应构造 `TokenUsage`。
+
+    对嵌套字段（`prompt_tokens_details.cached_tokens` /
+    `completion_tokens_details.reasoning_tokens`）全部走 `getattr(..., None)`，
+    不同后端返回的字段集不一致，缺失一律视为 0。
+    """
+    usage_obj = getattr(response, "usage", None)
+    if usage_obj is None:
+        return TokenUsage()
+
+    prompt_details = getattr(usage_obj, "prompt_tokens_details", None)
+    completion_details = getattr(usage_obj, "completion_tokens_details", None)
+    cached = getattr(prompt_details, "cached_tokens", None) if prompt_details is not None else None
+    reasoning = (
+        getattr(completion_details, "reasoning_tokens", None)
+        if completion_details is not None
+        else None
+    )
+
+    return TokenUsage(
+        prompt_tokens=_as_int(getattr(usage_obj, "prompt_tokens", 0)),
+        completion_tokens=_as_int(getattr(usage_obj, "completion_tokens", 0)),
+        total_tokens=_as_int(getattr(usage_obj, "total_tokens", 0)),
+        cached_tokens=_as_int(cached),
+        reasoning_tokens=_as_int(reasoning),
+    )
+
+
 class OpenAIModelAdapter:
     """对 OpenAI 兼容 chat.completions 接口的包装（文本协议）。
 
@@ -139,6 +229,8 @@ class OpenAIModelAdapter:
         api_base: str,
         api_key: str,
         temperature: float,
+        max_tokens: int = 0,
+        enable_thinking: bool | None = None,
     ) -> None:
         self.model = model
         # 去掉尾部斜杠：OpenAI SDK 会自行拼 `/chat/completions`，重复的 `/` 在部分
@@ -146,6 +238,10 @@ class OpenAIModelAdapter:
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
         self.temperature = temperature
+        # 0 = 不下发 max_tokens（服务端默认）；>0 = 显式上限
+        self.max_tokens = max_tokens
+        # None = 不下发 enable_thinking（服务端默认）；True/False = 经 extra_body 透传
+        self.enable_thinking = enable_thinking
 
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。"""
@@ -158,22 +254,33 @@ class OpenAIModelAdapter:
             base_url=self.api_base,
         )
 
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            # 把 ModelMessage 转成 SDK 期望的 dict 形式
+            "messages": [_message_to_payload(message) for message in messages],
+            "temperature": self.temperature,
+        }
+        if self.max_tokens > 0:
+            # 下发显式上限；Qwen3 下封顶的是 **总输出**（含 reasoning tokens）
+            request_kwargs["max_tokens"] = self.max_tokens
+        if self.enable_thinking is not None:
+            # Qwen3 特有字段；经 extra_body 透传进请求体（OpenAI SDK 原生字段表没有）
+            request_kwargs["extra_body"] = {"enable_thinking": self.enable_thinking}
+
+        started = perf_counter()
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                # 把 ModelMessage 转成 SDK 期望的 dict 形式
-                messages=[_message_to_payload(message) for message in messages],
-                temperature=self.temperature,
-            )
+            response = client.chat.completions.create(**request_kwargs)
         except APIError as exc:
             # 把供应商错误统一包成 RuntimeError，便于 ReAct 循环的通用异常分支处理
             raise RuntimeError(f"Model request failed: {exc}") from exc
+        latency_ms = int((perf_counter() - started) * 1000)
 
         choices = response.choices or []
         if not choices:
             raise RuntimeError("Model response missing choices.")
+        message = choices[0].message
         # 允许 content 为 None（偶尔模型返回空串或 reasoning-only）—— 归一化成空串
-        content = choices[0].message.content or ""
+        content = message.content or ""
         if not isinstance(content, str):
             # 保护：极少数 SDK/代理会返回多模态块的 list，统一拒收
             raise RuntimeError("Model response text content is not a string.")
@@ -184,6 +291,9 @@ class OpenAIModelAdapter:
             tool_calls=[],
             raw_response=cleaned,
             raw_tool_calls=[],
+            reasoning_content=_extract_reasoning_content(message),
+            usage=_extract_usage(response),
+            latency_ms=latency_ms,
         )
 
 
@@ -208,6 +318,8 @@ class NativeToolsOpenAIAdapter:
         temperature: float,
         tools: ToolRegistry,
         allow_parallel_tool_calls: bool = True,
+        max_tokens: int = 0,
+        enable_thinking: bool | None = None,
     ) -> None:
         self.model = model
         self.api_base = api_base.rstrip("/")
@@ -215,6 +327,8 @@ class NativeToolsOpenAIAdapter:
         self.temperature = temperature
         self.tools = tools
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
+        self.max_tokens = max_tokens
+        self.enable_thinking = enable_thinking
         # 预先把 ToolRegistry 转成 OpenAI tools 数组；保持实例不可变方便 prompt cache
         self._openai_tools = tools.to_openai_tools()
 
@@ -239,11 +353,19 @@ class NativeToolsOpenAIAdapter:
             # 并非所有 OpenAI-兼容后端都接受此字段，但 vLLM/OpenAI 官方都支持；
             # 配置项允许部署时关掉以兼容个别实现
             request_kwargs["parallel_tool_calls"] = True
+        if self.max_tokens > 0:
+            # 下发显式上限；Qwen3 下封顶的是 **总输出**（含 reasoning tokens）
+            request_kwargs["max_tokens"] = self.max_tokens
+        if self.enable_thinking is not None:
+            # Qwen3 特有字段；经 extra_body 透传进请求体（OpenAI SDK 原生字段表没有）
+            request_kwargs["extra_body"] = {"enable_thinking": self.enable_thinking}
 
+        started = perf_counter()
         try:
             response = client.chat.completions.create(**request_kwargs)
         except APIError as exc:
             raise RuntimeError(f"Model request failed: {exc}") from exc
+        latency_ms = int((perf_counter() - started) * 1000)
 
         choices = response.choices or []
         if not choices:
@@ -308,6 +430,9 @@ class NativeToolsOpenAIAdapter:
             tool_calls=parsed_calls,
             raw_response=cleaned_content,
             raw_tool_calls=raw_tool_calls_payload,
+            reasoning_content=_extract_reasoning_content(message),
+            usage=_extract_usage(response),
+            latency_ms=latency_ms,
         )
 
 

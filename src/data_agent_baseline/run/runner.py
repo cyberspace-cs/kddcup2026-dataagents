@@ -124,12 +124,16 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None):
             temperature=config.agent.temperature,
             tools=tools,
             allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
+            max_tokens=config.agent.max_tokens,
+            enable_thinking=config.agent.enable_thinking,
         )
     return OpenAIModelAdapter(
         model=config.agent.model,
         api_base=config.agent.api_base,
         api_key=config.agent.api_key,
         temperature=config.agent.temperature,
+        max_tokens=config.agent.max_tokens,
+        enable_thinking=config.agent.enable_thinking,
     )
 
 

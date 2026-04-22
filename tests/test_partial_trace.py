@@ -52,17 +52,19 @@ def _tool_call(call_id: str, name: str, arguments: dict) -> tuple[ModelToolCall,
 
 def test_step_callback_fires_after_each_append(task: PublicTask) -> None:
     list_call, list_raw = _tool_call("c1", "list_context", {"max_depth": 1})
-    answer_call, answer_raw = _tool_call(
-        "c2", "answer", {"columns": ["v"], "rows": [["ok"]]}
-    )
+    answer_call, answer_raw = _tool_call("c2", "answer", {"columns": ["v"], "rows": [["ok"]]})
     adapter = ScriptedNativeModelAdapter(
         [
             ModelResponse(
-                content="look", tool_calls=[list_call], raw_response="look",
+                content="look",
+                tool_calls=[list_call],
+                raw_response="look",
                 raw_tool_calls=[list_raw],
             ),
             ModelResponse(
-                content="done", tool_calls=[answer_call], raw_response="done",
+                content="done",
+                tool_calls=[answer_call],
+                raw_response="done",
                 raw_tool_calls=[answer_raw],
             ),
         ]
@@ -89,13 +91,13 @@ def test_step_callback_fires_after_each_append(task: PublicTask) -> None:
 
 
 def test_step_callback_exception_is_swallowed(task: PublicTask) -> None:
-    answer_call, answer_raw = _tool_call(
-        "c1", "answer", {"columns": ["v"], "rows": [["ok"]]}
-    )
+    answer_call, answer_raw = _tool_call("c1", "answer", {"columns": ["v"], "rows": [["ok"]]})
     adapter = ScriptedNativeModelAdapter(
         [
             ModelResponse(
-                content="", tool_calls=[answer_call], raw_response="",
+                content="",
+                tool_calls=[answer_call],
+                raw_response="",
                 raw_tool_calls=[answer_raw],
             ),
         ]
@@ -128,7 +130,9 @@ def test_partial_trace_writer_round_trip(tmp_path: Path, task: PublicTask) -> No
     adapter = ScriptedNativeModelAdapter(
         [
             ModelResponse(
-                content="mid-run", tool_calls=[list_call], raw_response="mid-run",
+                content="mid-run",
+                tool_calls=[list_call],
+                raw_response="mid-run",
                 raw_tool_calls=[list_raw],
             ),
         ]

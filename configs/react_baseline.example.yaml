@@ -12,6 +12,12 @@ agent:
   tool_protocol: native
   # 关到 false 可兼容个别 OpenAI 兼容后端（不支持 parallel_tool_calls 字段时）
   allow_parallel_tool_calls: true
+  # 单次 chat.completions 输出上限（含 reasoning tokens）；0=不下发，走服务端默认。
+  # 本地调百炼 Qwen3.5 限 TPM 的场景建议填，预扣 token 误差会小很多
+  max_tokens: 16384
+  # Qwen3 思考模式开关（经 OpenAI SDK extra_body 透传）；留空=服务端默认。
+  # 线上 vLLM 启动时带 --reasoning-parser qwen3，默认 on；本地设 true 以对齐行为
+  enable_thinking: true
   # 降级路径：端点不支持 tools= 时，改为文本 JSON fence ReAct
   # tool_protocol: text
 

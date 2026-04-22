@@ -34,6 +34,7 @@ from data_agent_baseline.agents.model import (
     ModelResponse,
     ModelStep,
     ModelToolCall,
+    TokenUsage,
 )
 from data_agent_baseline.agents.prompt import (
     build_native_system_prompt,
@@ -359,6 +360,8 @@ class ReActAgent:
                         ok=False,
                         tool_call_id=None,
                         raw_tool_calls=None,
+                        reasoning=response.reasoning_content,
+                        usage=response.usage,
                     ),
                 )
                 continue
@@ -383,6 +386,8 @@ class ReActAgent:
                         ok=False,
                         tool_call_id=None,
                         raw_tool_calls=None,
+                        reasoning=response.reasoning_content,
+                        usage=response.usage,
                     ),
                 )
                 continue
@@ -393,15 +398,19 @@ class ReActAgent:
             is_native = self.protocol == "native"
             for call_idx, tool_call in enumerate(tool_calls):
                 step_counter += 1
+                is_lead = call_idx == 0
                 # 仅首条 StepRecord 带 raw_tool_calls（用于 native 模式 message 回放）
                 if is_native:
                     step_tool_call_id: str | None = tool_call.id or None
                     step_raw_tool_calls: list[dict[str, Any]] | None = (
-                        response.raw_tool_calls if call_idx == 0 else None
+                        response.raw_tool_calls if is_lead else None
                     )
                 else:
                     step_tool_call_id = None
                     step_raw_tool_calls = None
+                # usage / reasoning 与 raw_tool_calls 同约定：仅 lead 承载，避免双计
+                step_reasoning = response.reasoning_content if is_lead else ""
+                step_usage = response.usage if is_lead else TokenUsage()
                 try:
                     tool_result = self.tools.execute(task, tool_call.name, tool_call.arguments)
                     observation: dict[str, Any] = {
@@ -422,6 +431,8 @@ class ReActAgent:
                             ok=tool_result.ok,
                             tool_call_id=step_tool_call_id,
                             raw_tool_calls=step_raw_tool_calls,
+                            reasoning=step_reasoning,
+                            usage=step_usage,
                         ),
                     )
                     # 终止工具（目前仅 answer）：记录答案后短路，**跳过同 turn 后续 tool_calls**
@@ -444,6 +455,8 @@ class ReActAgent:
                             ok=False,
                             tool_call_id=step_tool_call_id,
                             raw_tool_calls=step_raw_tool_calls,
+                            reasoning=step_reasoning,
+                            usage=step_usage,
                         ),
                     )
 

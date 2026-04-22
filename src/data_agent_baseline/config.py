@@ -50,6 +50,16 @@ class AgentConfig:
     tool_protocol 决定使用哪种 LLM 协议：
     - "native":  OpenAI 原生 function calling（默认，vLLM 需 --enable-auto-tool-choice）
     - "text":    文本 JSON fence ReAct 协议（端点不支持 tools= 时的降级路径）
+
+    max_tokens 用于 chat.completions 请求的同名字段（总输出上限，含 reasoning tokens）：
+    - 0:   不发送该字段，沿用服务端默认（线上 vLLM 一般不限）
+    - >0:  显式下发。本地调用百炼 Qwen3.5 限 TPM 的场景下建议填，
+           预扣 token 误差会小很多；同时兜住单次 runaway 生成
+
+    enable_thinking 控制思考模式（Qwen3 特有；经 OpenAI SDK `extra_body` 透传）：
+    - None:  不发送该字段，沿用服务端默认（vLLM `--reasoning-parser qwen3` 为 on）
+    - True:  显式开；与线上行为对齐
+    - False: 显式关；本地省 token 时可选，但线上不可用→慎用
     """
 
     model: str = "gpt-4.1-mini"  # OpenAI 兼容 chat.completions 的模型标识符
@@ -60,6 +70,8 @@ class AgentConfig:
     tool_protocol: str = "native"  # "native" | "text"；默认原生，text 仅作降级
     # 原生协议下，是否允许模型一轮返回多个 tool_calls；个别 OpenAI-兼容后端不支持该字段，可关闭
     allow_parallel_tool_calls: bool = True
+    max_tokens: int = 16384  # 单次输出上限；0=不下发（用服务端默认）
+    enable_thinking: bool | None = None  # None=不下发；True/False=走 extra_body 透传
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +141,20 @@ def load_app_config(config_path: Path) -> AppConfig:
         raise ValueError(
             f"agent.tool_protocol must be either 'native' or 'text'; got {tool_protocol_raw!r}."
         )
+
+    # enable_thinking 三值严格校验：None / bool；其他类型（int/str）直接拒收，
+    # 避免 `enable_thinking: 1` 被静默当 True，读者/运维都会困惑
+    raw_enable_thinking = agent_payload.get("enable_thinking", agent_defaults.enable_thinking)
+    if raw_enable_thinking is None:
+        enable_thinking: bool | None = None
+    elif isinstance(raw_enable_thinking, bool):
+        enable_thinking = raw_enable_thinking
+    else:
+        raise ValueError(
+            "agent.enable_thinking must be a bool or null; "
+            f"got {type(raw_enable_thinking).__name__}."
+        )
+
     agent_config = AgentConfig(
         model=str(agent_payload.get("model", agent_defaults.model)),
         api_base=str(agent_payload.get("api_base", agent_defaults.api_base)),
@@ -139,6 +165,8 @@ def load_app_config(config_path: Path) -> AppConfig:
         allow_parallel_tool_calls=bool(
             agent_payload.get("allow_parallel_tool_calls", agent_defaults.allow_parallel_tool_calls)
         ),
+        max_tokens=int(agent_payload.get("max_tokens", agent_defaults.max_tokens)),
+        enable_thinking=enable_thinking,
     )
 
     # run_id 的特殊处理：显式写了空白串也视为 None（触发自动生成）

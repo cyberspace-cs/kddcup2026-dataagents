@@ -18,6 +18,7 @@ from data_agent_baseline.agents.model import (
     ModelResponse,
     ModelToolCall,
     ScriptedNativeModelAdapter,
+    TokenUsage,
 )
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.agents.runtime import AgentRuntimeState, StepRecord
@@ -329,3 +330,83 @@ def test_native_empty_tool_calls_records_error(task: PublicTask) -> None:
     assert error_step.ok is False
     assert "no tool_calls" in error_step.observation["error"].lower()
     assert answer_step.action == "answer"
+
+
+def test_native_total_usage_aggregates_per_turn_usage(task: PublicTask) -> None:
+    # 两轮调用，每轮塞入不同 usage；中间一轮返回并行 tool_calls 但只有 lead 承载 usage
+    list_call_a, list_raw_a = _build_tool_call(
+        call_id="p_a", name="list_context", arguments={"max_depth": 1}
+    )
+    list_call_b, list_raw_b = _build_tool_call(
+        call_id="p_b", name="list_context", arguments={"max_depth": 2}
+    )
+    answer_call, answer_raw = _build_tool_call(
+        call_id="done",
+        name="answer",
+        arguments={"columns": ["x"], "rows": [["y"]]},
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="parallel",
+                tool_calls=[list_call_a, list_call_b],
+                raw_response="parallel",
+                raw_tool_calls=[list_raw_a, list_raw_b],
+                reasoning_content="parallel reasoning",
+                usage=TokenUsage(
+                    prompt_tokens=1000,
+                    completion_tokens=200,
+                    total_tokens=1200,
+                    cached_tokens=400,
+                    reasoning_tokens=80,
+                ),
+            ),
+            ModelResponse(
+                content="answer",
+                tool_calls=[answer_call],
+                raw_response="answer",
+                raw_tool_calls=[answer_raw],
+                reasoning_content="final reasoning",
+                usage=TokenUsage(
+                    prompt_tokens=1500,
+                    completion_tokens=50,
+                    total_tokens=1550,
+                    cached_tokens=900,
+                    reasoning_tokens=10,
+                ),
+            ),
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+        protocol="native",
+    )
+
+    result = agent.run(task)
+    assert result.succeeded is True
+
+    # 3 条 steps：2 个并行 list + 1 个 answer
+    assert len(result.steps) == 3
+    step_a, step_b, step_answer = result.steps
+
+    # lead（step_a）承载第一轮的 usage 与 reasoning；step_b 是并行的第二条，留默认
+    assert step_a.usage.prompt_tokens == 1000
+    assert step_a.reasoning == "parallel reasoning"
+    assert step_b.usage == TokenUsage()  # 全 0，避免双计
+    assert step_b.reasoning == ""
+
+    # answer 自成一轮，usage 单独计
+    assert step_answer.usage.prompt_tokens == 1500
+    assert step_answer.reasoning == "final reasoning"
+
+    # 顶层 total_usage：第一轮 + answer 轮之和
+    payload = result.to_dict()
+    assert payload["total_usage"] == {
+        "prompt_tokens": 2500,
+        "completion_tokens": 250,
+        "total_tokens": 2750,
+        "cached_tokens": 1300,
+        "reasoning_tokens": 90,
+    }
