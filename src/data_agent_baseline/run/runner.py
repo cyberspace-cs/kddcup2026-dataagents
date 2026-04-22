@@ -279,6 +279,43 @@ def _load_partial_trace(task_id: str, trace_path: Path) -> dict[str, Any] | None
     return payload
 
 
+def _normalize_answer_payload(value: Any) -> dict[str, Any] | None:
+    """把 trace 中的 answer-like 对象校验并规整成可写 CSV 的 payload。"""
+    if not isinstance(value, dict):
+        return None
+
+    columns = value.get("columns")
+    rows = value.get("rows")
+    if (
+        not isinstance(columns, list)
+        or not columns
+        or not all(isinstance(item, str) for item in columns)
+    ):
+        return None
+    if not isinstance(rows, list):
+        return None
+
+    normalized_rows: list[list[Any]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) != len(columns):
+            return None
+        normalized_rows.append(list(row))
+    return {"columns": list(columns), "rows": normalized_rows}
+
+
+def _recover_answer_from_steps(steps: list[Any]) -> dict[str, Any] | None:
+    """从 partial trace 的最后一个成功 answer step 中恢复答案表。"""
+    for step in reversed(steps):
+        if not isinstance(step, dict):
+            continue
+        if step.get("action") != "answer" or step.get("ok") is not True:
+            continue
+        recovered = _normalize_answer_payload(step.get("action_input"))
+        if recovered is not None:
+            return recovered
+    return None
+
+
 def _run_single_task_core(
     *,
     task_id: str,
@@ -434,16 +471,20 @@ def _merge_partial_with_failure(
     """合并规则：有 partial trace 就保留其 steps/answer；失败字段由 runner 覆写。
 
     拿到的 partial 是子进程写的快照；我们在父侧再加 failure_reason、强制 succeeded=False，
-    不覆盖已有 answer（若 agent 恰好在 answer 一步之后才被 kill，保留那个 answer 不失真）。
+    若顶层 answer 缺失但 steps 里已有成功 answer 调用，则从 action_input 恢复可打分答案。
     """
     if partial_trace_path is not None:
         partial = _load_partial_trace(task_id, partial_trace_path)
         if partial is not None and isinstance(partial.get("steps"), list):
             merged = dict(partial)
+            steps = partial["steps"]
             merged["task_id"] = task_id
             merged["failure_reason"] = failure_reason
-            # answer 保留 partial 原值（None 或已有对象）；succeeded 强制 False——
-            # 失败路径下 partial 里的 answer 仅作诊断用
+            answer = _normalize_answer_payload(partial.get("answer"))
+            if answer is None:
+                answer = _recover_answer_from_steps(steps)
+            merged["answer"] = answer
+            # 失败路径下 answer 仅表示有可打分产物，运行状态仍由 failure_reason 决定
             merged["succeeded"] = False
             return merged
     return _failure_run_result_payload(task_id, failure_reason)
@@ -461,15 +502,16 @@ def _write_task_outputs(
     trace_path = task_output_dir / "trace.json"
     _write_json(trace_path, run_result)
 
-    # prediction.csv 只有在 Agent 成功调用 answer 后才写
+    # 只要 trace 中有结构合法的 answer 就写 prediction.csv；timeout/crash 任务也可能
+    # 通过 partial trace 恢复出 answer，但 summary 里的 succeeded 仍保持 False。
     prediction_csv_path: Path | None = None
-    answer = run_result.get("answer")
-    if isinstance(answer, dict):
+    answer = _normalize_answer_payload(run_result.get("answer"))
+    if answer is not None:
         prediction_csv_path = task_output_dir / "prediction.csv"
         _write_csv(
             prediction_csv_path,
-            list(answer.get("columns", [])),
-            [list(row) for row in answer.get("rows", [])],
+            answer["columns"],
+            answer["rows"],
         )
 
     return TaskRunArtifacts(

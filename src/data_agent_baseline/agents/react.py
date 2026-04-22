@@ -418,26 +418,25 @@ class ReActAgent:
                         "tool": tool_call.name,
                         "content": tool_result.content,
                     }
-                    self._record_step(
-                        state,
-                        StepRecord(
-                            step_index=step_counter,
-                            turn_index=turn_index,
-                            thought=thought,
-                            action=tool_call.name,
-                            action_input=tool_call.arguments,
-                            raw_response=response.raw_response,
-                            observation=observation,
-                            ok=tool_result.ok,
-                            tool_call_id=step_tool_call_id,
-                            raw_tool_calls=step_raw_tool_calls,
-                            reasoning=step_reasoning,
-                            usage=step_usage,
-                        ),
+                    record = StepRecord(
+                        step_index=step_counter,
+                        turn_index=turn_index,
+                        thought=thought,
+                        action=tool_call.name,
+                        action_input=tool_call.arguments,
+                        raw_response=response.raw_response,
+                        observation=observation,
+                        ok=tool_result.ok,
+                        tool_call_id=step_tool_call_id,
+                        raw_tool_calls=step_raw_tool_calls,
+                        reasoning=step_reasoning,
+                        usage=step_usage,
                     )
                     # 终止工具（目前仅 answer）：记录答案后短路，**跳过同 turn 后续 tool_calls**
                     if tool_result.is_terminal:
                         state.answer = tool_result.answer
+                    self._record_step(state, record)
+                    if tool_result.is_terminal:
                         terminated = True
                         break
                 except Exception as exc:

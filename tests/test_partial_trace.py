@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from data_agent_baseline.run.runner import (
     _load_partial_trace,
     _make_partial_trace_writer,
     _merge_partial_with_failure,
+    _write_task_outputs,
 )
 from data_agent_baseline.tools.registry import create_default_tool_registry
 
@@ -70,11 +72,12 @@ def test_step_callback_fires_after_each_append(task: PublicTask) -> None:
         ]
     )
 
-    snapshots: list[int] = []
+    snapshots: list[tuple[int, dict | None]] = []
 
     def cb(state: AgentRuntimeState) -> None:
-        # 捕获每次 callback 时的步数
-        snapshots.append(len(state.steps))
+        # 捕获每次 callback 时的步数和顶层 answer；answer 步 callback 应已能看到 answer
+        answer = state.answer.to_dict() if state.answer is not None else None
+        snapshots.append((len(state.steps), answer))
 
     agent = ReActAgent(
         model=adapter,
@@ -87,7 +90,10 @@ def test_step_callback_fires_after_each_append(task: PublicTask) -> None:
 
     assert result.succeeded is True
     # 2 次 append（list + answer）→ 2 次 callback，且步数单调递增
-    assert snapshots == [1, 2]
+    assert snapshots == [
+        (1, None),
+        (2, {"columns": ["v"], "rows": [["ok"]]}),
+    ]
 
 
 def test_step_callback_exception_is_swallowed(task: PublicTask) -> None:
@@ -187,6 +193,72 @@ def test_merge_partial_with_failure_preserves_steps(tmp_path: Path) -> None:
     assert merged["succeeded"] is False
     # 关键断言：steps 没有被清空
     assert len(merged["steps"]) == 1
+
+
+def test_merge_partial_recovers_answer_from_successful_answer_step(tmp_path: Path) -> None:
+    trace_path = tmp_path / "trace.json"
+    trace_path.write_text(
+        json.dumps(
+            {
+                "task_id": "task_1",
+                "steps": [
+                    {
+                        "step_index": 1,
+                        "action": "answer",
+                        "action_input": {"columns": ["v"], "rows": [["ok"]]},
+                        "ok": True,
+                    }
+                ],
+                "answer": None,
+                "failure_reason": None,
+                "succeeded": False,
+            }
+        )
+    )
+
+    merged = _merge_partial_with_failure("task_1", trace_path, "Task timed out.")
+
+    assert merged["answer"] == {"columns": ["v"], "rows": [["ok"]]}
+    assert merged["failure_reason"] == "Task timed out."
+    assert merged["succeeded"] is False
+
+    artifacts = _write_task_outputs("task_1", tmp_path / "out", merged)
+    assert artifacts.succeeded is False
+    assert artifacts.failure_reason == "Task timed out."
+    assert artifacts.prediction_csv_path is not None
+    with artifacts.prediction_csv_path.open(newline="") as handle:
+        assert list(csv.reader(handle)) == [["v"], ["ok"]]
+
+
+def test_merge_partial_does_not_recover_invalid_answer_step(tmp_path: Path) -> None:
+    trace_path = tmp_path / "trace.json"
+    trace_path.write_text(
+        json.dumps(
+            {
+                "task_id": "task_1",
+                "steps": [
+                    {
+                        "step_index": 1,
+                        "action": "answer",
+                        "action_input": {"columns": ["a", "b"], "rows": [["only-one"]]},
+                        "ok": True,
+                    }
+                ],
+                "answer": None,
+                "failure_reason": None,
+                "succeeded": False,
+            }
+        )
+    )
+
+    merged = _merge_partial_with_failure("task_1", trace_path, "Task timed out.")
+
+    assert merged["answer"] is None
+    assert merged["succeeded"] is False
+
+    artifacts = _write_task_outputs("task_1", tmp_path / "out", merged)
+    assert artifacts.prediction_csv_path is None
+    assert not (artifacts.task_output_dir / "prediction.csv").exists()
 
 
 def test_merge_partial_with_failure_falls_back_when_trace_missing(tmp_path: Path) -> None:
