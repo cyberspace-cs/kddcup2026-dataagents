@@ -4,7 +4,8 @@
 - `ReActAgent.step_callback` 在每步 append 后被调用，可以观察当时的 `state.steps`
 - callback 抛异常不会污染循环
 - `_load_partial_trace` 容错：缺文件 / JSON 坏 / task_id 不匹配 都返回 None
-- `_merge_partial_with_failure` 的合并行为：保留 partial 的 steps/answer，失败字段覆写
+- `_merge_partial_with_failure` 的合并行为：保留 partial 的 steps/answer；
+  已有合法 answer 时按成功归并，否则保留失败字段
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,10 +25,13 @@ from data_agent_baseline.agents.model import (
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.agents.runtime import AgentRuntimeState
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from data_agent_baseline.config import AppConfig, RunConfig
+from data_agent_baseline.run import runner as runner_mod
 from data_agent_baseline.run.runner import (
     _load_partial_trace,
     _make_partial_trace_writer,
     _merge_partial_with_failure,
+    _run_single_task_with_timeout,
     _write_task_outputs,
 )
 from data_agent_baseline.tools.registry import create_default_tool_registry
@@ -219,12 +224,12 @@ def test_merge_partial_recovers_answer_from_successful_answer_step(tmp_path: Pat
     merged = _merge_partial_with_failure("task_1", trace_path, "Task timed out.")
 
     assert merged["answer"] == {"columns": ["v"], "rows": [["ok"]]}
-    assert merged["failure_reason"] == "Task timed out."
-    assert merged["succeeded"] is False
+    assert merged["failure_reason"] is None
+    assert merged["succeeded"] is True
 
     artifacts = _write_task_outputs("task_1", tmp_path / "out", merged)
-    assert artifacts.succeeded is False
-    assert artifacts.failure_reason == "Task timed out."
+    assert artifacts.succeeded is True
+    assert artifacts.failure_reason is None
     assert artifacts.prediction_csv_path is not None
     with artifacts.prediction_csv_path.open(newline="") as handle:
         assert list(csv.reader(handle)) == [["v"], ["ok"]]
@@ -268,3 +273,66 @@ def test_merge_partial_with_failure_falls_back_when_trace_missing(tmp_path: Path
     assert merged["failure_reason"] == "Task timed out."
     assert merged["steps"] == []
     assert merged["succeeded"] is False
+
+
+def test_timeout_runner_drains_queue_before_join(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归：父进程必须先读 Queue 再 join，避免大 trace 回传时 feeder 卡死。"""
+    state = {"queue_read": False, "joined": False}
+
+    class FakeQueue:
+        def get(self, timeout: float | None = None) -> dict[str, Any]:
+            del timeout
+            state["queue_read"] = True
+            return {
+                "ok": True,
+                "run_result": {
+                    "task_id": "task_1",
+                    "answer": {"columns": ["v"], "rows": [["ok"]]},
+                    "steps": [],
+                    "failure_reason": None,
+                    "succeeded": True,
+                },
+            }
+
+        def get_nowait(self) -> dict[str, Any]:
+            raise AssertionError("get_nowait should not be needed after get succeeds")
+
+    class FakeProcess:
+        exitcode = 0
+
+        def __init__(self, target: Any, args: tuple[Any, ...]) -> None:
+            del target, args
+            self._alive = True
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+            assert state["queue_read"], "join called before Queue was drained"
+            state["joined"] = True
+            self._alive = False
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def terminate(self) -> None:
+            self._alive = False
+
+        def kill(self) -> None:
+            self._alive = False
+
+    monkeypatch.setattr(runner_mod.multiprocessing, "Queue", lambda: FakeQueue())
+    monkeypatch.setattr(runner_mod.multiprocessing, "Process", FakeProcess)
+
+    result = _run_single_task_with_timeout(
+        task_id="task_1",
+        config=AppConfig(run=RunConfig(task_timeout_seconds=60)),
+        partial_trace_path=tmp_path / "trace.json",
+    )
+
+    assert state == {"queue_read": True, "joined": True}
+    assert result["succeeded"] is True
+    assert result["answer"] == {"columns": ["v"], "rows": [["ok"]]}

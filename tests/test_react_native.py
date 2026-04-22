@@ -328,7 +328,14 @@ def test_native_empty_tool_calls_records_error(task: PublicTask) -> None:
     error_step, answer_step = result.steps
     assert error_step.action == "__error__"
     assert error_step.ok is False
-    assert "no tool_calls" in error_step.observation["error"].lower()
+    error = error_step.observation["error"].lower()
+    assert "did not produce an executable tool call" in error
+    assert "reasoning/thinking text was ignored" in error
+    assert "syntactically complete" in error
+    assert "already decided which tool to call last turn" in error
+    assert "structured tool call" in error
+    assert "call answer directly" in error
+    assert "must call a tool" in error
     assert answer_step.action == "answer"
 
 

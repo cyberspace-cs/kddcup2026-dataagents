@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from queue import Empty
 from time import perf_counter
 from typing import Any
 
@@ -221,8 +222,9 @@ def _agent_state_to_payload(task_id: str, state: Any) -> dict[str, Any]:
     """把运行中的 `AgentRuntimeState` 快照成 trace.json 兼容的 dict。
 
     用于增量落盘：结构与 `AgentRunResult.to_dict()` 对齐，但因为尚未终止：
-    - `succeeded` 永远写 False（真正成功时，父进程会用 queue 返回的完整 payload 覆盖）
     - `answer` 在 answer 工具命中那一步之后由 callback 自然带上
+    - `succeeded` 在 answer 已命中且无 failure_reason 时即可为 True；这样即使
+      子进程卡在结果回传阶段，父进程也能从 partial trace 判定任务已完成
 
     兼容 typing：state 参数走 Any 是为了避免在 runner 层引入对 AgentRuntimeState 的硬依赖
     （保留 runner 与 agent 内部类型的解耦）。
@@ -233,7 +235,7 @@ def _agent_state_to_payload(task_id: str, state: Any) -> dict[str, Any]:
         "answer": answer,
         "steps": [step.to_dict() for step in state.steps],
         "failure_reason": state.failure_reason,
-        "succeeded": False,
+        "succeeded": answer is not None and state.failure_reason is None,
     }
 
 
@@ -412,7 +414,45 @@ def _run_single_task_with_timeout(
         args=(task_id, config, queue, partial_trace_path),
     )
     process.start()
-    process.join(timeout_seconds)
+
+    # 不能先 join 再 get：子进程返回的 trace 可能很大，multiprocessing.Queue 的
+    # feeder 线程会在父进程不读 pipe 时卡住，导致"答案已写入 partial trace，
+    # 但子进程迟迟不退出，最终被父进程按 timeout kill"。
+    deadline = perf_counter() + timeout_seconds
+    result: dict[str, Any] | None = None
+    while True:
+        remaining = deadline - perf_counter()
+        if remaining <= 0:
+            break
+        try:
+            result = queue.get(timeout=min(0.2, remaining))
+            break
+        except Empty:
+            if not process.is_alive():
+                break
+
+    if result is None:
+        try:
+            result = queue.get_nowait()
+        except Empty:
+            result = None
+
+    if result is not None:
+        process.join(timeout=1.0)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=1.0)
+            if process.is_alive():
+                process.kill()
+                process.join()
+        if result.get("ok"):
+            # dict(...) 拷贝一次，脱离 Queue 的底层 pickle 壳
+            return dict(result["run_result"])
+        return _crash_payload(
+            task_id,
+            partial_trace_path,
+            f"Task failed with uncaught error: {result['error']}",
+        )
 
     # Case 1: 超时 —— 先 SIGTERM 给清理机会，1 秒仍不退就 SIGKILL
     if process.is_alive():
@@ -424,30 +464,16 @@ def _run_single_task_with_timeout(
         return _timeout_payload(task_id, partial_trace_path, timeout_seconds)
 
     # Case 2: 进程已退出但没 put 任何结果
-    if queue.empty():
-        exit_code = process.exitcode
-        if exit_code not in (None, 0):
-            # 非 0 退出码一般意味着 native crash 或被 OS 干掉；尝试拿 partial trace 续命
-            return _crash_payload(
-                task_id,
-                partial_trace_path,
-                f"Task exited unexpectedly with exit code {exit_code}.",
-            )
-        # 退出码 0 但 Queue 空：逻辑异常（理论上不会发生，留个明确错误信息）
+    exit_code = process.exitcode
+    if exit_code not in (None, 0):
+        # 非 0 退出码一般意味着 native crash 或被 OS 干掉；尝试拿 partial trace 续命
         return _crash_payload(
-            task_id, partial_trace_path, "Task exited without returning a result."
+            task_id,
+            partial_trace_path,
+            f"Task exited unexpectedly with exit code {exit_code}.",
         )
-
-    # Case 3: 正常拿到 Queue 数据
-    result = queue.get()
-    if result.get("ok"):
-        # dict(...) 拷贝一次，脱离 Queue 的底层 pickle 壳
-        return dict(result["run_result"])
-    return _crash_payload(
-        task_id,
-        partial_trace_path,
-        f"Task failed with uncaught error: {result['error']}",
-    )
+    # 退出码 0 但 Queue 空：逻辑异常（理论上不会发生，留个明确错误信息）
+    return _crash_payload(task_id, partial_trace_path, "Task exited without returning a result.")
 
 
 def _timeout_payload(
@@ -468,10 +494,12 @@ def _crash_payload(
 def _merge_partial_with_failure(
     task_id: str, partial_trace_path: Path | None, failure_reason: str
 ) -> dict[str, Any]:
-    """合并规则：有 partial trace 就保留其 steps/answer；失败字段由 runner 覆写。
+    """合并规则：有 partial trace 就保留其 steps/answer。
 
-    拿到的 partial 是子进程写的快照；我们在父侧再加 failure_reason、强制 succeeded=False，
-    若顶层 answer 缺失但 steps 里已有成功 answer 调用，则从 action_input 恢复可打分答案。
+    拿到的 partial 是子进程写的快照。若顶层 answer 缺失但 steps 里已有成功 answer
+    调用，则从 action_input 恢复答案。只要恢复出合法 answer，就说明 terminal tool
+    已经命中，父进程应按成功处理；这兜住了子进程已完成 answer 但卡在 Queue 结果回传
+    阶段导致父进程超时的情况。
     """
     if partial_trace_path is not None:
         partial = _load_partial_trace(task_id, partial_trace_path)
@@ -479,13 +507,16 @@ def _merge_partial_with_failure(
             merged = dict(partial)
             steps = partial["steps"]
             merged["task_id"] = task_id
-            merged["failure_reason"] = failure_reason
             answer = _normalize_answer_payload(partial.get("answer"))
             if answer is None:
                 answer = _recover_answer_from_steps(steps)
             merged["answer"] = answer
-            # 失败路径下 answer 仅表示有可打分产物，运行状态仍由 failure_reason 决定
-            merged["succeeded"] = False
+            if answer is not None:
+                merged["failure_reason"] = None
+                merged["succeeded"] = True
+            else:
+                merged["failure_reason"] = failure_reason
+                merged["succeeded"] = False
             return merged
     return _failure_run_result_payload(task_id, failure_reason)
 
@@ -502,8 +533,8 @@ def _write_task_outputs(
     trace_path = task_output_dir / "trace.json"
     _write_json(trace_path, run_result)
 
-    # 只要 trace 中有结构合法的 answer 就写 prediction.csv；timeout/crash 任务也可能
-    # 通过 partial trace 恢复出 answer，但 summary 里的 succeeded 仍保持 False。
+    # 只要 trace 中有结构合法的 answer 就写 prediction.csv；timeout/crash 路径如果
+    # 能从 partial trace 恢复 answer，也会被归并为 succeeded=True。
     prediction_csv_path: Path | None = None
     answer = _normalize_answer_payload(run_result.get("answer"))
     if answer is not None:

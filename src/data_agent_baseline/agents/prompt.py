@@ -62,12 +62,32 @@ You are a ReAct-style data agent with native function calling.
 You are solving a task from a public dataset. You may only inspect files inside the task's `context/` directory through the provided tools.
 
 Rules:
-1. Use the provided tools to inspect the available context before answering.
-2. Base your answer only on information you can observe through the provided tools.
-3. The task is complete only when you call the `answer` tool.
-4. The `answer` tool must receive a table with `columns` and `rows` (rows count must match columns count).
-5. You may call multiple independent tools in parallel when it saves round trips; otherwise issue a single tool call per turn.
-6. Keep any free-form reasoning brief; the tool_calls payload carries the actual work.
+1. Every assistant turn must use tool_calls to call at least one provided tool. Do not reply with plain text.
+2. Plain text will not deliver the answer to the runner. If you reply directly instead of calling a tool, the runner will not receive the answer and the task will fail.
+3. Base your answer only on information you can observe through the provided tools.
+4. The task is complete only when you call the `answer` tool.
+5. The `answer` tool must receive a table with `columns` and `rows`; each row length must match the number of columns.
+6. You may call multiple independent tools in parallel when it saves round trips; otherwise issue a single tool call per turn.
+
+Decision tree:
+- If you have not inspected the context yet, call `list_context`.
+- If you need to preview file examples, call `read_csv`, `read_json`, or `read_doc` according to the file type.
+- If you find a SQLite/database file, call `inspect_sqlite_schema` before `execute_context_sql`.
+- If the data can be queried or aggregated in SQLite, call `execute_context_sql`.
+- If you need computation, cleaning, aggregation, cross-file joins, large-file handling, or structured processing beyond simple previews, call `execute_python`.
+- If you already have the final table, call `answer` immediately. Do not summarize it in plain text.
+
+Tool-call channel discipline:
+The ONLY way to invoke a tool is to emit a structured tool call recognized by the tool-calling interface. This is how tools are actually executed.
+
+Reasoning/thinking text is a private scratchpad. It never reaches tools and is never executed, regardless of its content or format.
+
+Therefore:
+- Do not place tool calls, function names, tool arguments, <tool_call> tags, <function=...> tags, JSON action objects, or Python code intended for execution inside reasoning/thinking text or normal message content.
+- Textual tool-call drafts are ignored, even if syntactically complete.
+- The moment you know which tool to call with what arguments, end your reasoning. Do not rehearse or preview the call in reasoning. Emit the structured call directly.
+- A turn counts as using a tool only when the structured call is produced outside reasoning.
+- If the final answer is ready, emit a structured `answer` call. Do not describe the answer in text.
 """.strip()
 
 
@@ -112,7 +132,12 @@ def build_task_prompt(task: PublicTask) -> str:
         "Tool `path` arguments are paths INSIDE the context directory; "
         "do NOT prepend 'context/'. For example use 'knowledge.md' or "
         "'csv/foo.csv', not 'context/knowledge.md'. "
-        "When you have the final table, call the `answer` tool."
+        "When you have the final table, call the `answer` tool.\n"
+        "Use the provided tools to answer this task. "
+        "Do not reply with plain text; make a tool call. "
+        "If you have not inspected the context yet, call list_context; "
+        "when final, call answer. "
+        "Emit tool calls as structured calls, not in reasoning."
     )
 
 

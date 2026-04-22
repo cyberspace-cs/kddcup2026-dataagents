@@ -463,7 +463,11 @@ def create_default_tool_registry() -> ToolRegistry:
     specs = {
         "answer": ToolSpec(
             name="answer",
-            description="Submit the final answer table. This is the only valid terminating action.",
+            description=(
+                "Use this when the final answer table is determined. This is the only "
+                "way to submit the answer to the user/evaluator; plain text answers "
+                "will be ignored."
+            ),
             input_schema={
                 "columns": ["column_name"],
                 "rows": [["value_1"]],
@@ -472,7 +476,11 @@ def create_default_tool_registry() -> ToolRegistry:
         ),
         "execute_context_sql": ToolSpec(
             name="execute_context_sql",
-            description="Run a read-only SQL query against a sqlite/db file inside context.",
+            description=(
+                "Use when data in a sqlite/db file can be answered with read-only SQL "
+                "queries or aggregations. Call inspect_sqlite_schema first for an "
+                "unknown database."
+            ),
             input_schema={
                 "path": "relative/path/to/file.sqlite",
                 "sql": "SELECT ...",
@@ -483,8 +491,10 @@ def create_default_tool_registry() -> ToolRegistry:
         "execute_python": ToolSpec(
             name="execute_python",
             description=(
-                "Execute arbitrary Python code with the task context directory as the "
-                "working directory. The tool returns the code's captured stdout as `output`. "
+                "Use when you need computation, cleaning, aggregation, cross-file "
+                "joins, large-file streaming, structured processing, or anything "
+                "beyond simple preview tools. Python runs with the task context "
+                "directory as the working directory and returns captured stdout as `output`. "
                 # 动态把超时秒数写进描述，避免改常量后忘记更新文案
                 f"The execution timeout is fixed at {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds."
             ),
@@ -495,28 +505,37 @@ def create_default_tool_registry() -> ToolRegistry:
         ),
         "inspect_sqlite_schema": ToolSpec(
             name="inspect_sqlite_schema",
-            description="Inspect tables and columns in a sqlite/db file inside context.",
+            description=(
+                "Use first when you find a sqlite/db file and need to know its "
+                "tables, columns, and schema before writing SQL."
+            ),
             input_schema={"path": "relative/path/to/file.sqlite"},
             json_schema=_INSPECT_SQLITE_SCHEMA,
         ),
         "list_context": ToolSpec(
             name="list_context",
-            description="List files and directories available under context.",
+            description=(
+                "Use first to discover which files and directories exist under context "
+                "and what file types are available."
+            ),
             input_schema={"max_depth": 4},
             json_schema=_LIST_CONTEXT_SCHEMA,
         ),
         "read_csv": ToolSpec(
             name="read_csv",
-            description="Read a preview of a CSV file inside context.",
+            description=(
+                "Use when you need to preview a CSV file, confirm column names, or "
+                "inspect example rows before choosing a computation tool."
+            ),
             input_schema={"path": "relative/path/to/file.csv", "max_rows": 20},
             json_schema=_READ_CSV_SCHEMA,
         ),
         "read_doc": ToolSpec(
             name="read_doc",
             description=(
-                "Read a text-like document inside context by line page, or search for "
-                "the first case-insensitive keyword match. Use `has_more` and the next "
-                "`start_line` to continue reading."
+                "Use when you need to preview a text-like document, confirm relevant "
+                "text, or search for the first case-insensitive keyword match. Use "
+                "`has_more` and the next `start_line` to continue reading."
             ),
             input_schema={
                 "path": "relative/path/to/file.md",
@@ -528,7 +547,10 @@ def create_default_tool_registry() -> ToolRegistry:
         ),
         "read_json": ToolSpec(
             name="read_json",
-            description="Read a preview of a JSON file inside context.",
+            description=(
+                "Use when you need to preview a JSON file, confirm top-level fields, "
+                "or inspect sample structured records."
+            ),
             input_schema={"path": "relative/path/to/file.json", "max_chars": 4000},
             json_schema=_READ_JSON_SCHEMA,
         ),

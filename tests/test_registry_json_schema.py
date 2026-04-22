@@ -61,6 +61,23 @@ def test_json_schema_required_keys_match_expected(registry) -> None:
         )
 
 
+def test_default_tool_descriptions_are_use_case_oriented(registry) -> None:
+    for name, spec in registry.specs.items():
+        description = spec.description.lower()
+        assert any(
+            phrase in description for phrase in ("use when", "use first", "use this when")
+        ), f"{name} description should explain when to use the tool"
+
+
+def test_answer_description_explains_submission_contract(registry) -> None:
+    description = registry.specs["answer"].description.lower()
+
+    assert "only" in description
+    assert "submit" in description
+    assert "plain text" in description
+    assert "ignored" in description
+
+
 def test_to_openai_tools_produces_expected_shape(registry) -> None:
     tools = registry.to_openai_tools()
 

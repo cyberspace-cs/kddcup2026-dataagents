@@ -368,7 +368,7 @@ class ReActAgent:
 
             if not tool_calls:
                 # native 协议下模型回了空 tool_calls（纯文本 content）：
-                # 给一条 observation 提示 "请调用工具"，下一轮让模型重试
+                # 给一条 observation 强制纠偏，下一轮让模型重试
                 step_counter += 1
                 self._record_step(
                     state,
@@ -381,7 +381,15 @@ class ReActAgent:
                         raw_response=response.raw_response,
                         observation={
                             "ok": False,
-                            "error": "Model returned no tool_calls; please call a tool.",
+                            "error": (
+                                "Your previous turn did not produce an executable tool call. "
+                                "Any tool call written inside reasoning/thinking text was ignored, "
+                                "even if it looked syntactically complete. In this turn: do not "
+                                "draft <tool_call>, <function=...>, JSON actions, or executable "
+                                "code in reasoning. If you already decided which tool to call last "
+                                "turn, emit that call now as a structured tool call. If final answer "
+                                "is ready, call answer directly. You must call a tool."
+                            ),
                         },
                         ok=False,
                         tool_call_id=None,
