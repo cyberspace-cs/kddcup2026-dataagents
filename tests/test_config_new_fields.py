@@ -2,6 +2,7 @@
 
 覆盖：
 - max_tokens 默认值 / 显式数字 / 字符串数字转 int
+- max_empty_tool_call_retries 默认值 / 显式数字 / 非法负数抛错
 - enable_thinking 的四种情形：缺省 / null / true / false / 非 bool 抛错
 """
 
@@ -24,6 +25,7 @@ def test_defaults_when_fields_absent(tmp_path: Path) -> None:
     cfg_path = _write_config(tmp_path / "cfg.yaml", "")
     cfg = load_app_config(cfg_path)
     assert cfg.agent.max_tokens == 16384  # 默认值
+    assert cfg.agent.max_empty_tool_call_retries == 8
     assert cfg.agent.enable_thinking is None
 
 
@@ -38,6 +40,24 @@ def test_max_tokens_zero_is_allowed(tmp_path: Path) -> None:
     cfg_path = _write_config(tmp_path / "cfg.yaml", "  max_tokens: 0\n")
     cfg = load_app_config(cfg_path)
     assert cfg.agent.max_tokens == 0
+
+
+def test_max_empty_tool_call_retries_round_trip(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "cfg.yaml",
+        "  max_empty_tool_call_retries: 3\n",
+    )
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.max_empty_tool_call_retries == 3
+
+
+def test_max_empty_tool_call_retries_rejects_negative(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "cfg.yaml",
+        "  max_empty_tool_call_retries: -1\n",
+    )
+    with pytest.raises(ValueError, match="max_empty_tool_call_retries"):
+        load_app_config(cfg_path)
 
 
 def test_enable_thinking_true(tmp_path: Path) -> None:

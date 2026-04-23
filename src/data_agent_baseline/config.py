@@ -81,6 +81,10 @@ class AgentConfig:
     - >0:  显式下发。本地调用百炼 Qwen3.5 限 TPM 的场景下建议填，
            预扣 token 误差会小很多；同时兜住单次 runaway 生成
 
+    max_empty_tool_call_retries 是 native 协议下的空 tool_calls 独立重试预算：
+    空 tool_calls 会写纠偏 observation，但不消耗业务 max_steps；达到该上限后失败，
+    避免模型 reasoning-only 无限循环。
+
     enable_thinking 控制思考模式（Qwen3 特有；经 OpenAI SDK `extra_body` 透传）：
     - None:  不发送该字段，沿用服务端默认（vLLM `--reasoning-parser qwen3` 为 on）
     - True:  显式开；与线上行为对齐
@@ -106,6 +110,7 @@ class AgentConfig:
     api_keys: tuple[str, ...] = ()
     # PR-2：限速配置；None=不启用限速器（线上 vLLM 路径默认如此）
     rate_limit: RateLimitConfig | None = None
+    max_empty_tool_call_retries: int = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +195,14 @@ def load_app_config(config_path: Path) -> AppConfig:
         )
 
     max_tokens_value = int(agent_payload.get("max_tokens", agent_defaults.max_tokens))
+    max_empty_tool_call_retries = int(
+        agent_payload.get(
+            "max_empty_tool_call_retries",
+            agent_defaults.max_empty_tool_call_retries,
+        )
+    )
+    if max_empty_tool_call_retries < 0:
+        raise ValueError("agent.max_empty_tool_call_retries must be >= 0.")
 
     # api_keys：严格要求 list-of-str，非字符串立即拒收；空串、重复也拒（YAML 误配非常好修）
     api_keys_raw = agent_payload.get("api_keys", None)
@@ -293,6 +306,7 @@ def load_app_config(config_path: Path) -> AppConfig:
         enable_thinking=enable_thinking,
         api_keys=api_keys,
         rate_limit=rate_limit,
+        max_empty_tool_call_retries=max_empty_tool_call_retries,
     )
 
     # run_id 的特殊处理：显式写了空白串也视为 None（触发自动生成）

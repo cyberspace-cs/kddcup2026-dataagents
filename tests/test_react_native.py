@@ -20,7 +20,11 @@ from data_agent_baseline.agents.model import (
     ScriptedNativeModelAdapter,
     TokenUsage,
 )
-from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
+from data_agent_baseline.agents.react import (
+    ReActAgent,
+    ReActAgentConfig,
+    _extract_reasoning_tool_call_draft,
+)
 from data_agent_baseline.agents.runtime import AgentRuntimeState, StepRecord
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from data_agent_baseline.tools.registry import create_default_tool_registry
@@ -55,6 +59,102 @@ def _build_tool_call(
     }
     parsed = ModelToolCall(id=call_id, name=name, arguments=arguments)
     return parsed, raw
+
+
+def _default_tool_names() -> set[str]:
+    return set(create_default_tool_registry().handlers)
+
+
+def test_reasoning_tool_call_draft_parser_handles_multiline_python() -> None:
+    reasoning = """
+I should run Python.
+<tool_call>
+<function=execute_python>
+<parameter=code>
+import os
+print(sorted(os.listdir(".")))
+</parameter>
+</function>
+</tool_call>
+"""
+
+    draft = _extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
+
+    assert draft == {
+        "function": "execute_python",
+        "arguments": {"code": 'import os\nprint(sorted(os.listdir(".")))'},
+        "source": "reasoning_content",
+        "executed": False,
+    }
+
+
+def test_reasoning_tool_call_draft_parser_handles_sql_parameters() -> None:
+    reasoning = """
+<tool_call>
+<function=execute_context_sql>
+<parameter=path>"db/main.sqlite"</parameter>
+<parameter=sql>
+SELECT city, COUNT(*) AS n
+FROM people
+GROUP BY city
+</parameter>
+<parameter=limit>5</parameter>
+</function>
+</tool_call>
+"""
+
+    draft = _extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
+
+    assert draft == {
+        "function": "execute_context_sql",
+        "arguments": {
+            "path": "db/main.sqlite",
+            "sql": "SELECT city, COUNT(*) AS n\nFROM people\nGROUP BY city",
+            "limit": 5,
+        },
+        "source": "reasoning_content",
+        "executed": False,
+    }
+
+
+def test_reasoning_tool_call_draft_parser_handles_answer_json_arguments() -> None:
+    reasoning = """
+<tool_call>
+<function=answer>
+<parameter=columns>["city", "count"]</parameter>
+<parameter=rows>[["Paris", 2], ["Tokyo", 3]]</parameter>
+</function>
+</tool_call>
+"""
+
+    draft = _extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
+
+    assert draft == {
+        "function": "answer",
+        "arguments": {
+            "columns": ["city", "count"],
+            "rows": [["Paris", 2], ["Tokyo", 3]],
+        },
+        "source": "reasoning_content",
+        "executed": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        "<tool_call><function=execute_python><parameter=code>x</parameter></function>",
+        "<tool_call><function=unknown_tool></function></tool_call>",
+        "<tool_call><parameter=code>x</parameter></tool_call>",
+        "no tool-call draft here",
+        (
+            "<tool_call><function=unknown_tool></function></tool_call>"
+            "<tool_call><function=list_context></function></tool_call>"
+        ),
+    ],
+)
+def test_reasoning_tool_call_draft_parser_rejects_invalid_drafts(reasoning: str) -> None:
+    assert _extract_reasoning_tool_call_draft(reasoning, _default_tool_names()) is None
 
 
 def test_native_multi_step_until_answer(task: PublicTask) -> None:
@@ -336,7 +436,194 @@ def test_native_empty_tool_calls_records_error(task: PublicTask) -> None:
     assert "structured tool call" in error
     assert "call answer directly" in error
     assert "must call a tool" in error
+    assert "drafted_tool_call" not in error_step.observation
     assert answer_step.action == "answer"
+
+
+def test_native_reasoning_tool_call_draft_is_observed_but_not_executed(
+    task: PublicTask,
+) -> None:
+    structured_call, structured_raw = _build_tool_call(
+        call_id="real_run",
+        name="execute_python",
+        arguments={
+            "code": (
+                "from pathlib import Path\n"
+                "Path('structured_executed.txt').write_text('yes')\n"
+                "print('structured ran')"
+            )
+        },
+    )
+    answer_call, answer_raw = _build_tool_call(
+        call_id="final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
+    )
+    reasoning_draft = """
+I know the Python I want to run.
+<tool_call>
+<function=execute_python>
+<parameter=code>
+from pathlib import Path
+Path('draft_executed.txt').write_text('bad')
+</parameter>
+</function>
+</tool_call>
+"""
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="",
+                tool_calls=[],
+                raw_response="",
+                raw_tool_calls=[],
+                reasoning_content=reasoning_draft,
+            ),
+            ModelResponse(
+                content="",
+                tool_calls=[structured_call],
+                raw_response="",
+                raw_tool_calls=[structured_raw],
+            ),
+            ModelResponse(
+                content="",
+                tool_calls=[answer_call],
+                raw_response="",
+                raw_tool_calls=[answer_raw],
+            ),
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+        protocol="native",
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert [step.action for step in result.steps] == ["__error__", "execute_python", "answer"]
+    error_step = result.steps[0]
+    assert error_step.reasoning == reasoning_draft
+    assert error_step.observation["error"] == (
+        "Your previous turn did not produce an executable tool call."
+    )
+    assert error_step.observation["drafted_tool_call"] == {
+        "function": "execute_python",
+        "arguments": {
+            "code": ("from pathlib import Path\nPath('draft_executed.txt').write_text('bad')")
+        },
+        "source": "reasoning_content",
+        "executed": False,
+    }
+    instruction = error_step.observation["instruction"].lower()
+    assert "reasoning drafts are not executable" in instruction
+    assert "real structured tool_call" in instruction
+    assert not (task.context_dir / "draft_executed.txt").exists()
+    assert (task.context_dir / "structured_executed.txt").read_text() == "yes"
+
+
+def test_native_reasoning_tool_call_drafts_use_empty_retry_budget(
+    task: PublicTask,
+) -> None:
+    reasoning_draft = """
+<tool_call>
+<function=list_context>
+</function>
+</tool_call>
+"""
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="",
+                tool_calls=[],
+                raw_response="",
+                raw_tool_calls=[],
+                reasoning_content=reasoning_draft,
+            ),
+            ModelResponse(
+                content="",
+                tool_calls=[],
+                raw_response="",
+                raw_tool_calls=[],
+                reasoning_content=reasoning_draft,
+            ),
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4, max_empty_tool_call_retries=1),
+        protocol="native",
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is False
+    assert len(result.steps) == 2
+    assert all("drafted_tool_call" in step.observation for step in result.steps)
+    assert result.failure_reason is not None
+    assert "max_empty_tool_call_retries" in result.failure_reason
+
+
+def test_native_empty_tool_calls_do_not_consume_max_steps(task: PublicTask) -> None:
+    answer_call, answer_raw = _build_tool_call(
+        call_id="final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="",
+                tool_calls=[],
+                raw_response="",
+                raw_tool_calls=[],
+            ),
+            ModelResponse(
+                content="",
+                tool_calls=[answer_call],
+                raw_response="",
+                raw_tool_calls=[answer_raw],
+            ),
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=1, max_empty_tool_call_retries=1),
+        protocol="native",
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert len(result.steps) == 2
+    error_step, answer_step = result.steps
+    assert error_step.action == "__error__"
+    assert answer_step.action == "answer"
+    assert answer_step.turn_index == 2
+
+
+def test_native_empty_tool_calls_have_independent_retry_limit(task: PublicTask) -> None:
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(content="", tool_calls=[], raw_response="", raw_tool_calls=[]),
+            ModelResponse(content="", tool_calls=[], raw_response="", raw_tool_calls=[]),
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4, max_empty_tool_call_retries=1),
+        protocol="native",
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is False
+    assert len(result.steps) == 2
+    assert all(step.action == "__error__" for step in result.steps)
+    assert result.failure_reason is not None
+    assert "max_empty_tool_call_retries" in result.failure_reason
+    assert "max_steps" not in result.failure_reason
 
 
 def test_native_total_usage_aggregates_per_turn_usage(task: PublicTask) -> None:

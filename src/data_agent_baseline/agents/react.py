@@ -8,7 +8,7 @@
   ReAct 层把每个 tool_call 映射成 `StepRecord`，同一轮共享 `turn_index`。
 
 流程概览（`ReActAgent.run`）：
-  loop (turn_index 从 1 到 max_steps):
+  loop (turn_index 从 1 开始，直到耗尽 max_steps 或 empty-tool retry budget):
     1. 拼接对话消息（`_build_messages_text` / `_build_messages_native`）
     2. 调 model.complete 拿 `ModelResponse`
     3. 把 response 规整成 `ModelToolCall` 列表（text 模式靠 parse；native 直接拿）
@@ -24,7 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -53,20 +53,56 @@ ToolProtocol = Literal["native", "text"]
 StepCallback = Callable[[AgentRuntimeState], None]
 
 
+_REASONING_TOOL_CALL_PATTERN = re.compile(
+    r"<tool_call\b[^>]*>(.*?)</tool_call>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_REASONING_FUNCTION_PATTERN = re.compile(
+    r"<function\s*=\s*([^>\s]+)\s*>(.*?)</function>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_REASONING_PARAMETER_PATTERN = re.compile(
+    r"<parameter\s*=\s*([^>\s]+)\s*>(.*?)</parameter>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+_EMPTY_TOOL_CALL_ERROR = (
+    "Your previous turn did not produce an executable tool call. "
+    "Any tool call written inside reasoning/thinking text was ignored, "
+    "even if it looked syntactically complete. In this turn: do not "
+    "draft <tool_call>, <function=...>, JSON actions, or executable "
+    "code in reasoning. If you already decided which tool to call last "
+    "turn, emit that call now as a structured tool call. If final answer "
+    "is ready, call answer directly. You must call a tool."
+)
+
+_REASONING_DRAFT_RELAY_INSTRUCTION = (
+    "A tool-call draft was found in reasoning_content, but reasoning drafts are not "
+    "executable and were not run. On the next turn, emit the drafted function and "
+    "arguments as a real structured tool_call through the native tool-calling "
+    "interface. Do not put the call in reasoning/thinking text. If the final answer "
+    "is ready, call answer directly."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ReActAgentConfig:
     """ReAct 循环运行参数。
 
-    仅暴露 max_steps，其余行为（prompt / 工具集）通过构造参数注入，
+    仅暴露循环预算，其余行为（prompt / 工具集）通过构造参数注入，
     让本类对评测脚本/单元测试都易替换。
 
     注意：`max_steps` 在两种协议下的语义不同：
     - text 模式：每轮模型回复恰好对应一次工具调用 → max_steps ≈ 工具调用次数
-    - native 模式：每轮模型回复可能并行发出多个工具调用 → max_steps 是**模型轮数**
-      上限，实际工具调用次数可能更高
+    - native 模式：每轮非空 tool_calls 可能并行发出多个工具调用 → max_steps 是
+      **有效模型轮数**上限，实际工具调用次数可能更高
+
+    `max_empty_tool_call_retries` 只用于 native 模式下 response.tool_calls 为空的情况。
+    这类响应只产生纠偏 observation，不应消耗业务 max_steps；单独设上限避免无限重试。
     """
 
     max_steps: int = 16
+    max_empty_tool_call_retries: int = 8
 
 
 def _strip_json_fence(raw_response: str) -> str:
@@ -134,6 +170,80 @@ def parse_model_step(raw_response: str) -> ModelStep:
         action_input=action_input,
         raw_response=raw_response,
     )
+
+
+def _looks_like_json_value(value: str) -> bool:
+    """Return whether a parameter value is worth trying to parse as JSON."""
+    stripped = value.lstrip()
+    if not stripped:
+        return False
+    return (
+        stripped[0] in {'"', "{", "[", "-"}
+        or stripped[0].isdigit()
+        or stripped in {"true", "false", "null"}
+    )
+
+
+def _parse_reasoning_parameter_value(name: str, value: str) -> Any:
+    """Parse one Qwen-style reasoning parameter conservatively."""
+    stripped = value.strip()
+    if name == "code":
+        return stripped
+    if _looks_like_json_value(stripped):
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+    return stripped
+
+
+def _extract_reasoning_tool_call_draft(
+    reasoning: str,
+    allowed_tool_names: Collection[str],
+) -> dict[str, Any] | None:
+    """Extract the first complete Qwen-style tool-call draft from reasoning.
+
+    This is deliberately best-effort and non-authoritative: it only helps the next
+    model turn recover from a reasoning-only draft. The returned draft must never
+    be executed by the runner.
+    """
+    if not reasoning:
+        return None
+
+    tool_call_match = _REASONING_TOOL_CALL_PATTERN.search(reasoning)
+    if tool_call_match is None:
+        return None
+
+    tool_call_body = tool_call_match.group(1)
+    function_match = _REASONING_FUNCTION_PATTERN.search(tool_call_body)
+    if function_match is None:
+        return None
+
+    function_name = function_match.group(1).strip()
+    if function_name not in allowed_tool_names:
+        return None
+
+    function_body = function_match.group(2)
+    arguments: dict[str, Any] = {}
+    for parameter_match in _REASONING_PARAMETER_PATTERN.finditer(function_body):
+        parameter_name = parameter_match.group(1).strip()
+        if not parameter_name:
+            return None
+        arguments[parameter_name] = _parse_reasoning_parameter_value(
+            parameter_name,
+            parameter_match.group(2),
+        )
+
+    unparsed_body = _REASONING_PARAMETER_PATTERN.sub("", function_body).strip()
+    if unparsed_body:
+        return None
+
+    return {
+        "function": function_name,
+        "arguments": arguments,
+        "source": "reasoning_content",
+        "executed": False,
+    }
 
 
 class ReActAgent:
@@ -311,18 +421,24 @@ class ReActAgent:
         循环不变式：
         - 每轮至少 append 一条 StepRecord（成功 / 工具异常 / 解析 __error__），用于 trace 可观测
         - 调用 answer 工具会设置 `state.answer` 并立刻 break
+        - native 空 tool_calls 只消耗 empty retry budget，不消耗业务 max_steps
         - 达到 max_steps 未 answer 时，写入 failure_reason 并正常返回
         """
         state = AgentRuntimeState()
         step_counter = 0
+        effective_turns = 0
+        empty_tool_call_retries = 0
+        turn_index = 0
         terminated = False
 
-        for turn_index in range(1, self.config.max_steps + 1):
+        while effective_turns < self.config.max_steps:
+            turn_index += 1
             # ---- 1. 调用模型 ----
             try:
                 response = self.model.complete(self._build_messages(task, state))
             except Exception as exc:
                 # 网络错误 / API 失败：记一条 __error__，让循环在下一轮重试
+                effective_turns += 1
                 step_counter += 1
                 self._record_step(
                     state,
@@ -346,6 +462,7 @@ class ReActAgent:
                 tool_calls, thought = self._resolve_tool_calls(response, turn_index)
             except Exception as exc:
                 # text 协议的 fence 解析失败，或 native 协议下缺 tool_calls
+                effective_turns += 1
                 step_counter += 1
                 self._record_step(
                     state,
@@ -368,8 +485,28 @@ class ReActAgent:
 
             if not tool_calls:
                 # native 协议下模型回了空 tool_calls（纯文本 content）：
-                # 给一条 observation 强制纠偏，下一轮让模型重试
+                # 给一条 observation 强制纠偏，下一轮让模型重试。该分支不消耗
+                # 业务 max_steps，但有独立重试上限，避免 reasoning-only 无限循环。
+                empty_tool_call_retries += 1
                 step_counter += 1
+                observation: dict[str, Any] = {
+                    "ok": False,
+                    "error": _EMPTY_TOOL_CALL_ERROR,
+                }
+                if self.protocol == "native":
+                    drafted_tool_call = _extract_reasoning_tool_call_draft(
+                        response.reasoning_content,
+                        self.tools.handlers,
+                    )
+                    if drafted_tool_call is not None:
+                        observation = {
+                            "ok": False,
+                            "error": (
+                                "Your previous turn did not produce an executable tool call."
+                            ),
+                            "drafted_tool_call": drafted_tool_call,
+                            "instruction": _REASONING_DRAFT_RELAY_INSTRUCTION,
+                        }
                 self._record_step(
                     state,
                     StepRecord(
@@ -379,18 +516,7 @@ class ReActAgent:
                         action="__error__",
                         action_input={},
                         raw_response=response.raw_response,
-                        observation={
-                            "ok": False,
-                            "error": (
-                                "Your previous turn did not produce an executable tool call. "
-                                "Any tool call written inside reasoning/thinking text was ignored, "
-                                "even if it looked syntactically complete. In this turn: do not "
-                                "draft <tool_call>, <function=...>, JSON actions, or executable "
-                                "code in reasoning. If you already decided which tool to call last "
-                                "turn, emit that call now as a structured tool call. If final answer "
-                                "is ready, call answer directly. You must call a tool."
-                            ),
-                        },
+                        observation=observation,
                         ok=False,
                         tool_call_id=None,
                         raw_tool_calls=None,
@@ -398,9 +524,18 @@ class ReActAgent:
                         usage=response.usage,
                     ),
                 )
+                if empty_tool_call_retries > self.config.max_empty_tool_call_retries:
+                    state.failure_reason = (
+                        "Agent exceeded max_empty_tool_call_retries "
+                        f"({self.config.max_empty_tool_call_retries}) without an "
+                        "executable tool call."
+                    )
+                    terminated = True
+                    break
                 continue
 
             # ---- 3. 依次执行 tool_calls ----
+            effective_turns += 1
             # text 协议下 StepRecord 不承载原生调用 id / 原始 tool_calls（语义上它们都是
             # 合成的占位值），保持 None 可让 trace.json 读者清楚区分两种协议。
             is_native = self.protocol == "native"
@@ -469,6 +604,9 @@ class ReActAgent:
 
             if terminated:
                 break
+
+        if not terminated and effective_turns >= self.config.max_steps:
+            state.failure_reason = "Agent did not submit an answer within max_steps."
 
         # 循环正常结束但没拿到 answer：判为 max_steps 耗尽
         if state.answer is None and state.failure_reason is None:

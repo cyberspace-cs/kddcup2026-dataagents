@@ -341,7 +341,10 @@ def _run_single_task_core(
     agent = ReActAgent(
         model=effective_model,
         tools=effective_tools,
-        config=ReActAgentConfig(max_steps=config.agent.max_steps),
+        config=ReActAgentConfig(
+            max_steps=config.agent.max_steps,
+            max_empty_tool_call_retries=config.agent.max_empty_tool_call_retries,
+        ),
         protocol=config.agent.tool_protocol,  # type: ignore[arg-type]
         step_callback=step_callback,
     )
