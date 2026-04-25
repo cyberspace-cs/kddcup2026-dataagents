@@ -136,17 +136,6 @@ def test_build_adapter_wraps_when_rate_limit_set(tmp_path: Path) -> None:
 # ------- run_benchmark 层面的配置下推 --------------------------------------------
 
 
-def _fake_dataset(tmp_path: Path, task_count: int) -> Path:
-    """造一份最小 DABench 结构：每个 task 下放一个 question.md。"""
-    data_root = tmp_path / "data"
-    for i in range(task_count):
-        tdir = data_root / f"task_{i}"
-        (tdir / "context").mkdir(parents=True)
-        (tdir / "question.md").write_text(f"q{i}")
-        (tdir / "meta.json").write_text(f'{{"task_id": "task_{i}", "difficulty": "easy"}}')
-    return data_root
-
-
 class _CapturingSingleTask:
     """替换 run_single_task 的 fake：只记录 (task_id, config.agent.api_key) 并返回占位 artifacts。"""
 

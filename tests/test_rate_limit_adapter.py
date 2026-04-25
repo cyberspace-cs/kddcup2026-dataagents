@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import types
 from pathlib import Path
-from typing import Any
 
 import pytest
 from openai import APIError
@@ -376,9 +375,3 @@ def test_constructor_rejects_empty_api_key(tmp_path: Path) -> None:
     cfg = RateLimitConfig(state_dir=tmp_path)
     with pytest.raises(ValueError, match="api_key"):
         RateLimitedAdapter(inner=inner, api_key="", rate_limit=cfg)
-
-
-# ------- 桥接层守护：MyPy 的 Any 类型在这里随便用 --------------------------------
-
-# 下面这个 noqa 让 mypy 安静；我们在 fixture 里确实传了 Any 类型的 messages
-_ = Any

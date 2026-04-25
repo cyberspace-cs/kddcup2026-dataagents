@@ -76,9 +76,9 @@
 
 ## 8. Package facades + dataset kwargs cleanup
 
-- [ ] 8.1 Add explicit `__all__` lists to `src/data_agent_baseline/{agents,tools,run,benchmark}/__init__.py`; lock to current public re-exports per D13
-- [ ] 8.2 Remove `task_ids=`, `difficulty=`, `difficulties=` parameters from `DABenchPublicDataset.iter_tasks` (zero callers verified)
-- [ ] 8.3 Remove dead test helpers: `tests/test_runner_key_pinning.py:139 _fake_dataset`, `tests/test_rate_limit_adapter.py:381 _ = Any`, `tests/test_model_adapter_request.py:59 _make_response tool_calls` (confirmed unused)
+- [x] 8.1 Add explicit `__all__` lists to `src/data_agent_baseline/{agents,tools,run,benchmark}/__init__.py`; lock to current public re-exports per D13
+- [x] 8.2 Remove `task_ids=`, `difficulty=`, `difficulties=` parameters from `DABenchPublicDataset.iter_tasks` (zero callers verified)
+- [x] 8.3 Remove dead test helpers: `tests/test_runner_key_pinning.py:139 _fake_dataset`, `tests/test_rate_limit_adapter.py:381 _ = Any`, `tests/test_model_adapter_request.py:59 _make_response tool_calls` (confirmed unused)
 
 ## 9. Pyright strict fixes (177 errors → 0)
 

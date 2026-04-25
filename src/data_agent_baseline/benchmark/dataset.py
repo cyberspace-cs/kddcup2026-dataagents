@@ -117,35 +117,9 @@ class DABenchPublicDataset:
         assets = TaskAssets(task_dir=task_dir, context_dir=context_dir)
         return PublicTask(record=record, assets=assets)
 
-    def iter_tasks(
-        self,
-        *,
-        task_ids: list[str] | None = None,
-        difficulty: str | None = None,
-        difficulties: list[str] | None = None,
-    ) -> list[PublicTask]:
-        """按条件迭代任务（默认返回全部）。
-
-        - `task_ids`:     白名单，仅返回命中的任务
-        - `difficulty` / `difficulties`: 难度过滤；两者合并成一个集合，
-          为空时不过滤
-        """
-        selected_ids = set(task_ids or [])
-        selected_difficulties = set(difficulties or [])
-        if difficulty is not None:
-            # 单值与列表合并，调用侧两种写法都支持
-            selected_difficulties.add(difficulty)
-
-        tasks: list[PublicTask] = []
-        for task_dir in self.task_dirs():
-            # 先按 ID 过滤（无需再读 task.json），再按 difficulty 过滤
-            if selected_ids and task_dir.name not in selected_ids:
-                continue
-            task = self.get_task(task_dir.name)
-            if selected_difficulties and task.difficulty not in selected_difficulties:
-                continue
-            tasks.append(task)
-        return tasks
+    def iter_tasks(self) -> list[PublicTask]:
+        """按任务号顺序返回全部任务。需要过滤的调用方在迭代结果上自行筛选。"""
+        return [self.get_task(task_dir.name) for task_dir in self.task_dirs()]
 
     def task_counts(self) -> dict[str, int]:
         """按 difficulty 统计任务数，用于 `status` 子命令的快报。"""

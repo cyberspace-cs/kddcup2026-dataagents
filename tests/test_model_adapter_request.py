@@ -56,12 +56,11 @@ def _make_usage(
 def _make_response(
     *,
     content: str = "",
-    tool_calls: list[Any] | None = None,
     reasoning_content: str | None = None,
     usage: Any = None,
 ) -> types.SimpleNamespace:
     """构造伪 `ChatCompletion` 响应：message + usage 两个关键字段。"""
-    message = types.SimpleNamespace(content=content, tool_calls=tool_calls or [])
+    message = types.SimpleNamespace(content=content, tool_calls=[])
     if reasoning_content is not None:
         message.reasoning_content = reasoning_content
     return types.SimpleNamespace(
