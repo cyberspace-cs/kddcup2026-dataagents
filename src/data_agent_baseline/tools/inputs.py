@@ -18,7 +18,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from data_agent_baseline.tools._schema_normalize import normalize_for_vllm
+from data_agent_baseline.tools.schema_normalize import normalize_for_vllm
 
 # Agent 任意代码的硬超时。值太小会扼杀合法的 pandas 任务；太大会让 run-benchmark 显著变慢
 EXECUTE_PYTHON_TIMEOUT_SECONDS = 30

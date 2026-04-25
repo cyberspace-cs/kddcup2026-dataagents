@@ -7,7 +7,7 @@
 - `create_default_tool_registry()` 按规范顺序构造默认 8 件套
 
 实现细节按职责拆到三个邻居模块：
-- `tools/_schema_normalize.py`  ← `normalize_for_vllm`（vLLM 字节稳定形态）
+- `tools/schema_normalize.py`   ← `normalize_for_vllm`（vLLM 字节稳定形态）
 - `tools/inputs.py`             ← 8 个 Pydantic 入参模型 + 字段工厂 + `*_SCHEMA` 常量
 - `tools/handlers.py`           ← 8 个 `handle_xxx` handler + `ToolExecutionResult`/`ToolHandler`
 
@@ -28,7 +28,6 @@ from typing import Any, cast
 from pydantic import BaseModel, ValidationError
 
 from data_agent_baseline.benchmark.schema import PublicTask
-from data_agent_baseline.tools._schema_normalize import normalize_for_vllm
 from data_agent_baseline.tools.handlers import (
     ToolExecutionResult,
     ToolHandler,
@@ -60,6 +59,7 @@ from data_agent_baseline.tools.inputs import (
     ReadDocInput,
     ReadJsonInput,
 )
+from data_agent_baseline.tools.schema_normalize import normalize_for_vllm
 
 # 别名：`tests/test_schema_normalizer.py` 历史上 `from ...registry import _normalize_for_vllm`，
 # 不想动测试就在此处保留下划线名。新代码请直接用 `normalize_for_vllm`。
