@@ -1,0 +1,25 @@
+{
+  "agent": {
+    "allow_parallel_tool_calls": false,
+    "api_base": "https://api.example.com/v1",
+    "api_key": "sk-text-protocol",
+    "api_keys": [],
+    "enable_thinking": false,
+    "max_empty_tool_call_retries": 4,
+    "max_steps": 8,
+    "max_tokens": 4096,
+    "model": "gpt-4o-mini",
+    "rate_limit": null,
+    "temperature": 0.1,
+    "tool_protocol": "text"
+  },
+  "dataset": {
+    "root_path": "<PROJECT_ROOT>/data/public/input"
+  },
+  "run": {
+    "max_workers": 2,
+    "output_dir": "<PROJECT_ROOT>/artifacts/runs",
+    "run_id": null,
+    "task_timeout_seconds": 300
+  }
+}

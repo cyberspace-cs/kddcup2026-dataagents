@@ -1,0 +1,9 @@
+# 最小有效配置：使用绝对路径避免 PROJECT_ROOT 依赖
+dataset:
+  root_path: /tmp/min-dataset
+
+agent:
+  api_key: test-key
+
+run:
+  output_dir: /tmp/min-runs

@@ -1,0 +1,1 @@
+agent.enable_thinking must be a bool or null; got int.

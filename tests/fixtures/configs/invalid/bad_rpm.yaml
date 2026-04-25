@@ -1,0 +1,7 @@
+agent:
+  api_key: sk
+  api_keys:
+    - sk-a
+  rate_limit:
+    rpm_per_key: 0
+    tpm_per_key: 1000

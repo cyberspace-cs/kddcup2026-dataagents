@@ -1,0 +1,1 @@
+agent.rate_limit.backoff_max_seconds must be >= backoff_initial_seconds.

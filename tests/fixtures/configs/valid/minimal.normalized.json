@@ -1,0 +1,25 @@
+{
+  "agent": {
+    "allow_parallel_tool_calls": true,
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "test-key",
+    "api_keys": [],
+    "enable_thinking": null,
+    "max_empty_tool_call_retries": 8,
+    "max_steps": 16,
+    "max_tokens": 16384,
+    "model": "gpt-4.1-mini",
+    "rate_limit": null,
+    "temperature": 0.0,
+    "tool_protocol": "native"
+  },
+  "dataset": {
+    "root_path": "/tmp/min-dataset"
+  },
+  "run": {
+    "max_workers": 4,
+    "output_dir": "/tmp/min-runs",
+    "run_id": null,
+    "task_timeout_seconds": 600
+  }
+}

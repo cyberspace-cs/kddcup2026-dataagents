@@ -1,0 +1,32 @@
+# PR-2: Key 池 + 限速对完整配置
+dataset:
+  root_path: /tmp/dataset
+
+agent:
+  model: qwen3-coder
+  api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key: sk-default
+  max_steps: 24
+  temperature: 0.0
+  tool_protocol: native
+  allow_parallel_tool_calls: true
+  max_tokens: 32768
+  enable_thinking: true
+  api_keys:
+    - sk-key-a
+    - sk-key-b
+  rate_limit:
+    rpm_per_key: 600
+    tpm_per_key: 1000000
+    safety_factor: 0.85
+    reserve_output_tokens: 16384
+    max_retries: 6
+    backoff_initial_seconds: 1.0
+    backoff_max_seconds: 30.0
+    state_dir: /tmp/ratelimit/run-x
+
+run:
+  output_dir: /tmp/runs
+  run_id: pinned-run-id
+  max_workers: 4
+  task_timeout_seconds: 600

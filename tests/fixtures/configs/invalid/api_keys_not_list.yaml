@@ -1,0 +1,6 @@
+agent:
+  api_key: sk
+  api_keys: "not-a-list"
+  rate_limit:
+    rpm_per_key: 100
+    tpm_per_key: 1000

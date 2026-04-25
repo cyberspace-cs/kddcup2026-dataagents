@@ -1,0 +1,1 @@
+agent.max_empty_tool_call_retries must be >= 0.

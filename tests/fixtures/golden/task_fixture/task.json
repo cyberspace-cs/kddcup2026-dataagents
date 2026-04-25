@@ -1,0 +1,5 @@
+{
+  "task_id": "task_fixture",
+  "difficulty": "easy",
+  "question": "List the files under context and submit the answer."
+}

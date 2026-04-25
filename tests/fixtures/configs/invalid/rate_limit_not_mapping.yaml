@@ -1,0 +1,5 @@
+agent:
+  api_key: sk
+  api_keys:
+    - sk-a
+  rate_limit: "not-a-mapping"

@@ -1,0 +1,1 @@
+agent.api_keys and agent.rate_limit must be configured together; leave both unset for the single-key / no-limit default path.
