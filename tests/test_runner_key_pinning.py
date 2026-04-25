@@ -302,7 +302,9 @@ def test_run_single_task_cli_picks_first_key(
         captured_configs.append(config)
         return {"task_id": "task_x", "answer": None, "steps": [], "succeeded": False}
 
-    monkeypatch.setattr(runner_mod, "_run_single_task_with_timeout", _fake_timeout_dispatch)
+    # patch 的是 runner.py `from .runner_subprocess import run_single_task_with_timeout` 拿到的
+    # 本地绑定；为兼容旧测试保留的下划线别名 `_run_single_task_with_timeout` 不参与函数调用解析。
+    monkeypatch.setattr(runner_mod, "run_single_task_with_timeout", _fake_timeout_dispatch)
 
     rl = RateLimitConfig(state_dir=None)
     cfg = _make_config(tmp_path=tmp_path, api_keys=("key-A", "key-B"), rate_limit=rl)
@@ -330,7 +332,9 @@ def test_run_single_task_cli_unchanged_without_pool(
         captured.append(config)
         return {"task_id": "task_x", "answer": None, "steps": [], "succeeded": False}
 
-    monkeypatch.setattr(runner_mod, "_run_single_task_with_timeout", _fake_timeout_dispatch)
+    # patch 的是 runner.py `from .runner_subprocess import run_single_task_with_timeout` 拿到的
+    # 本地绑定；为兼容旧测试保留的下划线别名 `_run_single_task_with_timeout` 不参与函数调用解析。
+    monkeypatch.setattr(runner_mod, "run_single_task_with_timeout", _fake_timeout_dispatch)
 
     cfg = _make_config(tmp_path=tmp_path)  # 无 api_keys，无 rate_limit
     run_output = tmp_path / "outdir"

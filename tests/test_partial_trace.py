@@ -25,7 +25,7 @@ from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.agents.runtime import AgentRuntimeState
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from data_agent_baseline.config import AppConfig, RunConfig
-from data_agent_baseline.run import runner as runner_mod
+from data_agent_baseline.run import runner_subprocess as runner_subprocess_mod
 from data_agent_baseline.run.runner import (
     _load_partial_trace,
     _make_partial_trace_writer,
@@ -324,8 +324,8 @@ def test_timeout_runner_drains_queue_before_join(
         def kill(self) -> None:
             self._alive = False
 
-    monkeypatch.setattr(runner_mod.multiprocessing, "Queue", lambda: FakeQueue())
-    monkeypatch.setattr(runner_mod.multiprocessing, "Process", FakeProcess)
+    monkeypatch.setattr(runner_subprocess_mod.multiprocessing, "Queue", lambda: FakeQueue())
+    monkeypatch.setattr(runner_subprocess_mod.multiprocessing, "Process", FakeProcess)
 
     result = _run_single_task_with_timeout(
         task_id="task_1",
