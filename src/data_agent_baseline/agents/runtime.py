@@ -69,7 +69,7 @@ class AgentRuntimeState:
     非 frozen 是刻意为之：循环内需要不断 append/写入字段。
     """
 
-    steps: list[StepRecord] = field(default_factory=list)
+    steps: list[StepRecord] = field(default_factory=lambda: [])  # noqa: PIE807
     answer: AnswerTable | None = None
     failure_reason: str | None = None
 

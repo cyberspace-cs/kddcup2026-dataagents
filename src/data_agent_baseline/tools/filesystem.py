@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from typing import Any
 
 from data_agent_baseline.benchmark.schema import PublicTask
 
@@ -33,14 +34,14 @@ def resolve_context_path(task: PublicTask, relative_path: str) -> Path:
     return candidate
 
 
-def list_context_tree(task: PublicTask, *, max_depth: int = 4) -> dict[str, object]:
+def list_context_tree(task: PublicTask, *, max_depth: int = 4) -> dict[str, Any]:
     """按深度优先遍历 `context/` 下的文件/目录树。
 
     - `max_depth` 从 1 起算（1 表示只列直接子项）
     - 同目录下 **目录先于文件**（排序键用 `(is_file, name)`），便于模型先看结构再下钻
     - 返回相对路径（POSIX 风格），跨平台一致
     """
-    entries: list[dict[str, object]] = []
+    entries: list[dict[str, Any]] = []
 
     def walk(path: Path, depth: int) -> None:
         # 超出深度直接返回，避免巨型目录导致 observation 过大
@@ -68,9 +69,7 @@ def list_context_tree(task: PublicTask, *, max_depth: int = 4) -> dict[str, obje
     }
 
 
-def read_csv_preview(
-    task: PublicTask, relative_path: str, *, max_rows: int = 20
-) -> dict[str, object]:
+def read_csv_preview(task: PublicTask, relative_path: str, *, max_rows: int = 20) -> dict[str, Any]:
     """读取 CSV 的表头与前 N 行。
 
     用 `csv.reader` 逐行读：不依赖 pandas，避免超大 CSV 引入内存风险。
@@ -104,7 +103,7 @@ def read_csv_preview(
 
 def read_json_preview(
     task: PublicTask, relative_path: str, *, max_chars: int = 4000
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """读取 JSON 并按字符数截断预览。
 
     先 loads → dumps：一来验证 JSON 合法性，二来统一缩进让模型更易阅读。
@@ -133,7 +132,7 @@ def read_doc_preview(
     start_line: int = 1,
     line_count: int = 80,
     keyword: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """按行读取任意文本类文档（md / txt），可从指定行开始搜索关键词。
 
     errors="replace" 把非法字节替换为 U+FFFD，避免个别文件乱码让整个调用崩溃。
@@ -157,7 +156,7 @@ def read_doc_preview(
     normalized_line_count = _normalize_line_count(line_count)
 
     start_index = normalized_start_line - 1
-    keyword_match: dict[str, object] | None = None
+    keyword_match: dict[str, Any] | None = None
 
     if keyword is not None and keyword != "":
         lowered_keyword = keyword.lower()

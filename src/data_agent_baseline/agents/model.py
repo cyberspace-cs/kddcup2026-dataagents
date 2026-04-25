@@ -15,12 +15,24 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 from openai import APIError, OpenAI
+from openai.types.chat import ChatCompletion
 
 if TYPE_CHECKING:
     from data_agent_baseline.tools.registry import ToolRegistry
+
+
+class _ToolCallFunctionDump(TypedDict, total=False):
+    name: str
+    arguments: str | dict[str, Any]
+
+
+class _ToolCallDump(TypedDict, total=False):
+    id: str
+    type: str
+    function: _ToolCallFunctionDump
 
 
 # 用于 defensively 剥离 `<think>...</think>`（vLLM `--reasoning-parser qwen3` 未启用时的兜底）
@@ -120,9 +132,9 @@ class ModelResponse:
     """
 
     content: str
-    tool_calls: list[ModelToolCall] = field(default_factory=list)
+    tool_calls: list[ModelToolCall] = field(default_factory=lambda: [])  # noqa: PIE807
     raw_response: str = ""
-    raw_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    raw_tool_calls: list[dict[str, Any]] = field(default_factory=lambda: [])  # noqa: PIE807
     reasoning_content: str = ""
     usage: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
@@ -166,7 +178,7 @@ def _extract_reasoning_content(message: Any) -> str:
         return direct
     extras = getattr(message, "model_extra", None)
     if isinstance(extras, dict):
-        value = extras.get("reasoning_content")
+        value = cast(dict[str, Any], extras).get("reasoning_content")
         if isinstance(value, str):
             return value
     return ""
@@ -269,7 +281,7 @@ class OpenAIModelAdapter:
 
         started = perf_counter()
         try:
-            response = client.chat.completions.create(**request_kwargs)
+            response = cast(ChatCompletion, client.chat.completions.create(**request_kwargs))
         except APIError as exc:
             # 把供应商错误统一包成 RuntimeError，便于 ReAct 循环的通用异常分支处理
             raise RuntimeError(f"Model request failed: {exc}") from exc
@@ -281,9 +293,6 @@ class OpenAIModelAdapter:
         message = choices[0].message
         # 允许 content 为 None（偶尔模型返回空串或 reasoning-only）—— 归一化成空串
         content = message.content or ""
-        if not isinstance(content, str):
-            # 保护：极少数 SDK/代理会返回多模态块的 list，统一拒收
-            raise RuntimeError("Model response text content is not a string.")
         # 防御性剥离 `<think>` —— 若 vLLM reasoning-parser 未启用，避免污染 JSON 解析
         cleaned = _strip_think_tags(content)
         return ModelResponse(
@@ -364,7 +373,7 @@ class NativeToolsOpenAIAdapter:
 
         started = perf_counter()
         try:
-            response = client.chat.completions.create(**request_kwargs)
+            response = cast(ChatCompletion, client.chat.completions.create(**request_kwargs))
         except APIError as exc:
             raise RuntimeError(f"Model request failed: {exc}") from exc
         latency_ms = int((perf_counter() - started) * 1000)
@@ -375,8 +384,6 @@ class NativeToolsOpenAIAdapter:
 
         message = choices[0].message
         raw_content = message.content or ""
-        if not isinstance(raw_content, str):
-            raise RuntimeError("Model response text content is not a string.")
         cleaned_content = _strip_think_tags(raw_content)
 
         raw_tool_calls_payload: list[dict[str, Any]] = []
@@ -387,24 +394,26 @@ class NativeToolsOpenAIAdapter:
             # SDK 对象 → dict：OpenAI SDK 的 pydantic 模型提供 model_dump；
             # 失败时兜底成手工构造的结构
             try:
-                dumped = tool_call.model_dump(exclude_none=True)
+                dumped: _ToolCallDump = cast(_ToolCallDump, tool_call.model_dump(exclude_none=True))
             except AttributeError:
+                fn_obj = cast(Any, tool_call).function
                 dumped = {
-                    "id": getattr(tool_call, "id", ""),
+                    "id": str(getattr(tool_call, "id", "")),
                     "type": "function",
                     "function": {
-                        "name": getattr(tool_call.function, "name", ""),
-                        "arguments": getattr(tool_call.function, "arguments", ""),
+                        "name": str(getattr(fn_obj, "name", "")),
+                        "arguments": cast("str | dict[str, Any]", getattr(fn_obj, "arguments", "")),
                     },
                 }
-            raw_tool_calls_payload.append(dumped)
+            raw_tool_calls_payload.append(cast(dict[str, Any], dumped))
 
-            function_payload = dumped.get("function", {}) or {}
+            function_payload: _ToolCallFunctionDump = dumped.get("function") or {}
             name = str(function_payload.get("name", ""))
             arguments_raw = function_payload.get("arguments", "")
+            arguments: dict[str, Any]
             if isinstance(arguments_raw, dict):
                 # 个别实现会把 arguments 当 dict 返回；透传即可
-                arguments: dict[str, Any] = dict(arguments_raw)
+                arguments = dict(arguments_raw)
             else:
                 arg_str = str(arguments_raw or "").strip()
                 if not arg_str:
@@ -422,7 +431,7 @@ class NativeToolsOpenAIAdapter:
                         raise RuntimeError(
                             f"tool_call arguments for {name!r} must decode to an object."
                         )
-                    arguments = parsed
+                    arguments = cast(dict[str, Any], parsed)
 
             call_id = str(dumped.get("id") or "")
             parsed_calls.append(ModelToolCall(id=call_id, name=name, arguments=arguments))

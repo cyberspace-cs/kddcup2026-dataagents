@@ -21,9 +21,9 @@ from data_agent_baseline.config import (
     RateLimitConfig,
     RunConfig,
 )
-from tests.helpers.scripted_adapters import ScriptedModelAdapter
 from data_agent_baseline.run.app import AgentApp, build_application
 from data_agent_baseline.tools.registry import ToolRegistry, create_default_tool_registry
+from tests.helpers.scripted_adapters import ScriptedModelAdapter
 
 
 def _make_config(

@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import AppConfig
@@ -227,39 +227,43 @@ def _load_partial_trace(task_id: str, trace_path: Path) -> dict[str, Any] | None
     if not trace_path.exists():
         return None
     try:
-        payload = json.loads(trace_path.read_text())
+        payload: Any = json.loads(trace_path.read_text())
     except Exception:
         return None
     if not isinstance(payload, dict):
         return None
+    payload_dict = cast(dict[str, Any], payload)
     # 必须是同一个任务的 trace，避免跨任务误取
-    if payload.get("task_id") != task_id:
+    if payload_dict.get("task_id") != task_id:
         return None
-    return payload
+    return payload_dict
 
 
 def _normalize_answer_payload(value: Any) -> dict[str, Any] | None:
     """把 trace 中的 answer-like 对象校验并规整成可写 CSV 的 payload。"""
     if not isinstance(value, dict):
         return None
+    value_dict = cast(dict[str, Any], value)
 
-    columns = value.get("columns")
-    rows = value.get("rows")
+    columns = value_dict.get("columns")
+    rows = value_dict.get("rows")
     if (
         not isinstance(columns, list)
         or not columns
-        or not all(isinstance(item, str) for item in columns)
+        or not all(isinstance(item, str) for item in cast(list[Any], columns))
     ):
         return None
     if not isinstance(rows, list):
         return None
 
+    columns_list = cast(list[str], columns)
+    rows_list = cast(list[Any], rows)
     normalized_rows: list[list[Any]] = []
-    for row in rows:
-        if not isinstance(row, list) or len(row) != len(columns):
+    for row in rows_list:
+        if not isinstance(row, list) or len(cast(list[Any], row)) != len(columns_list):
             return None
-        normalized_rows.append(list(row))
-    return {"columns": list(columns), "rows": normalized_rows}
+        normalized_rows.append(list(cast(list[Any], row)))
+    return {"columns": list(columns_list), "rows": normalized_rows}
 
 
 def _recover_answer_from_steps(steps: list[Any]) -> dict[str, Any] | None:
@@ -267,9 +271,10 @@ def _recover_answer_from_steps(steps: list[Any]) -> dict[str, Any] | None:
     for step in reversed(steps):
         if not isinstance(step, dict):
             continue
-        if step.get("action") != "answer" or step.get("ok") is not True:
+        step_dict = cast(dict[str, Any], step)
+        if step_dict.get("action") != "answer" or step_dict.get("ok") is not True:
             continue
-        recovered = _normalize_answer_payload(step.get("action_input"))
+        recovered = _normalize_answer_payload(step_dict.get("action_input"))
         if recovered is not None:
             return recovered
     return None
@@ -506,7 +511,7 @@ def run_single_task(
     task_id: str,
     config: AppConfig,
     run_output_dir: Path,
-    model=None,
+    model: ModelAdapter | None = None,
     tools: ToolRegistry | None = None,
 ) -> TaskRunArtifacts:
     """对外：跑单个任务并落盘产物。
@@ -550,7 +555,7 @@ def run_single_task(
 def run_benchmark(
     *,
     config: AppConfig,
-    model=None,
+    model: ModelAdapter | None = None,
     tools: ToolRegistry | None = None,
     limit: int | None = None,
     progress_callback: Callable[[TaskRunArtifacts], None] | None = None,

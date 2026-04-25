@@ -27,7 +27,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import (
     BaseModel,
@@ -44,8 +44,8 @@ from pydantic import (
 from data_agent_baseline.config import (
     PROJECT_ROOT,
     ToolProtocolLiteral,
-    _default_dataset_root,
-    _default_run_output_dir,
+    _default_dataset_root,  # pyright: ignore[reportPrivateUsage]
+    _default_run_output_dir,  # pyright: ignore[reportPrivateUsage]
 )
 
 # RateLimitConfigModel.reserve_output_tokens 校验器借助 context 拿到父级的 max_tokens，
@@ -127,7 +127,7 @@ class RateLimitConfigModel(_StrictModel):
         # 把后者也放进同一个校验器，保证多错误场景下首个错误次序与旧实现一致。
         if v <= 0:
             raise ValueError("agent.rate_limit.reserve_output_tokens must be positive.")
-        ctx = info.context or {}
+        ctx: dict[str, Any] = info.context or {}
         max_tokens = ctx.get(_CONTEXT_KEY_MAX_TOKENS, 0)
         if isinstance(max_tokens, int) and max_tokens > 0 and v > max_tokens:
             raise ValueError(
@@ -216,8 +216,9 @@ class AgentConfigModel(_StrictModel):
             return ()
         if not isinstance(v, list):
             raise ValueError("agent.api_keys must be a list of strings.")
+        v_list = cast(list[Any], v)
         parsed: list[str] = []
-        for idx, item in enumerate(v):
+        for idx, item in enumerate(v_list):
             if not isinstance(item, str):
                 raise ValueError(
                     f"agent.api_keys[{idx}] must be a string; got {type(item).__name__}."

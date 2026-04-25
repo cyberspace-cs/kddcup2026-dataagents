@@ -83,9 +83,9 @@ def _capture_process_streams(stdout_path: Path, stderr_path: Path):
                 sys.stderr.flush()
 
             # 关闭我们新建的 TextIOWrapper，但别误关 original_stdout
-            if sys.stdout is not original_stdout:
+            if sys.stdout is not None and sys.stdout is not original_stdout:
                 sys.stdout.close()
-            if sys.stderr is not original_stderr:
+            if sys.stderr is not None and sys.stderr is not original_stderr:
                 sys.stderr.close()
 
             # 恢复 Python 层引用

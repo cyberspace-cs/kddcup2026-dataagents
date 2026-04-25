@@ -13,6 +13,7 @@
 
 from pathlib import Path
 from time import perf_counter
+from typing import Any, cast
 
 import typer
 from rich.console import Console
@@ -80,7 +81,7 @@ def _build_compact_progress_fields(
     max_workers: int,
     elapsed_seconds: float,
     last_artifact: TaskRunArtifacts | None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """构造 rich.progress 自定义字段的 dict（`task.fields[<key>]` 引用）。
 
     `run` 字段估算当前正在跑的任务数：剩余里最多 `max_workers` 个被 worker 占用，
@@ -167,7 +168,8 @@ def inspect_task(
     table.add_column("Path")
     table.add_column("Kind")
     table.add_column("Size")
-    for entry in context_listing["entries"]:
+    entries = cast(list[dict[str, Any]], context_listing["entries"])
+    for entry in entries:
         # 目录 entry 的 size 为 None，这里统一渲染为空字符串避免显示 "None"
         table.add_row(str(entry["path"]), str(entry["kind"]), str(entry["size"] or ""))
     console.print(table)
@@ -261,7 +263,7 @@ def run_benchmark_command(
         failed_count = 0
         start_time = perf_counter()
 
-        def on_task_complete(artifact) -> None:
+        def on_task_complete(artifact: TaskRunArtifacts) -> None:
             """单任务完成回调：由 runner 在每个任务产出后触发。
 
             runner 在并行模式下通过 `as_completed` 顺序调用，保证对 nonlocal

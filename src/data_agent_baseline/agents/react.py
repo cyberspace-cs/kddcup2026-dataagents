@@ -99,7 +99,7 @@ class ReActAgent:
         self.tools = tools
         # 缺省配置：max_steps=16
         self.config = config or ReActAgentConfig()
-        self.protocol = protocol
+        self.protocol: ToolProtocol = protocol
         # 允许外部替换 prompt 基座用于 A/B，缺省根据协议选合适的模板
         self.system_prompt = system_prompt
         # 每步回调：runner 在子进程里会注入 "把 state 落到 trace.json" 的 writer，

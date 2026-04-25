@@ -26,7 +26,6 @@ from data_agent_baseline.agents.runtime import AgentRuntimeState
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from data_agent_baseline.config import AppConfig, RunConfig
 from data_agent_baseline.run import runner as runner_mod
-from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 from data_agent_baseline.run.runner import (
     _load_partial_trace,
     _make_partial_trace_writer,
@@ -35,6 +34,7 @@ from data_agent_baseline.run.runner import (
     _write_task_outputs,
 )
 from data_agent_baseline.tools.registry import create_default_tool_registry
+from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
 
 @pytest.fixture

@@ -82,21 +82,21 @@
 
 ## 9. Pyright strict fixes (177 errors → 0)
 
-- [ ] 9.1 Add `[tool.pyright]` block to `pyproject.toml` configuring `strict = ["src/data_agent_baseline"]` and `typeCheckingMode = "basic"` for the rest
-- [ ] 9.2 Define TypedDicts in `src/data_agent_baseline/agents/model.py` for `json.loads` return shapes used across the OpenAI SDK boundary (request/response payloads)
-- [ ] 9.3 Add `cast(...)` annotations at the OpenAI SDK boundary (`response.choices[0].message`, `tool_calls`, `function`, `arguments`) to resolve `reportUnknownMemberType` clusters
-- [ ] 9.4 Type the runner injection kwargs (`model: ModelAdapter | None`, `tools: ToolRegistry | None`, `step_callback: StepCallback | None`) precisely
-- [ ] 9.5 Type `yaml.safe_load` payloads via TypedDict or a generic `dict[str, Any]` boundary cast
-- [ ] 9.6 Narrow `json.loads` payloads in `react.py:133-142` and `runner.py:273-290` via TypedDict definitions
-- [ ] 9.7 Annotate `sys.stdout`/`sys.stderr` close calls in `tools/python_exec.py:86-88` to handle `None`-able streams
-- [ ] 9.8 Run `uv run pyright` and iterate until exit code `0` (zero strict errors)
+- [x] 9.1 Add `[tool.pyright]` block to `pyproject.toml` configuring `strict = ["src/data_agent_baseline"]` and `typeCheckingMode = "basic"` for the rest
+- [x] 9.2 Define TypedDicts in `src/data_agent_baseline/agents/model.py` for `json.loads` return shapes used across the OpenAI SDK boundary (request/response payloads)
+- [x] 9.3 Add `cast(...)` annotations at the OpenAI SDK boundary (`response.choices[0].message`, `tool_calls`, `function`, `arguments`) to resolve `reportUnknownMemberType` clusters
+- [x] 9.4 Type the runner injection kwargs (`model: ModelAdapter | None`, `tools: ToolRegistry | None`, `step_callback: StepCallback | None`) precisely
+- [x] 9.5 Type `yaml.safe_load` payloads via TypedDict or a generic `dict[str, Any]` boundary cast
+- [x] 9.6 Narrow `json.loads` payloads in `react.py:133-142` and `runner.py:273-290` via TypedDict definitions
+- [x] 9.7 Annotate `sys.stdout`/`sys.stderr` close calls in `tools/python_exec.py:86-88` to handle `None`-able streams
+- [x] 9.8 Run `uv run pyright` and iterate until exit code `0` (zero strict errors)
 
 ## 10. Quality gate wiring (final)
 
-- [ ] 10.1 Add `pyright`, `pytest-cov`, `pre-commit` to `[project.optional-dependencies].dev` in `pyproject.toml`
-- [ ] 10.2 Add `[tool.pytest.ini_options]` `addopts = "-ra --cov=data_agent_baseline --cov-report=term-missing --cov-fail-under=70"`
-- [ ] 10.3 Create `.pre-commit-config.yaml` with the chain: `ruff format` → `ruff check --fix` → `pyright src`
-- [ ] 10.4 Run `uv run ruff format --check .`, `uv run ruff check .`, `uv run pyright`, and `uv run pytest` end-to-end; all exit `0`
+- [x] 10.1 Add `pyright`, `pytest-cov`, `pre-commit` to `[project.optional-dependencies].dev` in `pyproject.toml`
+- [x] 10.2 Add `[tool.pytest.ini_options]` `addopts = "-ra --cov=data_agent_baseline --cov-report=term-missing --cov-fail-under=70"`
+- [x] 10.3 Create `.pre-commit-config.yaml` with the chain: `ruff format` → `ruff check --fix` → `pyright src`
+- [x] 10.4 Run `uv run ruff format --check .`, `uv run ruff check .`, `uv run pyright`, and `uv run pytest` end-to-end; all exit `0`
 - [ ] 10.5 Document the gate locally in `docs/development.md` (uv workflow, `pre-commit install` opt-in, gate exit-code contracts)
 
 ## 11. Documentation reset

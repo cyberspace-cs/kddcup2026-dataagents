@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import ValidationError
@@ -155,7 +155,7 @@ def load_app_config(config_path: Path) -> AppConfig:
     from data_agent_baseline.config_models import AppConfigModel
 
     # safe_load 防止任意 Python 对象实例化；空文件返回 None 时退化为空 dict
-    payload = yaml.safe_load(config_path.read_text()) or {}
+    payload: dict[str, Any] = yaml.safe_load(config_path.read_text()) or {}
 
     try:
         validated = AppConfigModel.model_validate(payload)

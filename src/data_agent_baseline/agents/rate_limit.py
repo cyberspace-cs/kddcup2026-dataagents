@@ -31,7 +31,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from filelock import FileLock
 from openai import APIError
@@ -69,13 +69,12 @@ def estimate_prompt_tokens(messages: list[ModelMessage]) -> int:
         if message.tool_call_id:
             total_bytes += len(message.tool_call_id.encode("utf-8"))
         for tool_call in message.tool_calls or []:
-            if not isinstance(tool_call, dict):
-                continue
-            function_payload = tool_call.get("function") or {}
+            function_payload: Any = tool_call.get("function") or {}
             if isinstance(function_payload, dict):
-                total_bytes += len(str(function_payload.get("name", "")).encode("utf-8"))
+                fn_payload = cast(dict[str, Any], function_payload)
+                total_bytes += len(str(fn_payload.get("name", "")).encode("utf-8"))
                 # arguments 在 OpenAI SDK 侧已经是 JSON 字符串；其他实现兜底成 dict→json
-                args = function_payload.get("arguments", "")
+                args = fn_payload.get("arguments", "")
                 if isinstance(args, str):
                     total_bytes += len(args.encode("utf-8"))
                 else:

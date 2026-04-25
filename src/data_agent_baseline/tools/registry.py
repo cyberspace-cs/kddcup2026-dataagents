@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
 from data_agent_baseline.tools.filesystem import (
@@ -164,29 +164,32 @@ def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
     if (
         not isinstance(columns, list)
         or not columns
-        or not all(isinstance(item, str) for item in columns)
+        or not all(isinstance(item, str) for item in cast(list[Any], columns))
     ):
         raise ValueError("answer.columns must be a non-empty list of strings.")
     if not isinstance(rows, list):
         raise ValueError("answer.rows must be a list.")
 
+    columns_list = cast(list[str], columns)
+    rows_list = cast(list[Any], rows)
     normalized_rows: list[list[Any]] = []
-    for row in rows:
+    for row in rows_list:
         if not isinstance(row, list):
             raise ValueError("Each answer row must be a list.")
+        row_list = cast(list[Any], row)
         # 列数匹配：防止模型少填或多填字段导致 CSV 对齐错乱
-        if len(row) != len(columns):
+        if len(row_list) != len(columns_list):
             raise ValueError("Each answer row must match the number of columns.")
         # list(row) 拷贝：避免 answer_input 被后续代码误修改
-        normalized_rows.append(list(row))
+        normalized_rows.append(list(row_list))
 
-    answer = AnswerTable(columns=list(columns), rows=normalized_rows)
+    answer = AnswerTable(columns=list(columns_list), rows=normalized_rows)
     return ToolExecutionResult(
         ok=True,
         content={
             # 给模型一个简洁的提交确认信号，不把完整表回显（避免浪费 token）
             "status": "submitted",
-            "column_count": len(columns),
+            "column_count": len(columns_list),
             "row_count": len(normalized_rows),
         },
         is_terminal=True,  # 触发 ReAct 循环退出
@@ -413,7 +416,7 @@ class ToolRegistry:
 
         按 name 排序保证输出稳定，便于 prompt cache 命中与 diff 审查。
         """
-        lines = []
+        lines: list[str] = []
         for name in sorted(self.definitions):
             definition = self.definitions[name]
             lines.append(f"- {definition.name}: {definition.description}")

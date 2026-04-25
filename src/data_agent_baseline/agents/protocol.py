@@ -17,7 +17,7 @@ import json
 import re
 from collections.abc import Collection
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from data_agent_baseline.agents.model import ModelResponse, ModelStep, ModelToolCall
 
@@ -101,7 +101,7 @@ def _strip_json_fence(raw_response: str) -> str:
     return text
 
 
-def _load_single_json_object(text: str) -> dict[str, object]:
+def _load_single_json_object(text: str) -> dict[str, Any]:
     """解析一段文本，要求它恰好是一个 JSON 对象。
 
     使用 `raw_decode` 而非 `loads`，以便拿到 "第一个 JSON 之后的剩余文本"。
@@ -117,7 +117,7 @@ def _load_single_json_object(text: str) -> dict[str, object]:
             raise ValueError("Model response must contain only one JSON object.")
     if not isinstance(payload, dict):
         raise ValueError("Model response must be a JSON object.")
-    return payload
+    return cast(dict[str, Any], payload)
 
 
 def parse_model_step(raw_response: str) -> ModelStep:
@@ -145,7 +145,7 @@ def parse_model_step(raw_response: str) -> ModelStep:
     return ModelStep(
         thought=thought,
         action=action,
-        action_input=action_input,
+        action_input=cast(dict[str, Any], action_input),
         raw_response=raw_response,
     )
 
