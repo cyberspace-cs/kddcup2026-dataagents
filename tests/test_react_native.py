@@ -17,7 +17,6 @@ import pytest
 from data_agent_baseline.agents.model import (
     ModelResponse,
     ModelToolCall,
-    ScriptedNativeModelAdapter,
     TokenUsage,
 )
 from data_agent_baseline.agents.react import (
@@ -25,6 +24,7 @@ from data_agent_baseline.agents.react import (
     ReActAgentConfig,
     _extract_reasoning_tool_call_draft,
 )
+from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 from data_agent_baseline.agents.runtime import AgentRuntimeState, StepRecord
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from data_agent_baseline.tools.registry import create_default_tool_registry

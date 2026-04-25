@@ -559,7 +559,7 @@ def run_benchmark(
 
     `model` / `tools` 不为 None 时：
     - 强制 workers=1（资源被共享，无法安全并发）
-    - 主要用于 ScriptedModelAdapter + mock tools 的端到端测试
+    - 主要用于测试中注入 Scripted 适配器 + mock tools 的端到端用例
 
     并发模型：
     - 当 workers == 1：串行 for，复用同一份 model/tools

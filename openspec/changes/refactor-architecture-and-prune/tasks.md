@@ -67,12 +67,12 @@
 
 ## 7. Test helper migration: `tests/helpers/scripted_adapters.py`
 
-- [ ] 7.1 Create `tests/helpers/__init__.py` (empty file) to make `tests` an importable package and `helpers` a submodule
-- [ ] 7.2 Create `tests/helpers/scripted_adapters.py` containing `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` (copied verbatim from `src/data_agent_baseline/agents/model.py:439-479`)
-- [ ] 7.3 Update test imports in `tests/test_react_native.py`, `tests/test_react_text_fallback.py`, `tests/test_partial_trace.py` from `data_agent_baseline.agents.model` to `tests.helpers.scripted_adapters`
-- [ ] 7.4 Delete `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` definitions (and their docstring) from `src/data_agent_baseline/agents/model.py`
-- [ ] 7.5 Remove docstring references to `ScriptedModelAdapter` from `src/data_agent_baseline/run/runner.py:119,619` and `src/data_agent_baseline/agents/rate_limit.py:20`
-- [ ] 7.6 Verify all tests still pass with the new import path
+- [x] 7.1 Create `tests/helpers/__init__.py` (empty file) to make `tests` an importable package and `helpers` a submodule
+- [x] 7.2 Create `tests/helpers/scripted_adapters.py` containing `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` (copied verbatim from `src/data_agent_baseline/agents/model.py:439-479`)
+- [x] 7.3 Update test imports in `tests/test_react_native.py`, `tests/test_react_text_fallback.py`, `tests/test_partial_trace.py` from `data_agent_baseline.agents.model` to `tests.helpers.scripted_adapters`
+- [x] 7.4 Delete `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` definitions (and their docstring) from `src/data_agent_baseline/agents/model.py`
+- [x] 7.5 Remove docstring references to `ScriptedModelAdapter` from `src/data_agent_baseline/run/runner.py:119,619` and `src/data_agent_baseline/agents/rate_limit.py:20`
+- [x] 7.6 Verify all tests still pass with the new import path
 
 ## 8. Package facades + dataset kwargs cleanup
 

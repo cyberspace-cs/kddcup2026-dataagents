@@ -17,7 +17,7 @@
 - runner 必须在外层用 `dataclasses.replace` 把 `RateLimitConfig.state_dir` 从 None 解成
   具体路径后再构造本适配器；这里不再回退到 `None` 默认路径，避免隐式行为。
 - 测试通过注入 fake 的 `FakeBucket` / Scripted 内层适配器覆盖分支；外部注入 model 的
-  in-process 路径（ScriptedModelAdapter）**不会**被本壳包裹。
+  in-process 路径（即测试 fixture 中的 Scripted 适配器）**不会**被本壳包裹。
 """
 
 from __future__ import annotations

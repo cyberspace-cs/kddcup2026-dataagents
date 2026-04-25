@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.agents.model import ScriptedModelAdapter
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from data_agent_baseline.tools.registry import create_default_tool_registry
+from tests.helpers.scripted_adapters import ScriptedModelAdapter
 
 
 @pytest.fixture

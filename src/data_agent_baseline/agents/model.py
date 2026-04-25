@@ -1,8 +1,8 @@
 """模型调用抽象层。
 
-通过 `ModelAdapter` 协议解耦具体 LLM 供应商，方便在测试里替换成
-`ScriptedModelAdapter`（预置响应）或在部署时切到不同的 OpenAI 兼容端点
-（含本地 vLLM、Anthropic/Gemini 的兼容网关等）。
+通过 `ModelAdapter` 协议解耦具体 LLM 供应商，方便在部署时切到不同的 OpenAI 兼容
+端点（含本地 vLLM、Anthropic/Gemini 的兼容网关等）。测试用的预置响应适配器位于
+`tests.helpers.scripted_adapters`。
 
 本模块同时承载两种对模型"一次输出"的抽象：
 - `ModelStep`：旧文本 ReAct 协议下，解析 ```json fence 的结果（见 react.parse_model_step）
@@ -436,46 +436,3 @@ class NativeToolsOpenAIAdapter:
             usage=_extract_usage(response),
             latency_ms=latency_ms,
         )
-
-
-class ScriptedModelAdapter:
-    """测试/调试专用：按预置**文本**列表依次返回响应。
-
-    真正的 OpenAI 调用在 CI 上不可靠（网络 + 额度），文本 ReAct 循环的单元测试
-    用它注入确定性的 JSON 输出。签名保持与 `ModelAdapter` 协议一致（返回 `ModelResponse`）。
-    """
-
-    def __init__(self, responses: list[str]) -> None:
-        # 拷贝一份：避免外部修改列表影响播放顺序
-        self._responses = list(responses)
-
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
-        # messages 对预置响应无用，显式 del 提示读者（也能在启用严格 linter 时消除未用警告）
-        del messages
-        if not self._responses:
-            raise RuntimeError("No scripted model responses remaining.")
-        text = self._responses.pop(0)
-        return ModelResponse(
-            content=text,
-            tool_calls=[],
-            raw_response=text,
-            raw_tool_calls=[],
-        )
-
-
-class ScriptedNativeModelAdapter:
-    """测试/调试专用：按预置 `ModelResponse` 列表依次返回，覆盖 native 协议路径。
-
-    与 `ScriptedModelAdapter` 的差异：测试可以直接塞入已解析好的 `tool_calls`
-    与 `raw_tool_calls`，无需经过 JSON 字符串往返。用于断言 native 循环的
-    分支行为（并行 tool_calls / answer 短路 / 空 tool_calls 兜底等）。
-    """
-
-    def __init__(self, responses: list[ModelResponse]) -> None:
-        self._responses = list(responses)
-
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
-        del messages
-        if not self._responses:
-            raise RuntimeError("No scripted model responses remaining.")
-        return self._responses.pop(0)

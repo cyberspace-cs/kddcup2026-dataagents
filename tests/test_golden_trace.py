@@ -16,12 +16,12 @@ from pathlib import Path
 from data_agent_baseline.agents.model import (
     ModelResponse,
     ModelToolCall,
-    ScriptedNativeModelAdapter,
     TokenUsage,
 )
 from data_agent_baseline.config import AgentConfig, AppConfig, DatasetConfig, RunConfig
 from data_agent_baseline.run.runner import run_single_task
 from data_agent_baseline.tools.registry import create_default_tool_registry
+from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "golden"
 
