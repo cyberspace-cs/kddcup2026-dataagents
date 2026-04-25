@@ -22,9 +22,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import os
 import random
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -140,8 +143,22 @@ class FileTokenBucket:
         return _BucketState(rpm=float(self._rpm_cap), tpm=float(self._tpm_cap), last=time.time())
 
     def _save(self, state: _BucketState) -> None:
+        # 写临时文件 + os.replace 实现原子替换：并发读者只会看到旧值或新值，
+        # 永远不会读到撕裂的半截 JSON。tempfile.mkstemp 用 O_CREAT|O_EXCL 拿到唯一文件名，
+        # 防止外部预放置 symlink 把写入引向 state_dir 之外。
         payload = {"rpm": state.rpm, "tpm": state.tpm, "last": state.last}
-        self._state_path.write_text(json.dumps(payload))
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f"{self._state_path.name}.", suffix=".tmp", dir=self._state_path.parent
+        )
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp_name, self._state_path)
+        except BaseException:
+            # rename 失败时清理临时文件，避免目录里留垃圾
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp_name)
+            raise
 
     def _refill(self, state: _BucketState) -> _BucketState:
         """按壁钟线性补充令牌；负 elapsed（时钟回拨）视作 0。"""

@@ -552,7 +552,8 @@ def test_native_reasoning_tool_call_drafts_use_empty_retry_budget(
     agent = ReActAgent(
         model=adapter,
         tools=create_default_tool_registry(),
-        config=ReActAgentConfig(max_steps=4, max_empty_tool_call_retries=1),
+        # N=2：第一次空轮记录但不终止；第二次（>=N）触发 max_empty_tool_call_retries 失败
+        config=ReActAgentConfig(max_steps=4, max_empty_tool_call_retries=2),
         protocol="native",
     )
 
@@ -588,7 +589,9 @@ def test_native_empty_tool_calls_do_not_consume_max_steps(task: PublicTask) -> N
     agent = ReActAgent(
         model=adapter,
         tools=create_default_tool_registry(),
-        config=ReActAgentConfig(max_steps=1, max_empty_tool_call_retries=1),
+        # max_steps=1 验证 "空 tool_calls 不消耗 max_steps"——第二轮的 answer 仍然能跑；
+        # max_empty=2 给第一次空轮留 budget（>= 触发，所以 N=1 会立刻终止）
+        config=ReActAgentConfig(max_steps=1, max_empty_tool_call_retries=2),
         protocol="native",
     )
 
@@ -603,9 +606,11 @@ def test_native_empty_tool_calls_do_not_consume_max_steps(task: PublicTask) -> N
 
 
 def test_native_empty_tool_calls_have_independent_retry_limit(task: PublicTask) -> None:
+    # max_empty_tool_call_retries=N 表示 "第 N 次空轮就是失败轮"——guard 用 >=，
+    # 所以 N=1 时第一次空 tool_calls 就立即终止；max_steps=4 仍远大于实际步数，
+    # 用以验证 empty-tool 的预算独立于 max_steps（失败原因里不应出现 max_steps）。
     adapter = ScriptedNativeModelAdapter(
         [
-            ModelResponse(content="", tool_calls=[], raw_response="", raw_tool_calls=[]),
             ModelResponse(content="", tool_calls=[], raw_response="", raw_tool_calls=[]),
         ]
     )
@@ -619,8 +624,8 @@ def test_native_empty_tool_calls_have_independent_retry_limit(task: PublicTask) 
     result = agent.run(task)
 
     assert result.succeeded is False
-    assert len(result.steps) == 2
-    assert all(step.action == "__error__" for step in result.steps)
+    assert len(result.steps) == 1
+    assert result.steps[0].action == "__error__"
     assert result.failure_reason is not None
     assert "max_empty_tool_call_retries" in result.failure_reason
     assert "max_steps" not in result.failure_reason

@@ -524,7 +524,7 @@ class ReActAgent:
                         usage=response.usage,
                     ),
                 )
-                if empty_tool_call_retries > self.config.max_empty_tool_call_retries:
+                if empty_tool_call_retries >= self.config.max_empty_tool_call_retries:
                     state.failure_reason = (
                         "Agent exceeded max_empty_tool_call_retries "
                         f"({self.config.max_empty_tool_call_retries}) without an "

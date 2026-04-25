@@ -71,11 +71,11 @@ class TaskRunArtifacts:
 
 
 def create_run_id() -> str:
-    """生成默认 run_id：UTC 时间戳如 `20260420T123045Z`。
+    """生成默认 run_id：UTC 微秒级时间戳如 `20260420T123045123456Z`。
 
-    用 UTC 保证跨时区机器不冲突；秒级精度对人工运行已足够。
+    UTC 保证跨时区不冲突；微秒精度避免连发 run 命中同一秒造成目录冲突。
     """
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def resolve_run_id(run_id: str | None = None) -> str:

@@ -23,6 +23,7 @@ import sys
 import tempfile
 import traceback
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 
@@ -194,17 +195,18 @@ def execute_python_code(
                 "error": f"Python execution timed out after {timeout_seconds} seconds.",
             }
 
-        # Case 2: 进程已退出，但 Queue 是空的 → 可能是 OS 层 kill 或 segfault
-        if queue.empty():
+        # 进程已退出。用 get_nowait 直接判定有无结果——multiprocessing.Queue.empty()
+        # 受后台 feeder 线程影响，跨进程语义不可靠（官方文档明示 approximate）。
+        try:
+            result = queue.get_nowait()
+        except Empty:
+            # OS 层 kill / segfault：进程死了但啥也没塞进队列
             return {
                 "success": False,
                 "output": _read_captured_stream(stdout_path),
                 "stderr": _read_captured_stream(stderr_path),
                 "error": "Python execution exited without returning a result.",
             }
-
-        # Case 3: 正常有返回（可能 success=True 或 False+traceback）
-        result = queue.get()
         # 无论成功/失败，都补充 stdout/stderr 文本，保持字段齐整
         result["output"] = _read_captured_stream(stdout_path)
         result["stderr"] = _read_captured_stream(stderr_path)
