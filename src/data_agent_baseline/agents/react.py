@@ -496,7 +496,7 @@ class ReActAgent:
                 if self.protocol == "native":
                     drafted_tool_call = _extract_reasoning_tool_call_draft(
                         response.reasoning_content,
-                        self.tools.handlers,
+                        self.tools.definitions,
                     )
                     if drafted_tool_call is not None:
                         observation = {

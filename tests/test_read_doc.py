@@ -158,7 +158,7 @@ def test_read_doc_rejects_path_escape(task: PublicTask) -> None:
 def test_read_doc_registry_schema_uses_line_pagination() -> None:
     registry = create_default_tool_registry()
 
-    schema = registry.specs["read_doc"].input_schema
+    schema = registry.definitions["read_doc"].input_schema
 
     assert "max_chars" not in schema
     assert schema == {

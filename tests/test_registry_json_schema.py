@@ -1,17 +1,25 @@
-"""测试 ToolSpec 的严格 JSON Schema 字段与 ToolRegistry.to_openai_tools 的输出。
+"""测试 ToolDefinition 的严格 JSON Schema 字段与 ToolRegistry.to_openai_tools 的输出。
 
 覆盖点：
 - 所有默认工具都声明了 json_schema（native function calling 必需）
 - 每个 json_schema 是合法的 object 结构（type/properties/required/additionalProperties）
 - required 字段里的键都真实存在于 properties
 - `to_openai_tools` 输出符合 OpenAI tools 请求字段的结构（type=function + function.name/description/parameters）
+- `to_openai_tools` 的输出字节稳定（重复调用得到完全相同的 JSON）
 """
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from data_agent_baseline.tools.registry import create_default_tool_registry
+from data_agent_baseline.tools.registry import (
+    ToolDefinition,
+    ToolExecutionResult,
+    ToolRegistry,
+    create_default_tool_registry,
+)
 
 EXPECTED_REQUIRED: dict[str, set[str]] = {
     "list_context": set(),
@@ -31,13 +39,13 @@ def registry():
 
 
 def test_every_default_tool_has_json_schema(registry) -> None:
-    for name, spec in registry.specs.items():
-        assert spec.json_schema is not None, f"tool {name} is missing json_schema"
+    for name, definition in registry.definitions.items():
+        assert definition.json_schema is not None, f"tool {name} is missing json_schema"
 
 
 def test_json_schema_structure_is_valid(registry) -> None:
-    for name, spec in registry.specs.items():
-        schema = spec.json_schema
+    for name, definition in registry.definitions.items():
+        schema = definition.json_schema
         assert schema is not None
         assert schema["type"] == "object", f"{name} schema type must be object"
         assert "properties" in schema and isinstance(schema["properties"], dict)
@@ -54,7 +62,7 @@ def test_json_schema_structure_is_valid(registry) -> None:
 
 def test_json_schema_required_keys_match_expected(registry) -> None:
     for name, expected in EXPECTED_REQUIRED.items():
-        schema = registry.specs[name].json_schema
+        schema = registry.definitions[name].json_schema
         assert schema is not None
         assert set(schema["required"]) == expected, (
             f"{name} required fields mismatch: expected {expected}, got {set(schema['required'])}"
@@ -62,15 +70,15 @@ def test_json_schema_required_keys_match_expected(registry) -> None:
 
 
 def test_default_tool_descriptions_are_use_case_oriented(registry) -> None:
-    for name, spec in registry.specs.items():
-        description = spec.description.lower()
+    for name, definition in registry.definitions.items():
+        description = definition.description.lower()
         assert any(
             phrase in description for phrase in ("use when", "use first", "use this when")
         ), f"{name} description should explain when to use the tool"
 
 
 def test_answer_description_explains_submission_contract(registry) -> None:
-    description = registry.specs["answer"].description.lower()
+    description = registry.definitions["answer"].description.lower()
 
     assert "only" in description
     assert "submit" in description
@@ -81,12 +89,12 @@ def test_answer_description_explains_submission_contract(registry) -> None:
 def test_to_openai_tools_produces_expected_shape(registry) -> None:
     tools = registry.to_openai_tools()
 
-    assert len(tools) == len(registry.specs), (
+    assert len(tools) == len(registry.definitions), (
         "Every default tool should be surfaced to OpenAI native function calling"
     )
-    # 排序应与 specs 的排序一致（便于 prompt cache 命中）
+    # 排序应与 definitions 的字母序一致（便于 prompt cache 命中）
     names = [tool["function"]["name"] for tool in tools]
-    assert names == sorted(registry.specs.keys())
+    assert names == sorted(registry.definitions.keys())
 
     for tool in tools:
         assert tool["type"] == "function"
@@ -98,13 +106,22 @@ def test_to_openai_tools_produces_expected_shape(registry) -> None:
         assert parameters.get("additionalProperties") is False
 
 
-def test_to_openai_tools_skips_specs_without_json_schema() -> None:
-    # 构造一个最简 registry，其中一个 spec 没有 json_schema
-    from data_agent_baseline.tools.registry import ToolRegistry, ToolSpec
+def test_to_openai_tools_is_byte_stable_across_calls(registry) -> None:
+    """重复调用 to_openai_tools 必须返回字节相同的 JSON 序列化结果。"""
+    first = json.dumps(registry.to_openai_tools(), sort_keys=True)
+    second = json.dumps(registry.to_openai_tools(), sort_keys=True)
+    assert first == second
 
+
+def _noop_handler(_task, _action_input):
+    return ToolExecutionResult(ok=True, content={})
+
+
+def test_to_openai_tools_skips_definitions_without_json_schema() -> None:
+    # 构造一个最简 registry，其中一个 definition 没有 json_schema
     registry = ToolRegistry(
-        specs={
-            "ok_tool": ToolSpec(
+        definitions={
+            "ok_tool": ToolDefinition(
                 name="ok_tool",
                 description="ok",
                 input_schema={},
@@ -114,15 +131,16 @@ def test_to_openai_tools_skips_specs_without_json_schema() -> None:
                     "required": [],
                     "additionalProperties": False,
                 },
+                handler=_noop_handler,
             ),
-            "schema_less": ToolSpec(
+            "schema_less": ToolDefinition(
                 name="schema_less",
                 description="no schema",
                 input_schema={},
                 json_schema=None,
+                handler=_noop_handler,
             ),
-        },
-        handlers={},
+        }
     )
 
     tools = registry.to_openai_tools()
@@ -132,7 +150,7 @@ def test_to_openai_tools_skips_specs_without_json_schema() -> None:
 
 def test_answer_schema_accepts_heterogeneous_row_cells(registry) -> None:
     """answer 的 rows 单元格需允许 string / number / boolean / null 四种标量。"""
-    schema = registry.specs["answer"].json_schema
+    schema = registry.definitions["answer"].json_schema
     assert schema is not None
     row_item_schema = schema["properties"]["rows"]["items"]
     assert row_item_schema["type"] == "array"

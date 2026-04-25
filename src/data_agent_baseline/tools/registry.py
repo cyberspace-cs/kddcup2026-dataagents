@@ -1,9 +1,9 @@
 """工具注册表（Tool Registry）。
 
-- `ToolSpec`:             工具对 prompt 的呈现（名字 / 描述 / 入参示例 / 严格 JSON Schema）
-- `ToolExecutionResult`:  工具执行结果（ok 标志、content、是否终止、answer）
-- `ToolRegistry`:         把 specs（给模型看的）和 handlers（给 Python 调的）绑成一体
-- `create_default_tool_registry()`: 默认 8 件套工具集合
+- `ToolDefinition`:        合并 prompt 视图与执行视图于一体（name/description/schema/handler/is_terminal）
+- `ToolExecutionResult`:   工具执行结果（ok 标志、content、是否终止、answer）
+- `ToolRegistry`:          name → ToolDefinition 的不可变只读映射
+- `create_default_tool_registry()`: 默认 8 件套工具集合（按注册顺序）
 
 每个 `_xxx` 私有函数是一个工具的 handler，签名统一为 `(task, action_input) → ToolExecutionResult`，
 方便按名字查表分发。`answer` 是唯一 `is_terminal=True` 的工具，触发后 ReAct 循环结束。
@@ -17,8 +17,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
@@ -34,23 +35,6 @@ from data_agent_baseline.tools.sqlite import execute_read_only_sql, inspect_sqli
 
 # Agent 任意代码的硬超时。值太小会扼杀合法的 pandas 任务；太大会让 run-benchmark 显著变慢
 EXECUTE_PYTHON_TIMEOUT_SECONDS = 30
-
-
-@dataclass(frozen=True, slots=True)
-class ToolSpec:
-    """工具对模型的 "规格说明"，同时承载 prompt 文案与原生 function calling 的严格 schema。
-
-    - name:          Agent 在 action 字段里写的名字
-    - description:   一句话说明用途
-    - input_schema:  action_input 的最小示例（文本 ReAct prompt 用，非严格 JSON Schema）
-    - json_schema:   严格 JSON Schema，供 native function calling 下推给模型；
-                     None 表示不支持原生调用（默认工具都已填充）
-    """
-
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-    json_schema: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +55,27 @@ class ToolExecutionResult:
 
 # 统一的 handler 签名：方便 ToolRegistry.execute 按名字查表调用
 ToolHandler = Callable[[PublicTask, dict[str, Any]], ToolExecutionResult]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolDefinition:
+    """单个工具的全量定义：把 prompt 侧与执行侧合并成同一对象。
+
+    - name:          Agent 在 action 字段里写的名字
+    - description:   一句话说明用途
+    - input_schema:  action_input 的最小示例（文本 ReAct prompt 用，非严格 JSON Schema）
+    - json_schema:   严格 JSON Schema，供 native function calling 下推给模型；
+                     None 表示不暴露给原生调用（默认工具都已填充）
+    - handler:       具体执行函数，签名 `(task, action_input) -> ToolExecutionResult`
+    - is_terminal:   True 时 ReAct 循环会在该工具成功返回后立即终止；默认仅 answer 为 True
+    """
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    json_schema: dict[str, Any] | None
+    handler: ToolHandler
+    is_terminal: bool = False
 
 
 # ------------------------- 工具 handler 实现 -------------------------
@@ -385,27 +390,34 @@ _ANSWER_SCHEMA: dict[str, Any] = {
 }
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class ToolRegistry:
-    """把 ToolSpec（prompt 侧）与 ToolHandler（执行侧）绑在一起的查找表。
+    """name → ToolDefinition 的不可变只读映射。
 
-    同一个工具的 spec 和 handler 是分开维护的：prompt 需要自然语言描述，
-    执行只需要函数引用——解耦能让测试替换 handler 而不重写 prompt。
+    构造完成后无法增删替换：底层用 MappingProxyType 包住一个有序 dict，
+    任何项级写入都会抛 TypeError，这样 NativeToolsOpenAIAdapter 等下游缓存不会变脏。
+    实例本身是 frozen dataclass，对 `definitions` 字段的重新赋值会抛 FrozenInstanceError。
     """
 
-    specs: dict[str, ToolSpec]
-    handlers: dict[str, ToolHandler]
+    definitions: Mapping[str, ToolDefinition]
+
+    def __post_init__(self) -> None:
+        # 始终对入参做一次浅拷贝再包成 MappingProxyType：
+        # 即便调用方传入的已经是 MappingProxyType，它内部仍可能指向一个外部仍在持有的
+        # 可变 dict——`MappingProxyType(other_proxy)` 不会重建底层存储，于是对源 dict 的
+        # 后续 add/remove/replace 会透过 proxy 漏进 registry，违反不可变契约。
+        object.__setattr__(self, "definitions", MappingProxyType(dict(self.definitions)))
 
     def describe_for_prompt(self) -> str:
-        """把 specs 渲染成 "- name: desc\\n  input_schema: {...}" 的多行文案。
+        """把 definitions 渲染成 "- name: desc\\n  input_schema: {...}" 的多行文案。
 
         按 name 排序保证输出稳定，便于 prompt cache 命中与 diff 审查。
         """
         lines = []
-        for name in sorted(self.specs):
-            spec = self.specs[name]
-            lines.append(f"- {spec.name}: {spec.description}")
-            lines.append(f"  input_schema: {spec.input_schema}")
+        for name in sorted(self.definitions):
+            definition = self.definitions[name]
+            lines.append(f"- {definition.name}: {definition.description}")
+            lines.append(f"  input_schema: {definition.input_schema}")
         return "\n".join(lines)
 
     def execute(
@@ -415,28 +427,28 @@ class ToolRegistry:
 
         未知工具名直接 KeyError，由 ReAct 循环吞入记录成错误步——模型下一轮能看到纠错信号。
         """
-        if action not in self.handlers:
+        if action not in self.definitions:
             raise KeyError(f"Unknown tool: {action}")
-        return self.handlers[action](task, action_input)
+        return self.definitions[action].handler(task, action_input)
 
     def to_openai_tools(self) -> list[dict[str, Any]]:
-        """把所有带 `json_schema` 的 specs 打包成 OpenAI `tools=[...]` 请求字段。
+        """把所有带 `json_schema` 的 definitions 打包成 OpenAI `tools=[...]` 请求字段。
 
-        - 按工具名排序，保证请求体稳定（便于 prompt cache 命中）
+        - 按工具名排序，保证请求体字节稳定（prompt cache 命中 + diff 审查友好）
         - 缺少 `json_schema` 的工具会被跳过 —— 即不暴露给 native function calling
         """
         tools: list[dict[str, Any]] = []
-        for name in sorted(self.specs):
-            spec = self.specs[name]
-            if spec.json_schema is None:
+        for name in sorted(self.definitions):
+            definition = self.definitions[name]
+            if definition.json_schema is None:
                 continue
             tools.append(
                 {
                     "type": "function",
                     "function": {
-                        "name": spec.name,
-                        "description": spec.description,
-                        "parameters": spec.json_schema,
+                        "name": definition.name,
+                        "description": definition.description,
+                        "parameters": definition.json_schema,
                     },
                 }
             )
@@ -446,73 +458,22 @@ class ToolRegistry:
 def create_default_tool_registry() -> ToolRegistry:
     """构造默认 8 件套工具注册表。
 
-    工具清单（按字母序）：
-    - answer                 终止 + 提交答案（唯一终止工具）
-    - execute_context_sql    sqlite 只读 SQL
-    - execute_python         子进程执行任意 Python
-    - inspect_sqlite_schema  sqlite 表结构
-    - list_context           列目录树
-    - read_csv               预览 CSV
-    - read_doc               预览文本文档
-    - read_json              预览 JSON
+    注册顺序（按规范固定）：
+    1. list_context           列目录树
+    2. read_csv               预览 CSV
+    3. read_doc               预览文本文档
+    4. read_json              预览 JSON
+    5. inspect_sqlite_schema  sqlite 表结构
+    6. execute_context_sql    sqlite 只读 SQL
+    7. execute_python         子进程执行任意 Python
+    8. answer                 终止 + 提交答案（唯一终止工具）
 
     `input_schema` 里的示例值是"演示"形式（不是真实 JSON Schema），模型看到
     `"columns": ["column_name"]` 会按模式填自己的数据，实测比严谨 schema 更不易出错。
     `json_schema` 则是给 OpenAI function calling 用的严格 schema。
     """
-    specs = {
-        "answer": ToolSpec(
-            name="answer",
-            description=(
-                "Use this when the final answer table is determined. This is the only "
-                "way to submit the answer to the user/evaluator; plain text answers "
-                "will be ignored."
-            ),
-            input_schema={
-                "columns": ["column_name"],
-                "rows": [["value_1"]],
-            },
-            json_schema=_ANSWER_SCHEMA,
-        ),
-        "execute_context_sql": ToolSpec(
-            name="execute_context_sql",
-            description=(
-                "Use when data in a sqlite/db file can be answered with read-only SQL "
-                "queries or aggregations. Call inspect_sqlite_schema first for an "
-                "unknown database."
-            ),
-            input_schema={
-                "path": "relative/path/to/file.sqlite",
-                "sql": "SELECT ...",
-                "limit": 200,
-            },
-            json_schema=_EXECUTE_CONTEXT_SQL_SCHEMA,
-        ),
-        "execute_python": ToolSpec(
-            name="execute_python",
-            description=(
-                "Use when you need computation, cleaning, aggregation, cross-file "
-                "joins, large-file streaming, structured processing, or anything "
-                "beyond simple preview tools. Python runs with the task context "
-                "directory as the working directory and returns captured stdout as `output`. "
-                # 动态把超时秒数写进描述，避免改常量后忘记更新文案
-                f"The execution timeout is fixed at {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds."
-            ),
-            input_schema={
-                "code": "import os\nprint(sorted(os.listdir('.')))",
-            },
-            json_schema=_EXECUTE_PYTHON_SCHEMA,
-        ),
-        "inspect_sqlite_schema": ToolSpec(
-            name="inspect_sqlite_schema",
-            description=(
-                "Use first when you find a sqlite/db file and need to know its "
-                "tables, columns, and schema before writing SQL."
-            ),
-            input_schema={"path": "relative/path/to/file.sqlite"},
-            json_schema=_INSPECT_SQLITE_SCHEMA,
-        ),
-        "list_context": ToolSpec(
+    definitions: list[ToolDefinition] = [
+        ToolDefinition(
             name="list_context",
             description=(
                 "Use first to discover which files and directories exist under context "
@@ -520,8 +481,9 @@ def create_default_tool_registry() -> ToolRegistry:
             ),
             input_schema={"max_depth": 4},
             json_schema=_LIST_CONTEXT_SCHEMA,
+            handler=_list_context,
         ),
-        "read_csv": ToolSpec(
+        ToolDefinition(
             name="read_csv",
             description=(
                 "Use when you need to preview a CSV file, confirm column names, or "
@@ -529,8 +491,9 @@ def create_default_tool_registry() -> ToolRegistry:
             ),
             input_schema={"path": "relative/path/to/file.csv", "max_rows": 20},
             json_schema=_READ_CSV_SCHEMA,
+            handler=_read_csv,
         ),
-        "read_doc": ToolSpec(
+        ToolDefinition(
             name="read_doc",
             description=(
                 "Use when you need to preview a text-like document, confirm relevant "
@@ -544,8 +507,9 @@ def create_default_tool_registry() -> ToolRegistry:
                 "keyword": "optional search text",
             },
             json_schema=_READ_DOC_SCHEMA,
+            handler=_read_doc,
         ),
-        "read_json": ToolSpec(
+        ToolDefinition(
             name="read_json",
             description=(
                 "Use when you need to preview a JSON file, confirm top-level fields, "
@@ -553,17 +517,63 @@ def create_default_tool_registry() -> ToolRegistry:
             ),
             input_schema={"path": "relative/path/to/file.json", "max_chars": 4000},
             json_schema=_READ_JSON_SCHEMA,
+            handler=_read_json,
         ),
-    }
-    # handlers 的键必须与 specs 对齐；新增工具时同步改两处
-    handlers = {
-        "answer": _answer,
-        "execute_context_sql": _execute_context_sql,
-        "execute_python": _execute_python,
-        "inspect_sqlite_schema": _inspect_sqlite_schema,
-        "list_context": _list_context,
-        "read_csv": _read_csv,
-        "read_doc": _read_doc,
-        "read_json": _read_json,
-    }
-    return ToolRegistry(specs=specs, handlers=handlers)
+        ToolDefinition(
+            name="inspect_sqlite_schema",
+            description=(
+                "Use first when you find a sqlite/db file and need to know its "
+                "tables, columns, and schema before writing SQL."
+            ),
+            input_schema={"path": "relative/path/to/file.sqlite"},
+            json_schema=_INSPECT_SQLITE_SCHEMA,
+            handler=_inspect_sqlite_schema,
+        ),
+        ToolDefinition(
+            name="execute_context_sql",
+            description=(
+                "Use when data in a sqlite/db file can be answered with read-only SQL "
+                "queries or aggregations. Call inspect_sqlite_schema first for an "
+                "unknown database."
+            ),
+            input_schema={
+                "path": "relative/path/to/file.sqlite",
+                "sql": "SELECT ...",
+                "limit": 200,
+            },
+            json_schema=_EXECUTE_CONTEXT_SQL_SCHEMA,
+            handler=_execute_context_sql,
+        ),
+        ToolDefinition(
+            name="execute_python",
+            description=(
+                "Use when you need computation, cleaning, aggregation, cross-file "
+                "joins, large-file streaming, structured processing, or anything "
+                "beyond simple preview tools. Python runs with the task context "
+                "directory as the working directory and returns captured stdout as `output`. "
+                # 动态把超时秒数写进描述，避免改常量后忘记更新文案
+                f"The execution timeout is fixed at {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds."
+            ),
+            input_schema={
+                "code": "import os\nprint(sorted(os.listdir('.')))",
+            },
+            json_schema=_EXECUTE_PYTHON_SCHEMA,
+            handler=_execute_python,
+        ),
+        ToolDefinition(
+            name="answer",
+            description=(
+                "Use this when the final answer table is determined. This is the only "
+                "way to submit the answer to the user/evaluator; plain text answers "
+                "will be ignored."
+            ),
+            input_schema={
+                "columns": ["column_name"],
+                "rows": [["value_1"]],
+            },
+            json_schema=_ANSWER_SCHEMA,
+            handler=_answer,
+            is_terminal=True,  # 唯一终止工具
+        ),
+    ]
+    return ToolRegistry(definitions={d.name: d for d in definitions})

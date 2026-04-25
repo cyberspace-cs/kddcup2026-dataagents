@@ -62,7 +62,7 @@ def _build_tool_call(
 
 
 def _default_tool_names() -> set[str]:
-    return set(create_default_tool_registry().handlers)
+    return set(create_default_tool_registry().definitions)
 
 
 def test_reasoning_tool_call_draft_parser_handles_multiline_python() -> None:

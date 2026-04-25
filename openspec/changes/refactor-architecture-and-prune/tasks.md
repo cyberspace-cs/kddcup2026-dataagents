@@ -34,14 +34,14 @@
 
 ## 4. ToolDefinition consolidation + immutable ToolRegistry
 
-- [ ] 4.1 Define `ToolDefinition` dataclass in `src/data_agent_baseline/tools/registry.py` with `name`, `description`, `input_schema`, `json_schema`, `handler`, `is_terminal`
-- [ ] 4.2 Refactor `ToolRegistry` to expose `definitions: Mapping[str, ToolDefinition]` as a `MappingProxyType` (immutable post-construction)
-- [ ] 4.3 Update `create_default_tool_registry` to construct `ToolDefinition` instances; preserve registration order (8 tools as listed in spec)
-- [ ] 4.4 Set `is_terminal=True` only on the `answer` definition; all other tools `is_terminal=False`
-- [ ] 4.5 Preserve `to_openai_tools()` sorted-by-name output; add a regression test that two consecutive calls produce byte-identical JSON
-- [ ] 4.6 Update `NativeToolsOpenAIAdapter` schema cache to read from immutable definitions; verify cache stays valid across calls
-- [ ] 4.7 Update `tests/test_registry_json_schema.py` to construct via the new `ToolDefinition` API
-- [ ] 4.8 Add `tests/test_registry_immutable.py` that asserts mutation attempts raise `TypeError` post-construction
+- [x] 4.1 Define `ToolDefinition` dataclass in `src/data_agent_baseline/tools/registry.py` with `name`, `description`, `input_schema`, `json_schema`, `handler`, `is_terminal`
+- [x] 4.2 Refactor `ToolRegistry` to expose `definitions: Mapping[str, ToolDefinition]` as a `MappingProxyType` (immutable post-construction)
+- [x] 4.3 Update `create_default_tool_registry` to construct `ToolDefinition` instances; preserve registration order (8 tools as listed in spec)
+- [x] 4.4 Set `is_terminal=True` only on the `answer` definition; all other tools `is_terminal=False`
+- [x] 4.5 Preserve `to_openai_tools()` sorted-by-name output; add a regression test that two consecutive calls produce byte-identical JSON
+- [x] 4.6 Update `NativeToolsOpenAIAdapter` schema cache to read from immutable definitions; verify cache stays valid across calls
+- [x] 4.7 Update `tests/test_registry_json_schema.py` to construct via the new `ToolDefinition` API
+- [x] 4.8 Add `tests/test_registry_immutable.py` that asserts mutation attempts raise `TypeError` post-construction
 
 ## 5. Split `react.py` into protocol adapter + dispatcher + recorder
 

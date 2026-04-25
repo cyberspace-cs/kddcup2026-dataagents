@@ -329,7 +329,9 @@ class NativeToolsOpenAIAdapter:
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
         self.max_tokens = max_tokens
         self.enable_thinking = enable_thinking
-        # 预先把 ToolRegistry 转成 OpenAI tools 数组；保持实例不可变方便 prompt cache
+        # 预先把不可变 ToolRegistry 的 definitions 转成 OpenAI tools 数组并缓存：
+        # registry 在构造后无法增删工具，因此该缓存在适配器生命周期内永远有效，
+        # 也保证了重复请求的 tools 字段字节稳定（prompt cache 命中）。
         self._openai_tools = tools.to_openai_tools()
 
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
