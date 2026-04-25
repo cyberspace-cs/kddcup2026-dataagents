@@ -1,47 +1,40 @@
 dataset:
-  root_path: data/public/input
+  root_path: data/public/input             # 相对路径以 PROJECT_ROOT 为基锚定
 
 agent:
-  model: YOUR_MODEL_NAME
-  api_base: YOUR_API_BASE_URL
-  api_key: YOUR_API_KEY
-  max_steps: 16
-  temperature: 0.0
-  # 默认：OpenAI 原生 function calling。要求 vLLM 启用
-  # --enable-auto-tool-choice --tool-call-parser qwen3_coder
-  tool_protocol: native
-  # 关到 false 可兼容个别 OpenAI 兼容后端（不支持 parallel_tool_calls 字段时）
-  allow_parallel_tool_calls: true
-  # 单次 chat.completions 输出上限（含 reasoning tokens）；0=不下发，走服务端默认。
-  # 本地调百炼 Qwen3.5 限 TPM 的场景建议填，预扣 token 误差会小很多
-  max_tokens: 16384
-  # Qwen3 思考模式开关（经 OpenAI SDK extra_body 透传）；留空=服务端默认。
-  # 线上 vLLM 启动时带 --reasoning-parser qwen3，默认 on；本地设 true 以对齐行为
-  enable_thinking: true
-  # 降级路径：端点不支持 tools= 时，改为文本 JSON fence ReAct
+  model: YOUR_MODEL_NAME                   # str
+  api_base: YOUR_API_BASE_URL              # str（OpenAI 兼容 chat.completions 端点）
+  api_key: YOUR_API_KEY                    # str；若启用 api_keys 池则忽略此字段
+  max_steps: 16                            # int >= 1（YAML 标量；带引号的 "16" 会被拒收）
+  temperature: 0.0                         # float
+  tool_protocol: native                    # Literal["native", "text"]
+  allow_parallel_tool_calls: true          # bool；个别后端不支持 parallel_tool_calls 时设 false
+  max_tokens: 16384                        # int >= 0；0=不下发上限走服务端默认
+  enable_thinking: true                    # bool | null；null = 不下发 extra_body
+
+  # 降级路径：端点不支持 tools= 时改为文本 JSON fence ReAct
   # tool_protocol: text
 
-  # ---- PR-2: 本地 Key 池 + 限速（仅本地调百炼 Qwen3.5 时启用；线上 vLLM 留空）----
-  # 下面两个块必须"要么都写、要么都不写"，load_app_config 会拒绝只写其一的配置。
-  # 启用后 runner 会按 task_index % len(api_keys) 轮询 Key，每个 Key 独立走
-  # RPM+TPM 双令牌桶；同任务的所有 ReAct 轮次共用一个 Key（保留 prefix 缓存）。
+  # ---- 可选：本地 Key 池 + 跨进程限速 ----
+  # api_keys 与 rate_limit 必须 "要么都写、要么都不写"；只写其一会被 load_app_config 拒绝。
+  # 启用后 runner 按 task_index % len(api_keys) 给每个任务固定 Key，
+  # 单 Key 独立走 RPM+TPM 双令牌桶（filelock 保护，跨进程安全）。
   #
-  # api_keys:
-  #   - sk-aliyun-key-A
-  #   - sk-aliyun-key-B
+  # api_keys:                              # tuple[str, ...]，去重，非空字符串
+  #   - sk-key-A
+  #   - sk-key-B
   # rate_limit:
-  #   rpm_per_key: 600              # 单 Key 的名义 RPM 上限
-  #   tpm_per_key: 1000000          # 单 Key 的名义 TPM 上限
-  #   safety_factor: 0.85           # 实际容量 = cap * 0.85，留 15% 作突发 buffer
-  #   reserve_output_tokens: 16384  # 预扣输出上限；建议与 max_tokens 对齐
-  #   max_retries: 6                # 429/5xx 重试上限；超出抛 RateLimitExhausted
-  #   backoff_initial_seconds: 1.0
-  #   backoff_max_seconds: 30.0
-  #   # state_dir: 留空则自动落在 artifacts/ratelimit/<run_id>/
-  #   # state_dir: /tmp/ratelimit/my-run
+  #   rpm_per_key: 600                     # int > 0
+  #   tpm_per_key: 1000000                 # int > 0
+  #   safety_factor: 0.85                  # float in (0, 1]
+  #   reserve_output_tokens: 16384         # int > 0；不得超过 agent.max_tokens
+  #   max_retries: 6                       # int >= 0
+  #   backoff_initial_seconds: 1.0         # float > 0
+  #   backoff_max_seconds: 30.0            # float >= backoff_initial_seconds
+  #   # state_dir: artifacts/ratelimit/<run_id>/    # 默认值；显式覆盖时为单层目录名
 
 run:
-  output_dir: artifacts/runs
-  run_id: example_run_id
-  max_workers: 8
-  task_timeout_seconds: 600
+  output_dir: artifacts/runs               # 相对路径以 PROJECT_ROOT 为基锚定
+  run_id: example_run_id                   # str | null；null = 自动 UTC 微秒时间戳
+  max_workers: 8                           # int >= 1
+  task_timeout_seconds: 600                # int；<= 0 关闭单任务超时

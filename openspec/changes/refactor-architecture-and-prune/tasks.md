@@ -97,35 +97,35 @@
 - [x] 10.2 Add `[tool.pytest.ini_options]` `addopts = "-ra --cov=data_agent_baseline --cov-report=term-missing --cov-fail-under=70"`
 - [x] 10.3 Create `.pre-commit-config.yaml` with the chain: `ruff format` → `ruff check --fix` → `pyright src`
 - [x] 10.4 Run `uv run ruff format --check .`, `uv run ruff check .`, `uv run pyright`, and `uv run pytest` end-to-end; all exit `0`
-- [ ] 10.5 Document the gate locally in `docs/development.md` (uv workflow, `pre-commit install` opt-in, gate exit-code contracts)
+- [x] 10.5 Document the gate locally in `docs/development.md` (uv workflow, `pre-commit install` opt-in, gate exit-code contracts)
 
 ## 11. Documentation reset
 
-- [ ] 11.1 Delete `docs/00-index.md`, `docs/01-requirements.md`, `docs/02-feasibility.md`, `docs/03-architecture.md`, `docs/04-detailed-design.md`, `docs/05-milestones-testing-risk.md`, `docs/06-interfaces.md`, `docs/07-prompts.md`, `docs/08-local-scorer.md`, `docs/09-deployment.md`, `docs/10-task-playbooks.md`, `docs/11-ops.md`
-- [ ] 11.2 Write `docs/architecture.md` describing the live ReAct loop, native+text protocols, key-pool + rate limiter, subprocess isolation, with links to `openspec/specs/agent-execution-loop`, `openspec/specs/model-adapter`, `openspec/specs/tool-registry`, `openspec/specs/task-runner`, `openspec/specs/rate-limited-key-pool`
-- [ ] 11.3 Write `docs/cli.md` documenting the four `dabench` subcommands (`status`, `inspect-task`, `run-task`, `run-benchmark`) and the YAML config schema, linking to `openspec/specs/cli-commands` and `openspec/specs/app-config`
-- [ ] 11.4 Write `docs/agent-protocol.md` covering when to use native vs text, the 8-tool default inventory, and the `trace.json` / `summary.json` schemas
-- [ ] 11.5 Write `docs/development.md` covering the uv workflow, `ruff + pyright + pytest` gates, `pre-commit install`, and contributing rules
-- [ ] 11.6 Verify no doc under `docs/` references a non-existent path (no `src/dabench`, no `TaskOrchestrator`, no `DataProfiler`, no `OutputWriter`, no `read_pdf`, no `read_chart`)
-- [ ] 11.7 Delete `README.zh.md`
-- [ ] 11.8 Trim `README.md` to upstream-canonical sections (Quick Start, Dataset, Configuration, CLI, Tools, Outputs, Main Modules)
-- [ ] 11.9 Rewrite `CHANGELOG.md` `[Unreleased]` section to capture: PR-1 baseline, PR-2 dual-key pool + cross-process rate limiter, native function calling, partial-trace recovery on subprocess timeout, this refactor
+- [x] 11.1 Delete `docs/00-index.md`, `docs/01-requirements.md`, `docs/02-feasibility.md`, `docs/03-architecture.md`, `docs/04-detailed-design.md`, `docs/05-milestones-testing-risk.md`, `docs/06-interfaces.md`, `docs/07-prompts.md`, `docs/08-local-scorer.md`, `docs/09-deployment.md`, `docs/10-task-playbooks.md`, `docs/11-ops.md`
+- [x] 11.2 Write `docs/architecture.md` describing the live ReAct loop, native+text protocols, key-pool + rate limiter, subprocess isolation, with links to `openspec/specs/agent-execution-loop`, `openspec/specs/model-adapter`, `openspec/specs/tool-registry`, `openspec/specs/task-runner`, `openspec/specs/rate-limited-key-pool`
+- [x] 11.3 Write `docs/cli.md` documenting the four `dabench` subcommands (`status`, `inspect-task`, `run-task`, `run-benchmark`) and the YAML config schema, linking to `openspec/specs/cli-commands` and `openspec/specs/app-config`
+- [x] 11.4 Write `docs/agent-protocol.md` covering when to use native vs text, the 8-tool default inventory, and the `trace.json` / `summary.json` schemas
+- [x] 11.5 Write `docs/development.md` covering the uv workflow, `ruff + pyright + pytest` gates, `pre-commit install`, and contributing rules
+- [x] 11.6 Verify no doc under `docs/` references a non-existent path (no `src/dabench`, no `TaskOrchestrator`, no `DataProfiler`, no `OutputWriter`, no `read_pdf`, no `read_chart`)
+- [x] 11.7 Delete `README.zh.md`
+- [x] 11.8 Trim `README.md` to upstream-canonical sections (Quick Start, Dataset, Configuration, CLI, Tools, Outputs, Main Modules)
+- [x] 11.9 Rewrite `CHANGELOG.md` `[Unreleased]` section to capture: PR-1 baseline, PR-2 dual-key pool + cross-process rate limiter, native function calling, partial-trace recovery on subprocess timeout, this refactor
 
 ## 12. Orphan cleanup
 
-- [ ] 12.1 Delete `src/data_agent_baseline/workflow/` (only stale `__pycache__` remains)
-- [ ] 12.2 Delete `scripts/` (only stale `__pycache__`)
-- [ ] 12.3 Delete `configs/delegate_experiment.yaml`
-- [ ] 12.4 Purge stale `.pyc` files under `tests/__pycache__/` (the 13 entries: `test_delegate_*`, `test_workflow_*`, `test_qwen_agent_adapter`, `test_runner_timeout`, `test_sqlite_value_grounding`, `test_final_answer_shaper`, `test_react_native_with_delegate`, `test_prompt_native`)
-- [ ] 12.5 Refresh `configs/react_baseline.example.yaml` inline comments to match the new Pydantic-validated types (no field name or default changes)
+- [x] 12.1 Delete `src/data_agent_baseline/workflow/` (only stale `__pycache__` remains)
+- [x] 12.2 Delete `scripts/` (only stale `__pycache__`)
+- [x] 12.3 Delete `configs/delegate_experiment.yaml`
+- [x] 12.4 Purge stale `.pyc` files under `tests/__pycache__/` (the 13 entries: `test_delegate_*`, `test_workflow_*`, `test_qwen_agent_adapter`, `test_runner_timeout`, `test_sqlite_value_grounding`, `test_final_answer_shaper`, `test_react_native_with_delegate`, `test_prompt_native`)
+- [x] 12.5 Refresh `configs/react_baseline.example.yaml` inline comments to match the new Pydantic-validated types (no field name or default changes)
 
 ## 13. Final acceptance gates
 
-- [ ] 13.1 `uv run ruff format --check .` exits `0`
-- [ ] 13.2 `uv run ruff check .` exits `0`
-- [ ] 13.3 `uv run pyright` exits `0` (strict on `src/`, basic on `tests/`)
-- [ ] 13.4 `uv run pytest` exits `0` with coverage ≥ 70%
-- [ ] 13.5 `uv run pre-commit run --all-files` exits `0`
-- [ ] 13.6 `tests/test_golden_trace.py`, `tests/test_config_byte_compat.py`, `tests/test_config_invalid_messages.py` all pass byte-for-byte
-- [ ] 13.7 `openspec validate refactor-architecture-and-prune --strict` exits `0`
-- [ ] 13.8 Visual `git diff` review confirms wire formats (`trace.json`, `summary.json`, `prediction.csv`) are unchanged for the golden fixture
+- [x] 13.1 `uv run ruff format --check .` exits `0`
+- [x] 13.2 `uv run ruff check .` exits `0`
+- [x] 13.3 `uv run pyright` exits `0` (strict on `src/`, basic on `tests/`)
+- [x] 13.4 `uv run pytest` exits `0` with coverage ≥ 70%
+- [x] 13.5 `uv run pre-commit run --all-files` exits `0`
+- [x] 13.6 `tests/test_golden_trace.py`, `tests/test_config_byte_compat.py`, `tests/test_config_invalid_messages.py` all pass byte-for-byte
+- [x] 13.7 `openspec validate refactor-architecture-and-prune --strict` exits `0`
+- [x] 13.8 Visual `git diff` review confirms wire formats (`trace.json`, `summary.json`, `prediction.csv`) are unchanged for the golden fixture
