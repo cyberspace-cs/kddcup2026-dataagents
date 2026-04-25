@@ -28,14 +28,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from data_agent_baseline.agents.model import NativeToolsOpenAIAdapter, OpenAIModelAdapter
-from data_agent_baseline.agents.rate_limit import RateLimitedAdapter
-from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import AppConfig
-from data_agent_baseline.tools.registry import ToolRegistry, create_default_tool_registry
+from data_agent_baseline.run.app import build_application
+
+if TYPE_CHECKING:
+    # 仅作类型注解用——避免 runner.py 在运行时直接持有具体 adapter / registry 类型，
+    # 所有实例化都收敛到 `data_agent_baseline.run.app.build_application`。
+    from data_agent_baseline.agents.model import ModelAdapter
+    from data_agent_baseline.agents.recorder import StepCallback
+    from data_agent_baseline.tools.registry import ToolRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,53 +108,6 @@ def create_run_output_dir(output_root: Path, *, run_id: str | None = None) -> tu
     run_output_dir = output_root / effective_run_id
     run_output_dir.mkdir(parents=True, exist_ok=False)
     return effective_run_id, run_output_dir
-
-
-def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None):
-    """根据 `config.agent` 构造模型适配器。
-
-    按 `tool_protocol` 分发：
-    - "native": 需要传入 `tools` 以把工具 schema 下推到 OpenAI `tools=[...]` 字段
-    - "text":   传统文本协议，不需要 tools 参数
-
-    当 `config.agent.rate_limit` 非 None 且 `api_key` 非空时，外面再套一层
-    `RateLimitedAdapter`（PR-2）。线上 vLLM 路径留空 rate_limit 即跳过。
-
-    独立成函数主要是为了测试：可以 monkeypatch 掉这里注入 `ScriptedModelAdapter`。
-    """
-    inner: NativeToolsOpenAIAdapter | OpenAIModelAdapter
-    if config.agent.tool_protocol == "native":
-        if tools is None:
-            # 给一个防御性错误：native 协议必须提供 tools
-            raise ValueError("NativeToolsOpenAIAdapter requires a ToolRegistry; pass `tools=...`.")
-        inner = NativeToolsOpenAIAdapter(
-            model=config.agent.model,
-            api_base=config.agent.api_base,
-            api_key=config.agent.api_key,
-            temperature=config.agent.temperature,
-            tools=tools,
-            allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
-            max_tokens=config.agent.max_tokens,
-            enable_thinking=config.agent.enable_thinking,
-        )
-    else:
-        inner = OpenAIModelAdapter(
-            model=config.agent.model,
-            api_base=config.agent.api_base,
-            api_key=config.agent.api_key,
-            temperature=config.agent.temperature,
-            max_tokens=config.agent.max_tokens,
-            enable_thinking=config.agent.enable_thinking,
-        )
-
-    # PR-2：有 rate_limit 就包一层限速壳；没有就返回裸 adapter（线上路径不变）
-    if config.agent.rate_limit is not None and config.agent.api_key:
-        return RateLimitedAdapter(
-            inner=inner,
-            api_key=config.agent.api_key,
-            rate_limit=config.agent.rate_limit,
-        )
-    return inner
 
 
 def _resolve_ratelimit_state_dir(config: AppConfig, effective_run_id: str) -> Path:
@@ -322,34 +279,20 @@ def _run_single_task_core(
     *,
     task_id: str,
     config: AppConfig,
-    model=None,
+    model: ModelAdapter | None = None,
     tools: ToolRegistry | None = None,
-    step_callback=None,
+    step_callback: StepCallback | None = None,
 ) -> dict[str, Any]:
-    """纯业务逻辑：加载任务 → 构造 Agent → 跑循环 → 返回 dict。
+    """纯业务逻辑：构造 AgentApp → 拿任务 → 跑循环 → 返回 dict。
 
-    model/tools 若外部传入则复用（并行/测试场景），否则现建。
-    `step_callback` 允许 runner 在子进程里注入增量 trace 落盘逻辑。
+    `model` / `tools` 不为 None 时透传给 `build_application` 作为 override，
+    让测试无需真的初始化 OpenAI 客户端；线上 None 时走默认 wiring。
+    `step_callback` 由 runner 在子进程里注入，用于增量 trace 落盘。
     """
-    # 每次都现 new 一个 dataset 对象：它是 frozen dataclass，几乎零成本
-    public_dataset = DABenchPublicDataset(config.dataset.root_path)
-    task = public_dataset.get_task(task_id)
-
-    effective_tools = tools or create_default_tool_registry()
-    effective_model = model or build_model_adapter(config, tools=effective_tools)
-
-    agent = ReActAgent(
-        model=effective_model,
-        tools=effective_tools,
-        config=ReActAgentConfig(
-            max_steps=config.agent.max_steps,
-            max_empty_tool_call_retries=config.agent.max_empty_tool_call_retries,
-        ),
-        protocol=config.agent.tool_protocol,
-        step_callback=step_callback,
-    )
-    run_result = agent.run(task)
-    return run_result.to_dict()
+    app = build_application(config, model=model, tools=tools)
+    task = app.dataset.get_task(task_id)
+    agent = app.new_agent(step_callback=step_callback)
+    return agent.run(task).to_dict()
 
 
 def _run_single_task_in_subprocess(
@@ -651,30 +594,41 @@ def run_benchmark(
 
     task_artifacts: list[TaskRunArtifacts]
     if effective_workers == 1:
-        # 串行路径：共享 model/tools 减少重复初始化开销
-        shared_tools = tools or create_default_tool_registry()
-        # 启用 Key 池时，model 需要按 task 轮询 Key 重建——放弃共享 model；
-        # 但共享 tools 仍然成立（tool registry 是无状态的）
-        shared_model = (
-            None if use_key_pool else (model or build_model_adapter(config, tools=shared_tools))
-        )
         task_artifacts = []
-        for index, task_id in enumerate(task_ids):
-            iter_config = (
-                _pin_key_on_config(config, task_index=index, effective_run_id=effective_run_id)
-                if use_key_pool
-                else config
-            )
-            artifact = run_single_task(
-                task_id=task_id,
-                config=iter_config,
-                run_output_dir=run_output_dir,
-                model=shared_model,
-                tools=shared_tools,
-            )
-            task_artifacts.append(artifact)
-            if progress_callback is not None:
-                progress_callback(artifact)
+        if use_key_pool:
+            # Key 池路径：上游 config.rate_limit.state_dir 尚未解析，无法在主进程
+            # 构造 RateLimitedAdapter；因此每轮先 _pin_key_on_config 把 state_dir / Key
+            # 落实，再交由 run_single_task 走子进程或 _run_single_task_core 内的
+            # build_application 完整构造。
+            for index, task_id in enumerate(task_ids):
+                iter_config = _pin_key_on_config(
+                    config, task_index=index, effective_run_id=effective_run_id
+                )
+                artifact = run_single_task(
+                    task_id=task_id,
+                    config=iter_config,
+                    run_output_dir=run_output_dir,
+                    model=model,
+                    tools=tools,
+                )
+                task_artifacts.append(artifact)
+                if progress_callback is not None:
+                    progress_callback(artifact)
+        else:
+            # 单 Key 路径：build_application 一次构造 registry + model，全程复用，
+            # 减少重复的 OpenAI 客户端 / 注册表初始化开销。
+            base_app = build_application(config, model=model, tools=tools)
+            for task_id in task_ids:
+                artifact = run_single_task(
+                    task_id=task_id,
+                    config=config,
+                    run_output_dir=run_output_dir,
+                    model=base_app.model_adapter,
+                    tools=base_app.registry,
+                )
+                task_artifacts.append(artifact)
+                if progress_callback is not None:
+                    progress_callback(artifact)
     else:
         # 并行路径：每个线程自己调 run_single_task，内部会 fork 子进程做超时隔离
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:

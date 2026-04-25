@@ -57,13 +57,13 @@
 
 ## 6. App factory boundary in `runner.py`
 
-- [ ] 6.1 Create `src/data_agent_baseline/run/app.py` defining `AgentApp` (with `dataset`, `registry`, `model_adapter`, `agent_config`, `protocol`, `new_agent(step_callback)`) and `build_application(config: AppConfig) -> AgentApp`
-- [ ] 6.2 Move adapter/registry/agent construction from `runner.py:338-351` and `runner.py:653-660` into `build_application`
-- [ ] 6.3 Update `runner.py` to import only `build_application` from `run.app`; remove direct imports of `OpenAIModelAdapter`, `NativeToolsOpenAIAdapter`, `RateLimitedAdapter`, `ReActAgent`, `ToolRegistry`, `create_default_tool_registry`
-- [ ] 6.4 Ensure `build_application` is invoked **inside** the per-task subprocess child after key pinning at `runner.py:663-688`; do not pickle `AgentApp` across the process boundary
-- [ ] 6.5 Preserve the test-injection escape hatch (`model=…, tools=…` kwargs at `runner.py:571-574, 591-601`) so tests can bypass `build_application` for in-process scripted runs
-- [ ] 6.6 Verify subprocess timeout + partial-trace recovery (preserved verbatim per D11); `tests/test_partial_trace.py` must pass unchanged
-- [ ] 6.7 Add `tests/test_app_factory.py` asserting `build_application(config)` returns an `AgentApp` with all five fields populated and that `new_agent()` returns a fresh `ReActAgent` per call
+- [x] 6.1 Create `src/data_agent_baseline/run/app.py` defining `AgentApp` (with `dataset`, `registry`, `model_adapter`, `agent_config`, `protocol`, `new_agent(step_callback)`) and `build_application(config: AppConfig) -> AgentApp`
+- [x] 6.2 Move adapter/registry/agent construction from `runner.py:338-351` and `runner.py:653-660` into `build_application`
+- [x] 6.3 Update `runner.py` to import only `build_application` from `run.app`; remove direct imports of `OpenAIModelAdapter`, `NativeToolsOpenAIAdapter`, `RateLimitedAdapter`, `ReActAgent`, `ToolRegistry`, `create_default_tool_registry`
+- [x] 6.4 Ensure `build_application` is invoked **inside** the per-task subprocess child after key pinning at `runner.py:663-688`; do not pickle `AgentApp` across the process boundary
+- [x] 6.5 Preserve the test-injection escape hatch (`model=…, tools=…` kwargs at `runner.py:571-574, 591-601`) so tests can bypass `build_application` for in-process scripted runs
+- [x] 6.6 Verify subprocess timeout + partial-trace recovery (preserved verbatim per D11); `tests/test_partial_trace.py` must pass unchanged
+- [x] 6.7 Add `tests/test_app_factory.py` asserting `build_application(config)` returns an `AgentApp` with all five fields populated and that `new_agent()` returns a fresh `ReActAgent` per call
 
 ## 7. Test helper migration: `tests/helpers/scripted_adapters.py`
 

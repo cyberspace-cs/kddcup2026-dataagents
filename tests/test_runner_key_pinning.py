@@ -23,11 +23,11 @@ from data_agent_baseline.config import (
     RunConfig,
 )
 from data_agent_baseline.run import runner as runner_mod
+from data_agent_baseline.run.app import build_model_adapter
 from data_agent_baseline.run.runner import (
     TaskRunArtifacts,
     _pin_key_on_config,
     _resolve_ratelimit_state_dir,
-    build_model_adapter,
 )
 
 # ------- 测试辅助：构造可用的 AppConfig ------------------------------------------
