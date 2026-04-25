@@ -345,7 +345,7 @@ def _run_single_task_core(
             max_steps=config.agent.max_steps,
             max_empty_tool_call_retries=config.agent.max_empty_tool_call_retries,
         ),
-        protocol=config.agent.tool_protocol,  # type: ignore[arg-type]
+        protocol=config.agent.tool_protocol,
         step_callback=step_callback,
     )
     run_result = agent.run(task)

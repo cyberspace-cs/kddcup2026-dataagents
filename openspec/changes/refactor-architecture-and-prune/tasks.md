@@ -20,17 +20,17 @@
 
 ## 3. Pydantic v2 config migration (behind compatibility wrapper)
 
-- [ ] 3.1 Add `pydantic>=2.10` to `[project.dependencies]` in `pyproject.toml`; run `uv lock --upgrade`
-- [ ] 3.2 Create `src/data_agent_baseline/config_models.py` (or extend `config.py`) with Pydantic v2 `BaseModel` classes mirroring `AppConfig`/`AgentConfig`/`RunConfig`/`RateLimitConfig`/`DatasetConfig` field-for-field
-- [ ] 3.3 Make `tool_protocol` `Literal["native","text"]` end-to-end; thread the literal through `AgentConfig` dataclass + Pydantic model
-- [ ] 3.4 Implement strict bool/int coercion via Pydantic strict types (no string→bool, no string→int)
-- [ ] 3.5 Implement custom validators that map Pydantic `ValidationError` → legacy `ValueError(...)` with byte-identical messages from the existing `config.py:179-293` raise sites
-- [ ] 3.6 Refactor `load_app_config(path)` to validate via Pydantic, then materialize the existing frozen dataclasses (do NOT return Pydantic model instances)
-- [ ] 3.7 Implement project-root anchoring for path fields inside the Pydantic validators (preserve `PROJECT_ROOT / relative_path` semantics)
-- [ ] 3.8 Implement key-pool ↔ rate-limit pairing rule as a model-level validator
-- [ ] 3.9 Run `tests/test_config_byte_compat.py` and `tests/test_config_invalid_messages.py` until both pass; iterate validators until messages match
-- [ ] 3.10 Remove the `# type: ignore[arg-type]` at `runner.py:348`; verify the call type-checks under pyright strict
-- [ ] 3.11 Document strict bool/int coercion as an intentional behavior change in `CHANGELOG.md` `[Unreleased]`
+- [x] 3.1 Add `pydantic>=2.10` to `[project.dependencies]` in `pyproject.toml`; run `uv lock --upgrade`
+- [x] 3.2 Create `src/data_agent_baseline/config_models.py` (or extend `config.py`) with Pydantic v2 `BaseModel` classes mirroring `AppConfig`/`AgentConfig`/`RunConfig`/`RateLimitConfig`/`DatasetConfig` field-for-field
+- [x] 3.3 Make `tool_protocol` `Literal["native","text"]` end-to-end; thread the literal through `AgentConfig` dataclass + Pydantic model
+- [x] 3.4 Implement strict bool/int coercion via Pydantic strict types (no string→bool, no string→int)
+- [x] 3.5 Implement custom validators that map Pydantic `ValidationError` → legacy `ValueError(...)` with byte-identical messages from the existing `config.py:179-293` raise sites
+- [x] 3.6 Refactor `load_app_config(path)` to validate via Pydantic, then materialize the existing frozen dataclasses (do NOT return Pydantic model instances)
+- [x] 3.7 Implement project-root anchoring for path fields inside the Pydantic validators (preserve `PROJECT_ROOT / relative_path` semantics)
+- [x] 3.8 Implement key-pool ↔ rate-limit pairing rule as a model-level validator
+- [x] 3.9 Run `tests/test_config_byte_compat.py` and `tests/test_config_invalid_messages.py` until both pass; iterate validators until messages match
+- [x] 3.10 Remove the `# type: ignore[arg-type]` at `runner.py:348`; verify the call type-checks under pyright strict
+- [x] 3.11 Document strict bool/int coercion as an intentional behavior change in `CHANGELOG.md` `[Unreleased]`
 
 ## 4. ToolDefinition consolidation + immutable ToolRegistry
 
