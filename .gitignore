@@ -73,6 +73,10 @@ logs/
 trace.json
 prediction.csv
 summary.json
+# 测试用的 golden fixture 必须入库——它们是 byte-stability 回归基准，不是运行时产物
+!tests/fixtures/golden/trace.json
+!tests/fixtures/golden/prediction.csv
+!tests/fixtures/golden/summary.json
 evaluation/
 
 # ─── Local configs (only example config is tracked) ─
