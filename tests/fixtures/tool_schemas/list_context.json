@@ -1,0 +1,20 @@
+{
+  "function": {
+    "description": "Use first to discover which files and directories exist under context and what file types are available.",
+    "name": "list_context",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "max_depth": {
+          "default": 4,
+          "description": "Maximum directory depth to walk when listing files.",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

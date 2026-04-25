@@ -1,0 +1,31 @@
+{
+  "function": {
+    "description": "Use when data in a sqlite/db file can be answered with read-only SQL queries or aggregations. Call inspect_sqlite_schema first for an unknown database.",
+    "name": "execute_context_sql",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "default": 200,
+          "description": "Maximum number of rows to return.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Relative path to the sqlite/db file. Examples: 'db/clinical.sqlite', 'main.db'. Paths are relative to the task context directory; DO NOT prepend 'context/'. For example use 'knowledge.md' or 'csv/foo.csv', not 'context/knowledge.md'.",
+          "type": "string"
+        },
+        "sql": {
+          "description": "Read-only SQL query to execute.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sql"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

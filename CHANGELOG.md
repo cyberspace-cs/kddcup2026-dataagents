@@ -41,6 +41,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Public surface (`AppConfig` return type, `ValueError` messages) is byte-compatible.
 - **`AgentConfig.tool_protocol` is now `Literal["native", "text"]`** end-to-end. The
   single `# type: ignore[arg-type]` in `runner.py` is removed.
+- **Tool input validation now uses Pydantic v2 models.** Each default tool gets a
+  per-tool `BaseModel` (`extra="forbid"`); missing-required, wrong-type, bound, and
+  unknown-field errors surface as structured `ValueError("<tool>: <field> <reason>")`
+  from `ToolRegistry.execute`. `to_openai_tools()` byte output is locked by
+  `tests/fixtures/tool_schemas/*.json` and the in-module `_normalize_for_vllm`
+  helper, so no wire-format change ships.
 
 ### Fixed
 - **`react.py` empty-tool retry off-by-one.** Guard now uses `>=` so

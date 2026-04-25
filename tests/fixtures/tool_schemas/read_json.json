@@ -1,0 +1,26 @@
+{
+  "function": {
+    "description": "Use when you need to preview a JSON file, confirm top-level fields, or inspect sample structured records.",
+    "name": "read_json",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "max_chars": {
+          "default": 4000,
+          "description": "Maximum number of characters to return from the JSON preview.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Relative path to a JSON file. Examples: 'json/Patient.json', 'zip_code.json'. Paths are relative to the task context directory; DO NOT prepend 'context/'. For example use 'knowledge.md' or 'csv/foo.csv', not 'context/knowledge.md'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

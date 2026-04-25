@@ -20,7 +20,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Annotated, Any, cast
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
 from data_agent_baseline.tools.filesystem import (
@@ -53,8 +55,9 @@ class ToolExecutionResult:
     answer: AnswerTable | None = None
 
 
-# 统一的 handler 签名：方便 ToolRegistry.execute 按名字查表调用
-ToolHandler = Callable[[PublicTask, dict[str, Any]], ToolExecutionResult]
+# 统一的 handler 签名：第二个参数对内置工具是已验证的 BaseModel 实例（详见 _INPUT_MODELS），
+# 对未在 _INPUT_MODELS 注册的用户自定义工具则透传原始 dict。
+ToolHandler = Callable[[PublicTask, Any], ToolExecutionResult]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +69,8 @@ class ToolDefinition:
     - input_schema:  action_input 的最小示例（文本 ReAct prompt 用，非严格 JSON Schema）
     - json_schema:   严格 JSON Schema，供 native function calling 下推给模型；
                      None 表示不暴露给原生调用（默认工具都已填充）
-    - handler:       具体执行函数，签名 `(task, action_input) -> ToolExecutionResult`
+    - handler:       具体执行函数；内置工具签名为 `(task, args: <ModelClass>) -> ToolExecutionResult`，
+                     未在 `_INPUT_MODELS` 注册的用户工具沿用 `(task, action_input: dict)`
     - is_terminal:   True 时 ReAct 循环会在该工具成功返回后立即终止；默认仅 answer 为 True
     """
 
@@ -79,118 +83,92 @@ class ToolDefinition:
 
 
 # ------------------------- 工具 handler 实现 -------------------------
-# 每个 _xxx 都把 action_input 的原始 dict 映射到底层实现函数，做必要的类型转换。
+# 每个 _xxx 接收一个已被对应 Pydantic 模型校验过的 args 实例（参见 _INPUT_MODELS）；
+# 类型转换 / 必填校验 / 边界检查全部在 ToolRegistry.execute 边界处完成。
 
 
-def _list_context(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+def _list_context(task: PublicTask, args: ListContextInput) -> ToolExecutionResult:
     """`list_context`: 展示 context/ 目录树，默认深度 4。"""
-    max_depth = int(action_input.get("max_depth", 4))
-    return ToolExecutionResult(ok=True, content=list_context_tree(task, max_depth=max_depth))
+    return ToolExecutionResult(ok=True, content=list_context_tree(task, max_depth=args.max_depth))
 
 
-def _read_csv(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+def _read_csv(task: PublicTask, args: ReadCsvInput) -> ToolExecutionResult:
     """`read_csv`: 读取 CSV 预览，默认前 20 行。"""
-    path = str(action_input["path"])
-    max_rows = int(action_input.get("max_rows", 20))
-    return ToolExecutionResult(ok=True, content=read_csv_preview(task, path, max_rows=max_rows))
+    return ToolExecutionResult(
+        ok=True, content=read_csv_preview(task, args.path, max_rows=args.max_rows)
+    )
 
 
-def _read_json(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+def _read_json(task: PublicTask, args: ReadJsonInput) -> ToolExecutionResult:
     """`read_json`: 读取 JSON 并按字符数截断，默认 4000 字符。"""
-    path = str(action_input["path"])
-    max_chars = int(action_input.get("max_chars", 4000))
-    return ToolExecutionResult(ok=True, content=read_json_preview(task, path, max_chars=max_chars))
+    return ToolExecutionResult(
+        ok=True, content=read_json_preview(task, args.path, max_chars=args.max_chars)
+    )
 
 
-def _read_doc(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+def _read_doc(task: PublicTask, args: ReadDocInput) -> ToolExecutionResult:
     """`read_doc`: 按行分页读取任意文本（md/txt），可选关键词检索。"""
-    path = str(action_input["path"])
-    start_line = int(action_input.get("start_line", 1))
-    line_count = int(action_input.get("line_count", 80))
-    raw_keyword = action_input.get("keyword")
-    keyword = None if raw_keyword is None or raw_keyword == "" else str(raw_keyword)
+    # 沿用历史"空字符串与 None 同义"行为，避免下层把空 keyword 当作精确空匹配
+    keyword = None if not args.keyword else args.keyword
     return ToolExecutionResult(
         ok=True,
         content=read_doc_preview(
             task,
-            path,
-            start_line=start_line,
-            line_count=line_count,
+            args.path,
+            start_line=args.start_line,
+            line_count=args.line_count,
             keyword=keyword,
         ),
     )
 
 
-def _inspect_sqlite_schema(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+def _inspect_sqlite_schema(task: PublicTask, args: InspectSqliteSchemaInput) -> ToolExecutionResult:
     """`inspect_sqlite_schema`: 查看 sqlite 数据库的全部表结构。"""
     # resolve_context_path 同时做越界校验 + 存在性检查
-    path = resolve_context_path(task, str(action_input["path"]))
+    path = resolve_context_path(task, args.path)
     return ToolExecutionResult(ok=True, content=inspect_sqlite_schema(path))
 
 
-def _execute_context_sql(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+def _execute_context_sql(task: PublicTask, args: ExecuteContextSqlInput) -> ToolExecutionResult:
     """`execute_context_sql`: 对 context/ 下的 sqlite 跑只读 SQL，默认 200 行上限。"""
-    path = resolve_context_path(task, str(action_input["path"]))
-    sql = str(action_input["sql"])
-    limit = int(action_input.get("limit", 200))
-    return ToolExecutionResult(ok=True, content=execute_read_only_sql(path, sql, limit=limit))
+    path = resolve_context_path(task, args.path)
+    return ToolExecutionResult(
+        ok=True, content=execute_read_only_sql(path, args.sql, limit=args.limit)
+    )
 
 
-def _execute_python(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+def _execute_python(task: PublicTask, args: ExecutePythonInput) -> ToolExecutionResult:
     """`execute_python`: 在子进程中跑任意 Python 代码，30s 超时。
 
     注意这里根据 `content.success` 决定 `ok` 的真假——和其他工具不同，
     这个工具本身可能因用户代码抛错而失败，模型需要一个明确的 ok 信号。
     """
-    code = str(action_input["code"])
     content = execute_python_code(
         context_root=task.context_dir,
-        code=code,
+        code=args.code,
         timeout_seconds=EXECUTE_PYTHON_TIMEOUT_SECONDS,
     )
     return ToolExecutionResult(ok=bool(content.get("success")), content=content)
 
 
-def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+def _answer(_task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
     """`answer`: 终止工具，提交最终答案表。
 
-    严格校验结构——答案表一旦落地即为最终产物，此处不合法比静默生成错误 CSV 更好：
-    - columns 必须是非空字符串列表
-    - rows 是列表，每行也是列表，且列数与 columns 一致
-    校验失败抛 ValueError，由 ReAct 循环捕获为一条 __error__ 步，让模型有机会重提。
+    所有结构性校验（columns 非空、每行列数 == len(columns)、单元格类型）由
+    `AnswerInput` 在 ToolRegistry.execute 边界处完成；handler 收到的 `args`
+    可信，直接拷贝成 AnswerTable 落盘。
     """
-    columns = action_input.get("columns")
-    rows = action_input.get("rows")
-    if (
-        not isinstance(columns, list)
-        or not columns
-        or not all(isinstance(item, str) for item in cast(list[Any], columns))
-    ):
-        raise ValueError("answer.columns must be a non-empty list of strings.")
-    if not isinstance(rows, list):
-        raise ValueError("answer.rows must be a list.")
-
-    columns_list = cast(list[str], columns)
-    rows_list = cast(list[Any], rows)
-    normalized_rows: list[list[Any]] = []
-    for row in rows_list:
-        if not isinstance(row, list):
-            raise ValueError("Each answer row must be a list.")
-        row_list = cast(list[Any], row)
-        # 列数匹配：防止模型少填或多填字段导致 CSV 对齐错乱
-        if len(row_list) != len(columns_list):
-            raise ValueError("Each answer row must match the number of columns.")
-        # list(row) 拷贝：避免 answer_input 被后续代码误修改
-        normalized_rows.append(list(row_list))
-
-    answer = AnswerTable(columns=list(columns_list), rows=normalized_rows)
+    # list(...) 拷贝：让最终落盘的 AnswerTable 不与外部对象共享底层引用
+    columns = list(args.columns)
+    rows = [list(row) for row in args.rows]
+    answer = AnswerTable(columns=columns, rows=rows)
     return ToolExecutionResult(
         ok=True,
         content={
             # 给模型一个简洁的提交确认信号，不把完整表回显（避免浪费 token）
             "status": "submitted",
-            "column_count": len(columns_list),
-            "row_count": len(normalized_rows),
+            "column_count": len(columns),
+            "row_count": len(rows),
         },
         is_terminal=True,  # 触发 ReAct 循环退出
         answer=answer,  # 答案对象交给循环，最终写入 prediction.csv
@@ -212,185 +190,352 @@ _PATH_CONVENTION_NOTE = (
 )
 
 
-_LIST_CONTEXT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "max_depth": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 4,
-            "description": "Maximum directory depth to walk when listing files.",
-        },
-    },
-    "required": [],
-    "additionalProperties": False,
-}
+# ------------------------- 字段工厂 + 工具入参模型 -------------------------
+# 八个工具各自一个 Pydantic 输入模型，作为 input_schema/json_schema/handler 的"单一真相源"。
+# `extra="forbid"` → 生成的 JSON Schema 中 additionalProperties=false（vLLM 约束解码必备）。
 
 
-_READ_CSV_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "path": {
-            "type": "string",
-            "description": (
-                "Relative path to a CSV file. "
-                "Examples: 'csv/member.csv', 'data/train.csv'. " + _PATH_CONVENTION_NOTE
-            ),
-        },
-        "max_rows": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 20,
-            "description": "Maximum number of preview rows to return.",
-        },
-    },
-    "required": ["path"],
-    "additionalProperties": False,
-}
+def _normalize_for_vllm(schema: dict[str, Any]) -> dict[str, Any]:
+    """把 Pydantic 生成的 JSON Schema 重写成 vLLM 端的字节稳定形态。
+
+    三处确定性变换（与历史手写 schema 字节等价）：
+    1. 递归剥掉每一层 dict 的 `title` 键（Pydantic 会在每个 property 加 `title:
+       "Field Name"` 字样；xgrammar 不消费它，但保留会改请求体字节）。
+    2. 把 `{"anyOf": [{"type": T}, {"type": "null"}]}`（含两种顺序）折叠为
+       `{"type": [T, "null"]}`，与历史 `_READ_DOC_SCHEMA` 中 `keyword` 一致；
+       兄弟键（`default`/`description` 等）原样保留。
+    3. 顶层 object 缺省 `required` 字段时补 `required: []` —— Pydantic 在没有
+       必填字段时会省略该键，但历史手写 schema 显式写了 `required: []`。
+
+    其它任何结构原样不动；该函数纯函数式，输入对象不被改写。
+    """
+
+    def _walk(node: Any) -> Any:
+        if isinstance(node, list):
+            return [_walk(item) for item in cast(list[Any], node)]
+        if not isinstance(node, dict):
+            return node
+        original = cast(dict[str, Any], node)
+        # 先做 anyOf-nullable 折叠：要在剥 title 之前判断结构，避免子元素被先改写。
+        any_of_value = original.get("anyOf")
+        if isinstance(any_of_value, list) and len(cast(list[Any], any_of_value)) == 2:
+            entries = cast(list[Any], any_of_value)
+            non_null_type: str | None = None
+            null_seen = False
+            ok = True
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    ok = False
+                    break
+                entry_dict = cast(dict[str, Any], entry)
+                # 仅识别"形如单 type 的简形 anyOf 分支"，含其他键则跳过折叠
+                if set(entry_dict.keys()) != {"type"}:
+                    ok = False
+                    break
+                inner_type = entry_dict["type"]
+                if not isinstance(inner_type, str):
+                    ok = False
+                    break
+                if inner_type == "null":
+                    null_seen = True
+                else:
+                    non_null_type = inner_type
+            if ok and null_seen and non_null_type is not None:
+                rewritten: dict[str, Any] = {}
+                for key, value in original.items():
+                    if key == "anyOf":
+                        continue
+                    if key == "title":
+                        continue
+                    rewritten[key] = _walk(value)
+                rewritten["type"] = [non_null_type, "null"]
+                return rewritten
+
+        result: dict[str, Any] = {}
+        for key, value in original.items():
+            if key == "title":
+                continue
+            result[key] = _walk(value)
+        if result.get("type") == "object" and "required" not in result:
+            result["required"] = []
+        return result
+
+    walked = _walk(schema)
+    return cast(dict[str, Any], walked)
 
 
-_READ_JSON_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "path": {
-            "type": "string",
-            "description": (
-                "Relative path to a JSON file. "
-                "Examples: 'json/Patient.json', 'zip_code.json'. " + _PATH_CONVENTION_NOTE
-            ),
-        },
-        "max_chars": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 4000,
-            "description": "Maximum number of characters to return from the JSON preview.",
-        },
-    },
-    "required": ["path"],
-    "additionalProperties": False,
-}
+def _path_field(*, file_kind: str, examples: tuple[str, ...]) -> Any:
+    """Path 字段统一描述工厂：保证 5 个 path 入参的描述风格一致。"""
+    example_text = ", ".join(repr(ex) for ex in examples)
+    return Field(
+        description=(
+            f"Relative path to a {file_kind}. Examples: {example_text}. " + _PATH_CONVENTION_NOTE
+        ),
+    )
 
 
-_READ_DOC_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "path": {
-            "type": "string",
-            "description": (
-                "Relative path to a text document (md/txt/...). "
-                "Examples: 'knowledge.md', 'docs/readme.txt'. " + _PATH_CONVENTION_NOTE
-            ),
-        },
-        "start_line": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 1,
-            "description": "1-based line number to start reading from.",
-        },
-        "line_count": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 80,
-            "description": "Number of lines to return in this page.",
-        },
-        "keyword": {
-            "type": ["string", "null"],
-            "default": None,
-            "description": "Optional keyword; when set, returns a context window around the first match.",
-        },
-    },
-    "required": ["path"],
-    "additionalProperties": False,
-}
+def _positive_int_field(*, default: int, description: str) -> Any:
+    """非负整数字段工厂：minimum=1 + 默认值，避免模型误填 0/负数。"""
+    return Field(default=default, ge=1, description=description)
 
 
-_INSPECT_SQLITE_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "path": {
-            "type": "string",
-            "description": (
-                "Relative path to a sqlite database file. "
-                "Examples: 'db/clinical.sqlite', 'main.db'. " + _PATH_CONVENTION_NOTE
-            ),
-        },
-    },
-    "required": ["path"],
-    "additionalProperties": False,
-}
+class ListContextInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_depth: Annotated[
+        int,
+        _positive_int_field(
+            default=4,
+            description="Maximum directory depth to walk when listing files.",
+        ),
+    ]
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {"max_depth": 4}
 
 
-_EXECUTE_CONTEXT_SQL_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "path": {
-            "type": "string",
-            "description": (
+class ReadCsvInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Annotated[
+        str,
+        _path_field(file_kind="CSV file", examples=("csv/member.csv", "data/train.csv")),
+    ]
+    max_rows: Annotated[
+        int,
+        _positive_int_field(
+            default=20,
+            description="Maximum number of preview rows to return.",
+        ),
+    ]
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {"path": "relative/path/to/file.csv", "max_rows": 20}
+
+
+class ReadJsonInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Annotated[
+        str,
+        _path_field(file_kind="JSON file", examples=("json/Patient.json", "zip_code.json")),
+    ]
+    max_chars: Annotated[
+        int,
+        _positive_int_field(
+            default=4000,
+            description="Maximum number of characters to return from the JSON preview.",
+        ),
+    ]
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {"path": "relative/path/to/file.json", "max_chars": 4000}
+
+
+class ReadDocInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Annotated[
+        str,
+        _path_field(
+            file_kind="text document (md/txt/...)",
+            examples=("knowledge.md", "docs/readme.txt"),
+        ),
+    ]
+    start_line: Annotated[
+        int,
+        _positive_int_field(
+            default=1,
+            description="1-based line number to start reading from.",
+        ),
+    ]
+    line_count: Annotated[
+        int,
+        _positive_int_field(
+            default=80,
+            description="Number of lines to return in this page.",
+        ),
+    ]
+    keyword: str | None = Field(
+        default=None,
+        description="Optional keyword; when set, returns a context window around the first match.",
+    )
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {
+            "path": "relative/path/to/file.md",
+            "start_line": 1,
+            "line_count": 80,
+            "keyword": "optional search text",
+        }
+
+
+class InspectSqliteSchemaInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Annotated[
+        str,
+        _path_field(
+            file_kind="sqlite database file",
+            examples=("db/clinical.sqlite", "main.db"),
+        ),
+    ]
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {"path": "relative/path/to/file.sqlite"}
+
+
+class ExecuteContextSqlInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # 这一项的"the sqlite/db file"措辞与其它 4 个 path 字段不同，沿用历史 schema 文案
+    # 以保持 to_openai_tools() 的字节稳定（_path_field 的 "Relative path to a {kind}." 模板
+    # 不适配此处的 "the"，因此手写一个 Field）。
+    path: Annotated[
+        str,
+        Field(
+            description=(
                 "Relative path to the sqlite/db file. "
                 "Examples: 'db/clinical.sqlite', 'main.db'. " + _PATH_CONVENTION_NOTE
             ),
-        },
-        "sql": {
-            "type": "string",
-            "description": "Read-only SQL query to execute.",
-        },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 200,
-            "description": "Maximum number of rows to return.",
-        },
-    },
-    "required": ["path", "sql"],
-    "additionalProperties": False,
-}
+        ),
+    ]
+    sql: Annotated[str, Field(description="Read-only SQL query to execute.")]
+    limit: Annotated[
+        int,
+        _positive_int_field(
+            default=200,
+            description="Maximum number of rows to return.",
+        ),
+    ]
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {
+            "path": "relative/path/to/file.sqlite",
+            "sql": "SELECT ...",
+            "limit": 200,
+        }
 
 
-_EXECUTE_PYTHON_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "code": {
-            "type": "string",
-            "description": (
+class ExecutePythonInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: Annotated[
+        str,
+        Field(
+            description=(
                 "Python source to execute with the task context directory as CWD. "
                 f"Execution timeout is {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds."
             ),
-        },
-    },
-    "required": ["code"],
-    "additionalProperties": False,
+        ),
+    ]
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {"code": "import os\nprint(sorted(os.listdir('.')))"}
+
+
+class AnswerInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    columns: Annotated[
+        list[str],
+        Field(min_length=1, description="Column header names (non-empty)."),
+    ]
+    rows: Annotated[
+        list[list[str | float | bool | None]],
+        Field(description="Answer rows; each row's length must match the columns array."),
+    ]
+
+    @model_validator(mode="after")
+    def _check_row_widths(self) -> AnswerInput:
+        # answer 一旦提交即为最终产物；列数错位会让 prediction.csv 对齐崩坏，必须早抛。
+        width = len(self.columns)
+        for index, row in enumerate(self.rows):
+            if len(row) != width:
+                raise ValueError(f"row {index} has {len(row)} cells but columns has {width}")
+        return self
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {"columns": ["column_name"], "rows": [["value_1"]]}
+
+
+_LIST_CONTEXT_SCHEMA = _normalize_for_vllm(ListContextInput.model_json_schema())
+_READ_CSV_SCHEMA = _normalize_for_vllm(ReadCsvInput.model_json_schema())
+_READ_JSON_SCHEMA = _normalize_for_vllm(ReadJsonInput.model_json_schema())
+_READ_DOC_SCHEMA = _normalize_for_vllm(ReadDocInput.model_json_schema())
+_INSPECT_SQLITE_SCHEMA = _normalize_for_vllm(InspectSqliteSchemaInput.model_json_schema())
+_EXECUTE_CONTEXT_SQL_SCHEMA = _normalize_for_vllm(ExecuteContextSqlInput.model_json_schema())
+_EXECUTE_PYTHON_SCHEMA = _normalize_for_vllm(ExecutePythonInput.model_json_schema())
+_ANSWER_SCHEMA = _normalize_for_vllm(AnswerInput.model_json_schema())
+
+
+# ------------------------- 校验边界：ValidationError → 结构化 ValueError -------------------------
+
+
+# 工具名 → 对应入参模型；ToolRegistry.execute 用这张表把原始 dict 翻译成已验证模型实例。
+# 仅内置工具登记于此；未登记的（用户自定义）工具走原始 dict 透传，保留向后兼容。
+_INPUT_MODELS: dict[str, type[BaseModel]] = {
+    "list_context": ListContextInput,
+    "read_csv": ReadCsvInput,
+    "read_json": ReadJsonInput,
+    "read_doc": ReadDocInput,
+    "inspect_sqlite_schema": InspectSqliteSchemaInput,
+    "execute_context_sql": ExecuteContextSqlInput,
+    "execute_python": ExecutePythonInput,
+    "answer": AnswerInput,
 }
 
 
-# answer.rows 的单元格允许 string / number / boolean / null 这四种 JSON 标量
-_ANSWER_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "columns": {
-            "type": "array",
-            "minItems": 1,
-            "items": {"type": "string"},
-            "description": "Column header names (non-empty).",
-        },
-        "rows": {
-            "type": "array",
-            "items": {
-                "type": "array",
-                "items": {
-                    "anyOf": [
-                        {"type": "string"},
-                        {"type": "number"},
-                        {"type": "boolean"},
-                        {"type": "null"},
-                    ]
-                },
-            },
-            "description": "Answer rows; each row's length must match the columns array.",
-        },
-    },
-    "required": ["columns", "rows"],
-    "additionalProperties": False,
-}
+def _format_validation_error(tool_name: str, error: ValidationError) -> ValueError:
+    """把 Pydantic ValidationError 翻译成单行 `<tool>: <field_path> <reason>` 的 ValueError。
+
+    模型在下一轮 ReAct 看到这条消息要能立刻自我修正，所以：
+    - 不把内部 model 名（如 `ReadCsvInput`）泄漏出去
+    - 只取首条错误（多错并排时模型反而更糊涂）
+    - 错误类别按 Pydantic 的 type code 分流，给出可操作描述
+    """
+    first = error.errors()[0]
+    err_type = str(first["type"])
+    loc = cast(tuple[Any, ...], first.get("loc", ()))
+    field_path = ".".join(str(seg) for seg in loc) if loc else ""
+    ctx = first.get("ctx", {})
+
+    if err_type == "missing":
+        return ValueError(f"{tool_name}: field '{field_path}' is required")
+    if err_type == "extra_forbidden":
+        return ValueError(f"{tool_name}: extra field '{field_path}' is not permitted")
+    if err_type.endswith("_type"):
+        # Pydantic 把基础类型不匹配编码成 `<expected>_type`（如 `string_type`/`int_type`）
+        expected = err_type.removesuffix("_type")
+        actual = type(first.get("input")).__name__
+        return ValueError(f"{tool_name}: field '{field_path}' must be a {expected}, got {actual}")
+    if err_type == "greater_than_equal":
+        bound = ctx.get("ge")
+        actual_value = first.get("input")
+        return ValueError(
+            f"{tool_name}: field '{field_path}' must be >= {bound}, got {actual_value}"
+        )
+    if err_type == "too_short":
+        min_len = ctx.get("min_length")
+        return ValueError(
+            f"{tool_name}: field '{field_path}' must contain at least {min_len} item(s)"
+        )
+    if err_type == "value_error":
+        # 用户自定义 ValueError 会被 Pydantic 加 "Value error, " 前缀；剥掉再贴 tool 名
+        msg = str(first["msg"]).removeprefix("Value error, ")
+        if field_path:
+            return ValueError(f"{tool_name}: field '{field_path}' {msg}")
+        return ValueError(f"{tool_name}: {msg}")
+    # 兜底：未识别的 type code 直接贴原始 msg，仍保证首 token 是 tool 名
+    return ValueError(f"{tool_name}: field '{field_path}' {first['msg']}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,13 +571,24 @@ class ToolRegistry:
     def execute(
         self, task: PublicTask, action: str, action_input: dict[str, Any]
     ) -> ToolExecutionResult:
-        """按工具名分发到对应 handler。
+        """按工具名分发到对应 handler，对内置工具先过 Pydantic 校验。
 
-        未知工具名直接 KeyError，由 ReAct 循环吞入记录成错误步——模型下一轮能看到纠错信号。
+        - 未知工具名 → KeyError（ReAct 循环会吞入记录成错误步）
+        - 已知工具但 action_input 不合规 → 由 `_format_validation_error` 翻译为
+          单行 `ValueError("<tool>: <field> <reason>")`，模型下一轮就能看到具体修复方向
+        - `model_validate` 不修改入参 dict（Pydantic 复制后再校验），原 dict 身份/内容不变
         """
         if action not in self.definitions:
             raise KeyError(f"Unknown tool: {action}")
-        return self.definitions[action].handler(task, action_input)
+        model_cls = _INPUT_MODELS.get(action)
+        if model_cls is None:
+            # 用户自定义工具：未在 _INPUT_MODELS 注册时直接透传 dict（向后兼容）
+            return self.definitions[action].handler(task, action_input)
+        try:
+            validated = model_cls.model_validate(action_input)
+        except ValidationError as exc:
+            raise _format_validation_error(action, exc) from exc
+        return self.definitions[action].handler(task, validated)
 
     def to_openai_tools(self) -> list[dict[str, Any]]:
         """把所有带 `json_schema` 的 definitions 打包成 OpenAI `tools=[...]` 请求字段。
@@ -482,7 +638,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 "Use first to discover which files and directories exist under context "
                 "and what file types are available."
             ),
-            input_schema={"max_depth": 4},
+            input_schema=ListContextInput.example_value(),
             json_schema=_LIST_CONTEXT_SCHEMA,
             handler=_list_context,
         ),
@@ -492,7 +648,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 "Use when you need to preview a CSV file, confirm column names, or "
                 "inspect example rows before choosing a computation tool."
             ),
-            input_schema={"path": "relative/path/to/file.csv", "max_rows": 20},
+            input_schema=ReadCsvInput.example_value(),
             json_schema=_READ_CSV_SCHEMA,
             handler=_read_csv,
         ),
@@ -503,12 +659,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 "text, or search for the first case-insensitive keyword match. Use "
                 "`has_more` and the next `start_line` to continue reading."
             ),
-            input_schema={
-                "path": "relative/path/to/file.md",
-                "start_line": 1,
-                "line_count": 80,
-                "keyword": "optional search text",
-            },
+            input_schema=ReadDocInput.example_value(),
             json_schema=_READ_DOC_SCHEMA,
             handler=_read_doc,
         ),
@@ -518,7 +669,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 "Use when you need to preview a JSON file, confirm top-level fields, "
                 "or inspect sample structured records."
             ),
-            input_schema={"path": "relative/path/to/file.json", "max_chars": 4000},
+            input_schema=ReadJsonInput.example_value(),
             json_schema=_READ_JSON_SCHEMA,
             handler=_read_json,
         ),
@@ -528,7 +679,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 "Use first when you find a sqlite/db file and need to know its "
                 "tables, columns, and schema before writing SQL."
             ),
-            input_schema={"path": "relative/path/to/file.sqlite"},
+            input_schema=InspectSqliteSchemaInput.example_value(),
             json_schema=_INSPECT_SQLITE_SCHEMA,
             handler=_inspect_sqlite_schema,
         ),
@@ -539,11 +690,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 "queries or aggregations. Call inspect_sqlite_schema first for an "
                 "unknown database."
             ),
-            input_schema={
-                "path": "relative/path/to/file.sqlite",
-                "sql": "SELECT ...",
-                "limit": 200,
-            },
+            input_schema=ExecuteContextSqlInput.example_value(),
             json_schema=_EXECUTE_CONTEXT_SQL_SCHEMA,
             handler=_execute_context_sql,
         ),
@@ -557,9 +704,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 # 动态把超时秒数写进描述，避免改常量后忘记更新文案
                 f"The execution timeout is fixed at {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds."
             ),
-            input_schema={
-                "code": "import os\nprint(sorted(os.listdir('.')))",
-            },
+            input_schema=ExecutePythonInput.example_value(),
             json_schema=_EXECUTE_PYTHON_SCHEMA,
             handler=_execute_python,
         ),
@@ -570,10 +715,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 "way to submit the answer to the user/evaluator; plain text answers "
                 "will be ignored."
             ),
-            input_schema={
-                "columns": ["column_name"],
-                "rows": [["value_1"]],
-            },
+            input_schema=AnswerInput.example_value(),
             json_schema=_ANSWER_SCHEMA,
             handler=_answer,
             is_terminal=True,  # 唯一终止工具

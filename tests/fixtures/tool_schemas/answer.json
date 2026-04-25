@@ -1,0 +1,48 @@
+{
+  "function": {
+    "description": "Use this when the final answer table is determined. This is the only way to submit the answer to the user/evaluator; plain text answers will be ignored.",
+    "name": "answer",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "description": "Column header names (non-empty).",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "rows": {
+          "description": "Answer rows; each row's length must match the columns array.",
+          "items": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "columns",
+        "rows"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

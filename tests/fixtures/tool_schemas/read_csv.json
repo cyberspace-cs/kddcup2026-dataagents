@@ -1,0 +1,26 @@
+{
+  "function": {
+    "description": "Use when you need to preview a CSV file, confirm column names, or inspect example rows before choosing a computation tool.",
+    "name": "read_csv",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "max_rows": {
+          "default": 20,
+          "description": "Maximum number of preview rows to return.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Relative path to a CSV file. Examples: 'csv/member.csv', 'data/train.csv'. Paths are relative to the task context directory; DO NOT prepend 'context/'. For example use 'knowledge.md' or 'csv/foo.csv', not 'context/knowledge.md'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

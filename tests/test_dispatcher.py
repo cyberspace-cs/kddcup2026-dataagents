@@ -55,15 +55,15 @@ def test_dispatch_terminal_success_terminates(task: PublicTask) -> None:
 
 
 def test_dispatch_invalid_answer_raises_and_does_not_terminate(task: PublicTask) -> None:
-    """answer payload 校验失败 → handler 抛 ValueError，dispatch 原样上抛（不终止）。
+    """answer payload 校验失败 → registry 边界翻译为结构化 ValueError，dispatch 原样上抛。
 
     这个用例锁住 D3：terminal flag 是元数据，但只在 handler 成功返回后才生效。
     """
     registry = create_default_tool_registry()
-    # rows 长度与 columns 不匹配
+    # rows 长度与 columns 不匹配 → AnswerInput 的 model_validator 抛错
     call = _call("answer", columns=["a", "b"], rows=[["only one"]])
 
-    with pytest.raises(ValueError, match="match the number of columns"):
+    with pytest.raises(ValueError, match=r"^answer: row 0 has 1 cells but columns has 2"):
         dispatch_tool_call(task, call, registry)
 
 
@@ -102,3 +102,79 @@ def test_dispatch_python_code_failure_returns_ok_false(task: PublicTask) -> None
 
     assert result.ok is False
     assert should_terminate is False
+
+
+# ----- Pydantic 入参校验：spec ADDED 场景 (^anchor 锁住 tool 名是首 token) -----
+
+
+def test_dispatch_missing_required_field_reports_field_name(task: PublicTask) -> None:
+    registry = create_default_tool_registry()
+    call = _call("read_csv")  # `path` 缺失
+
+    with pytest.raises(ValueError, match=r"^read_csv: field 'path' is required"):
+        dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_wrong_type_for_required_field_reports_field(task: PublicTask) -> None:
+    registry = create_default_tool_registry()
+    call = _call("read_csv", path=42)  # path 是 int 而非 str
+
+    with pytest.raises(ValueError, match=r"^read_csv: field 'path' must be a string, got int"):
+        dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_bound_violation_reports_minimum(task: PublicTask) -> None:
+    registry = create_default_tool_registry()
+    call = _call("read_doc", path="knowledge.md", start_line=0)  # start_line 低于 ge=1
+
+    with pytest.raises(ValueError, match=r"^read_doc: field 'start_line' must be >= 1, got 0"):
+        dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_unknown_field_is_rejected(task: PublicTask) -> None:
+    registry = create_default_tool_registry()
+    call = _call("read_csv", path="csv/foo.csv", max_rows=20, ttl=5)  # ttl 未声明
+
+    with pytest.raises(ValueError, match=r"^read_csv: extra field 'ttl' is not permitted"):
+        dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_answer_row_width_mismatch_reports_index(task: PublicTask) -> None:
+    registry = create_default_tool_registry()
+    call = _call("answer", columns=["a", "b"], rows=[["only one"]])
+
+    with pytest.raises(ValueError, match=r"^answer: row 0 has 1 cells but columns has 2"):
+        dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_answer_empty_columns_is_rejected(task: PublicTask) -> None:
+    registry = create_default_tool_registry()
+    call = _call("answer", columns=[], rows=[])
+
+    with pytest.raises(ValueError, match=r"^answer: field 'columns' must contain at least 1 item"):
+        dispatch_tool_call(task, call, registry)
+
+
+# ----- 不可变契约：registry.execute 不修改 caller 的 action_input dict -----
+
+
+def test_registry_execute_does_not_mutate_payload_on_success(task: PublicTask) -> None:
+    registry = create_default_tool_registry()
+    payload: dict[str, object] = {"max_depth": 2}
+    snapshot = dict(payload)
+
+    registry.execute(task, "list_context", payload)
+
+    assert payload == snapshot
+    assert set(payload.keys()) == set(snapshot.keys())
+
+
+def test_registry_execute_does_not_mutate_payload_on_failure(task: PublicTask) -> None:
+    registry = create_default_tool_registry()
+    payload: dict[str, object] = {}  # 缺 path → 校验失败
+    snapshot = dict(payload)
+
+    with pytest.raises(ValueError):
+        registry.execute(task, "read_csv", payload)
+
+    assert payload == snapshot

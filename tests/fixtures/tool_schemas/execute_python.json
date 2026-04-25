@@ -1,0 +1,20 @@
+{
+  "function": {
+    "description": "Use when you need computation, cleaning, aggregation, cross-file joins, large-file streaming, structured processing, or anything beyond simple preview tools. Python runs with the task context directory as the working directory and returns captured stdout as `output`. The execution timeout is fixed at 30 seconds.",
+    "name": "execute_python",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "Python source to execute with the task context directory as CWD. Execution timeout is 30 seconds.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

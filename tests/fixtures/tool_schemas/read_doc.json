@@ -1,0 +1,40 @@
+{
+  "function": {
+    "description": "Use when you need to preview a text-like document, confirm relevant text, or search for the first case-insensitive keyword match. Use `has_more` and the next `start_line` to continue reading.",
+    "name": "read_doc",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "keyword": {
+          "default": null,
+          "description": "Optional keyword; when set, returns a context window around the first match.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "line_count": {
+          "default": 80,
+          "description": "Number of lines to return in this page.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Relative path to a text document (md/txt/...). Examples: 'knowledge.md', 'docs/readme.txt'. Paths are relative to the task context directory; DO NOT prepend 'context/'. For example use 'knowledge.md' or 'csv/foo.csv', not 'context/knowledge.md'.",
+          "type": "string"
+        },
+        "start_line": {
+          "default": 1,
+          "description": "1-based line number to start reading from.",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}
