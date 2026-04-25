@@ -13,7 +13,9 @@ def test_create_run_id_distinguishes_adjacent_calls() -> None:
     # 100 次连发：实际跨度通常 >10µs，必然能产生至少 2 个不同字符串。
     # 旧实现（秒级）会把全部 100 个塌缩成 1 个；新实现（微秒级）应至少有 2 个。
     ids = {create_run_id() for _ in range(100)}
-    assert len(ids) >= 2, f"create_run_id() collapsed 100 calls into {ids!r}; need microsecond precision"
+    assert len(ids) >= 2, (
+        f"create_run_id() collapsed 100 calls into {ids!r}; need microsecond precision"
+    )
 
 
 def test_create_run_id_format_is_microsecond_utc() -> None:

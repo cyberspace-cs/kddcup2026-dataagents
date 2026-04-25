@@ -1,88 +1,59 @@
-"""ReAct Agent 核心循环。
+"""ReAct Agent 主循环驱动器。
 
-支持两种模型协议（通过 `ReActAgent(protocol=...)` 切换）：
+本模块只剩三件事：循环预算（`ReActAgentConfig`）、消息构造（按协议拼 system/user/
+assistant/tool 序列）、和驱动主循环本身（调模型、把响应转成事件、记账、判终止）。
+具体的协议解析、工具派发、事件序列化分别下沉到：
+- `protocol.adapt_model_response`：text/native → 统一 `ProtocolTurn`
+- `dispatcher.dispatch_tool_call`：执行单个 tool_call，返回 `(result, should_terminate)`
+- `recorder.record_step_event`：把事件序列化成 `StepRecord` 并通知 step_callback
 
-- **text**：模型以 ```json fence 返回 `thought/action/action_input`；
-  ReAct 层靠 `parse_model_step` 解析单步。
-- **native**：模型以原生 OpenAI `tool_calls` 返回（一轮可含多个工具调用）；
-  ReAct 层把每个 tool_call 映射成 `StepRecord`，同一轮共享 `turn_index`。
-
-流程概览（`ReActAgent.run`）：
-  loop (turn_index 从 1 开始，直到耗尽 max_steps 或 empty-tool retry budget):
-    1. 拼接对话消息（`_build_messages_text` / `_build_messages_native`）
-    2. 调 model.complete 拿 `ModelResponse`
-    3. 把 response 规整成 `ModelToolCall` 列表（text 模式靠 parse；native 直接拿）
-    4. 依次执行每个 tool_call，追加 `StepRecord`
-    5. 任一 tool_call 命中 terminal（answer）则短路退出本轮并终结循环
-    任何异常 → 记录一条 action="__error__" 的 StepRecord，进入下一轮（不终止循环）
-
-返回 `AgentRunResult`。未在 max_steps 内提交答案，会写入 failure_reason 但仍返回。
+为兼容现有 import（`from data_agent_baseline.agents.react import parse_model_step,
+_extract_reasoning_tool_call_draft`），保留薄薄的再导出层。
 """
 
 from __future__ import annotations
 
-import contextlib
 import json
-import re
-from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from typing import Any, Literal
 
-from data_agent_baseline.agents.model import (
-    ModelAdapter,
-    ModelMessage,
-    ModelResponse,
-    ModelStep,
-    ModelToolCall,
-    TokenUsage,
-)
+from data_agent_baseline.agents.dispatcher import dispatch_tool_call
+from data_agent_baseline.agents.model import ModelAdapter, ModelMessage, TokenUsage
 from data_agent_baseline.agents.prompt import (
     build_native_system_prompt,
     build_observation_prompt,
     build_system_prompt,
     build_task_prompt,
 )
+from data_agent_baseline.agents.protocol import (
+    ToolProtocol,
+    adapt_model_response,
+    parse_model_step,
+)
+from data_agent_baseline.agents.protocol import (
+    extract_reasoning_tool_call_draft as _extract_reasoning_tool_call_draft,
+)
+from data_agent_baseline.agents.recorder import (
+    EmptyToolCallsEvent,
+    ModelErrorEvent,
+    ObservationEvent,
+    ParseErrorEvent,
+    StepCallback,
+    ToolErrorEvent,
+    record_step_event,
+)
 from data_agent_baseline.agents.runtime import AgentRunResult, AgentRuntimeState, StepRecord
 from data_agent_baseline.benchmark.schema import PublicTask
 from data_agent_baseline.tools.registry import ToolRegistry
 
-# 支持的协议字面量：在类型层阻止拼错
-ToolProtocol = Literal["native", "text"]
-
-# 每次 state.steps 发生变化时回调；供 runner 做增量 trace 落盘（防子进程被硬 kill 时 trace 全丢）
-StepCallback = Callable[[AgentRuntimeState], None]
-
-
-_REASONING_TOOL_CALL_PATTERN = re.compile(
-    r"<tool_call\b[^>]*>(.*?)</tool_call>",
-    flags=re.IGNORECASE | re.DOTALL,
-)
-_REASONING_FUNCTION_PATTERN = re.compile(
-    r"<function\s*=\s*([^>\s]+)\s*>(.*?)</function>",
-    flags=re.IGNORECASE | re.DOTALL,
-)
-_REASONING_PARAMETER_PATTERN = re.compile(
-    r"<parameter\s*=\s*([^>\s]+)\s*>(.*?)</parameter>",
-    flags=re.IGNORECASE | re.DOTALL,
-)
-
-_EMPTY_TOOL_CALL_ERROR = (
-    "Your previous turn did not produce an executable tool call. "
-    "Any tool call written inside reasoning/thinking text was ignored, "
-    "even if it looked syntactically complete. In this turn: do not "
-    "draft <tool_call>, <function=...>, JSON actions, or executable "
-    "code in reasoning. If you already decided which tool to call last "
-    "turn, emit that call now as a structured tool call. If final answer "
-    "is ready, call answer directly. You must call a tool."
-)
-
-_REASONING_DRAFT_RELAY_INSTRUCTION = (
-    "A tool-call draft was found in reasoning_content, but reasoning drafts are not "
-    "executable and were not run. On the next turn, emit the drafted function and "
-    "arguments as a real structured tool_call through the native tool-calling "
-    "interface. Do not put the call in reasoning/thinking text. If the final answer "
-    "is ready, call answer directly."
-)
+# 公开再导出（向后兼容现有 tests/agents/__init__ 的 import 路径）
+__all__ = [
+    "ReActAgent",
+    "ReActAgentConfig",
+    "StepCallback",
+    "ToolProtocol",
+    "_extract_reasoning_tool_call_draft",
+    "parse_model_step",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,147 +74,6 @@ class ReActAgentConfig:
 
     max_steps: int = 16
     max_empty_tool_call_retries: int = 8
-
-
-def _strip_json_fence(raw_response: str) -> str:
-    """从模型响应里抽出 JSON 正文。
-
-    兼容顺序：
-    1. ` ```json ... ``` `（首选，prompt 明确要求）
-    2. 任意 ``` ... ```（降级兼容，有些模型会漏写 json 语言标记）
-    3. 无围栏时原样返回（再降级，由 JSON 解析阶段决定是否可接受）
-    """
-    text = raw_response.strip()
-    fence_match = re.search(r"```json\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
-    if fence_match is not None:
-        return fence_match.group(1).strip()
-    generic_fence_match = re.search(r"```\s*(.*?)\s*```", text, flags=re.DOTALL)
-    if generic_fence_match is not None:
-        return generic_fence_match.group(1).strip()
-    return text
-
-
-def _load_single_json_object(text: str) -> dict[str, object]:
-    """解析一段文本，要求它恰好是一个 JSON 对象。
-
-    使用 `raw_decode` 而非 `loads`，以便拿到 "第一个 JSON 之后的剩余文本"。
-    剩余文本经过转义字符清洗（部分模型会追加 `\\n`）后若仍非空，
-    说明模型输出了多个对象/尾随垃圾，拒收以免语义不清。
-    """
-    payload, end = json.JSONDecoder().raw_decode(text)
-    remainder = text[end:].strip()
-    if remainder:
-        # 清掉纯转义序列的尾巴（\\n \\r \\t 的反复出现），再判断
-        cleaned_remainder = re.sub(r"(?:\\[nrt])+", "", remainder).strip()
-        if cleaned_remainder:
-            raise ValueError("Model response must contain only one JSON object.")
-    if not isinstance(payload, dict):
-        raise ValueError("Model response must be a JSON object.")
-    return payload
-
-
-def parse_model_step(raw_response: str) -> ModelStep:
-    """把模型原始输出解析成结构化的 `ModelStep`（text 协议）。
-
-    校验三要素：
-    - thought:      字符串（允许空串）
-    - action:       非空字符串
-    - action_input: 字典（允许空字典，但必须是对象而非数组/标量）
-    任何格式问题都抛 ValueError，由 ReAct 循环吞入，记录为错误步并继续。
-    """
-    normalized = _strip_json_fence(raw_response)
-    payload = _load_single_json_object(normalized)
-
-    thought = payload.get("thought", "")
-    action = payload.get("action")
-    action_input = payload.get("action_input", {})
-    if not isinstance(thought, str):
-        raise ValueError("thought must be a string.")
-    if not isinstance(action, str) or not action:
-        raise ValueError("action must be a non-empty string.")
-    if not isinstance(action_input, dict):
-        raise ValueError("action_input must be a JSON object.")
-
-    return ModelStep(
-        thought=thought,
-        action=action,
-        action_input=action_input,
-        raw_response=raw_response,
-    )
-
-
-def _looks_like_json_value(value: str) -> bool:
-    """Return whether a parameter value is worth trying to parse as JSON."""
-    stripped = value.lstrip()
-    if not stripped:
-        return False
-    return (
-        stripped[0] in {'"', "{", "[", "-"}
-        or stripped[0].isdigit()
-        or stripped in {"true", "false", "null"}
-    )
-
-
-def _parse_reasoning_parameter_value(name: str, value: str) -> Any:
-    """Parse one Qwen-style reasoning parameter conservatively."""
-    stripped = value.strip()
-    if name == "code":
-        return stripped
-    if _looks_like_json_value(stripped):
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError:
-            pass
-    return stripped
-
-
-def _extract_reasoning_tool_call_draft(
-    reasoning: str,
-    allowed_tool_names: Collection[str],
-) -> dict[str, Any] | None:
-    """Extract the first complete Qwen-style tool-call draft from reasoning.
-
-    This is deliberately best-effort and non-authoritative: it only helps the next
-    model turn recover from a reasoning-only draft. The returned draft must never
-    be executed by the runner.
-    """
-    if not reasoning:
-        return None
-
-    tool_call_match = _REASONING_TOOL_CALL_PATTERN.search(reasoning)
-    if tool_call_match is None:
-        return None
-
-    tool_call_body = tool_call_match.group(1)
-    function_match = _REASONING_FUNCTION_PATTERN.search(tool_call_body)
-    if function_match is None:
-        return None
-
-    function_name = function_match.group(1).strip()
-    if function_name not in allowed_tool_names:
-        return None
-
-    function_body = function_match.group(2)
-    arguments: dict[str, Any] = {}
-    for parameter_match in _REASONING_PARAMETER_PATTERN.finditer(function_body):
-        parameter_name = parameter_match.group(1).strip()
-        if not parameter_name:
-            return None
-        arguments[parameter_name] = _parse_reasoning_parameter_value(
-            parameter_name,
-            parameter_match.group(2),
-        )
-
-    unparsed_body = _REASONING_PARAMETER_PATTERN.sub("", function_body).strip()
-    if unparsed_body:
-        return None
-
-    return {
-        "function": function_name,
-        "arguments": arguments,
-        "source": "reasoning_content",
-        "executed": False,
-    }
 
 
 class ReActAgent:
@@ -275,20 +105,6 @@ class ReActAgent:
         # 每步回调：runner 在子进程里会注入 "把 state 落到 trace.json" 的 writer，
         # 这样即便子进程因超时被硬 kill，磁盘上仍保留最后一次 append 后的部分 trace
         self.step_callback = step_callback
-
-    # ----------------------------- 步骤落定辅助 -----------------------------
-
-    def _record_step(self, state: AgentRuntimeState, record: StepRecord) -> None:
-        """统一的"落定一步"通道：append 到 state 并通知外部 callback。
-
-        callback 的异常绝对不允许污染 Agent 主循环——任何失败都吞掉。
-        """
-        state.steps.append(record)
-        if self.step_callback is None:
-            return
-        # 观测回调挂掉不应该炸任务；静默忽略
-        with contextlib.suppress(Exception):
-            self.step_callback(state)
 
     # ----------------------------- 消息构造 -----------------------------
 
@@ -388,33 +204,6 @@ class ReActAgent:
 
     # ----------------------------- 主循环 -----------------------------
 
-    def _resolve_tool_calls(
-        self, response: ModelResponse, turn_index: int
-    ) -> tuple[list[ModelToolCall], str]:
-        """把 `ModelResponse` 规整成 `(tool_calls, thought)` 对。
-
-        返回值语义：
-        - tool_calls 非空：可以执行；thought 作为展示字段
-        - tool_calls 为空：上层应记一条 __error__ 步（调用方自己构造）
-        该函数本身会把文本协议里的 fence 解析错误通过抛 ValueError 向上传递。
-
-        协议分叉：
-        - native 模式：只看 `response.tool_calls`；空则直接返回空，让上层记 __error__
-        - text 模式：永远尝试 parse_model_step，把 ```json fence 解析成合成 ModelToolCall
-        """
-        if self.protocol == "native":
-            return list(response.tool_calls), response.content
-
-        # text 协议：把 ```json fence 解析成 ModelStep
-        step = parse_model_step(response.content)
-        synthetic_id = f"text:{turn_index}"
-        synthetic_call = ModelToolCall(
-            id=synthetic_id,
-            name=step.action,
-            arguments=step.action_input,
-        )
-        return [synthetic_call], step.thought
-
     def run(self, task: PublicTask) -> AgentRunResult:
         """驱动 ReAct 循环解决单个任务。
 
@@ -433,96 +222,65 @@ class ReActAgent:
 
         while effective_turns < self.config.max_steps:
             turn_index += 1
+
             # ---- 1. 调用模型 ----
             try:
                 response = self.model.complete(self._build_messages(task, state))
             except Exception as exc:
-                # 网络错误 / API 失败：记一条 __error__，让循环在下一轮重试
+                # 网络错误 / API 失败：记一条 model_error，让循环在下一轮重试
                 effective_turns += 1
                 step_counter += 1
-                self._record_step(
+                record_step_event(
                     state,
-                    StepRecord(
-                        step_index=step_counter,
-                        turn_index=turn_index,
-                        thought="",
-                        action="__error__",
-                        action_input={},
-                        raw_response="",
-                        observation={"ok": False, "error": f"model.complete failed: {exc}"},
-                        ok=False,
-                        tool_call_id=None,
-                        raw_tool_calls=None,
-                    ),
+                    ModelErrorEvent(error=f"model.complete failed: {exc}"),
+                    step_index=step_counter,
+                    turn_index=turn_index,
+                    callback=self.step_callback,
                 )
                 continue
 
-            # ---- 2. 规整响应为 tool_calls ----
-            try:
-                tool_calls, thought = self._resolve_tool_calls(response, turn_index)
-            except Exception as exc:
-                # text 协议的 fence 解析失败，或 native 协议下缺 tool_calls
+            # ---- 2. 协议规整 ----
+            turn = adapt_model_response(
+                response,
+                protocol=self.protocol,
+                turn_index=turn_index,
+                allowed_tool_names=self.tools.definitions,
+            )
+
+            if turn.parse_error is not None:
+                # text 协议的 fence 解析失败
                 effective_turns += 1
                 step_counter += 1
-                self._record_step(
+                record_step_event(
                     state,
-                    StepRecord(
-                        step_index=step_counter,
-                        turn_index=turn_index,
-                        thought="",
-                        action="__error__",
-                        action_input={},
+                    ParseErrorEvent(
+                        error=turn.parse_error,
                         raw_response=response.raw_response,
-                        observation={"ok": False, "error": str(exc)},
-                        ok=False,
-                        tool_call_id=None,
-                        raw_tool_calls=None,
                         reasoning=response.reasoning_content,
                         usage=response.usage,
                     ),
+                    step_index=step_counter,
+                    turn_index=turn_index,
+                    callback=self.step_callback,
                 )
                 continue
 
-            if not tool_calls:
-                # native 协议下模型回了空 tool_calls（纯文本 content）：
-                # 给一条 observation 强制纠偏，下一轮让模型重试。该分支不消耗
-                # 业务 max_steps，但有独立重试上限，避免 reasoning-only 无限循环。
+            if not turn.calls:
+                # native 协议下模型回了空 tool_calls：记纠偏 observation，独立 retry budget
                 empty_tool_call_retries += 1
                 step_counter += 1
-                observation: dict[str, Any] = {
-                    "ok": False,
-                    "error": _EMPTY_TOOL_CALL_ERROR,
-                }
-                if self.protocol == "native":
-                    drafted_tool_call = _extract_reasoning_tool_call_draft(
-                        response.reasoning_content,
-                        self.tools.definitions,
-                    )
-                    if drafted_tool_call is not None:
-                        observation = {
-                            "ok": False,
-                            "error": (
-                                "Your previous turn did not produce an executable tool call."
-                            ),
-                            "drafted_tool_call": drafted_tool_call,
-                            "instruction": _REASONING_DRAFT_RELAY_INSTRUCTION,
-                        }
-                self._record_step(
+                record_step_event(
                     state,
-                    StepRecord(
-                        step_index=step_counter,
-                        turn_index=turn_index,
-                        thought=thought,
-                        action="__error__",
-                        action_input={},
+                    EmptyToolCallsEvent(
+                        thought=turn.thought,
                         raw_response=response.raw_response,
-                        observation=observation,
-                        ok=False,
-                        tool_call_id=None,
-                        raw_tool_calls=None,
                         reasoning=response.reasoning_content,
                         usage=response.usage,
+                        drafted_tool_call=turn.reasoning_draft,
                     ),
+                    step_index=step_counter,
+                    turn_index=turn_index,
+                    callback=self.step_callback,
                 )
                 if empty_tool_call_retries >= self.config.max_empty_tool_call_retries:
                     state.failure_reason = (
@@ -534,18 +292,18 @@ class ReActAgent:
                     break
                 continue
 
-            # ---- 3. 依次执行 tool_calls ----
+            # ---- 3. 依次派发 tool_calls ----
             effective_turns += 1
             # text 协议下 StepRecord 不承载原生调用 id / 原始 tool_calls（语义上它们都是
             # 合成的占位值），保持 None 可让 trace.json 读者清楚区分两种协议。
             is_native = self.protocol == "native"
-            for call_idx, tool_call in enumerate(tool_calls):
+            for call_idx, tool_call in enumerate(turn.calls):
                 step_counter += 1
                 is_lead = call_idx == 0
                 # 仅首条 StepRecord 带 raw_tool_calls（用于 native 模式 message 回放）
                 if is_native:
                     step_tool_call_id: str | None = tool_call.id or None
-                    step_raw_tool_calls: list[dict[str, Any]] | None = (
+                    step_raw_tool_calls: list[dict[str, object]] | None = (
                         response.raw_tool_calls if is_lead else None
                     )
                 else:
@@ -554,53 +312,53 @@ class ReActAgent:
                 # usage / reasoning 与 raw_tool_calls 同约定：仅 lead 承载，避免双计
                 step_reasoning = response.reasoning_content if is_lead else ""
                 step_usage = response.usage if is_lead else TokenUsage()
+
                 try:
-                    tool_result = self.tools.execute(task, tool_call.name, tool_call.arguments)
-                    observation: dict[str, Any] = {
-                        "ok": tool_result.ok,
-                        "tool": tool_call.name,
-                        "content": tool_result.content,
-                    }
-                    record = StepRecord(
-                        step_index=step_counter,
-                        turn_index=turn_index,
-                        thought=thought,
-                        action=tool_call.name,
-                        action_input=tool_call.arguments,
-                        raw_response=response.raw_response,
-                        observation=observation,
-                        ok=tool_result.ok,
-                        tool_call_id=step_tool_call_id,
-                        raw_tool_calls=step_raw_tool_calls,
-                        reasoning=step_reasoning,
-                        usage=step_usage,
-                    )
-                    # 终止工具（目前仅 answer）：记录答案后短路，**跳过同 turn 后续 tool_calls**
-                    if tool_result.is_terminal:
-                        state.answer = tool_result.answer
-                    self._record_step(state, record)
-                    if tool_result.is_terminal:
-                        terminated = True
-                        break
+                    result, should_terminate = dispatch_tool_call(task, tool_call, self.tools)
                 except Exception as exc:
                     # 工具执行异常：未知工具名 / 参数非法 / handler 抛错等
-                    self._record_step(
+                    record_step_event(
                         state,
-                        StepRecord(
-                            step_index=step_counter,
-                            turn_index=turn_index,
-                            thought=thought,
-                            action="__error__",
-                            action_input=tool_call.arguments,
+                        ToolErrorEvent(
+                            thought=turn.thought,
+                            arguments=tool_call.arguments,
+                            error=str(exc),
                             raw_response=response.raw_response,
-                            observation={"ok": False, "error": str(exc)},
-                            ok=False,
                             tool_call_id=step_tool_call_id,
                             raw_tool_calls=step_raw_tool_calls,
                             reasoning=step_reasoning,
                             usage=step_usage,
                         ),
+                        step_index=step_counter,
+                        turn_index=turn_index,
+                        callback=self.step_callback,
                     )
+                    continue
+
+                # 终止工具（目前仅 answer）：先把答案存好，再落记录，最后短路
+                if should_terminate:
+                    state.answer = result.answer
+                record_step_event(
+                    state,
+                    ObservationEvent(
+                        thought=turn.thought,
+                        tool_name=tool_call.name,
+                        arguments=tool_call.arguments,
+                        content=result.content,
+                        ok=result.ok,
+                        raw_response=response.raw_response,
+                        tool_call_id=step_tool_call_id,
+                        raw_tool_calls=step_raw_tool_calls,
+                        reasoning=step_reasoning,
+                        usage=step_usage,
+                    ),
+                    step_index=step_counter,
+                    turn_index=turn_index,
+                    callback=self.step_callback,
+                )
+                if should_terminate:
+                    terminated = True
+                    break
 
             if terminated:
                 break

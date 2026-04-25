@@ -45,15 +45,15 @@
 
 ## 5. Split `react.py` into protocol adapter + dispatcher + recorder
 
-- [ ] 5.1 Create `src/data_agent_baseline/agents/protocol.py`: define `ProtocolTurn` and `adapt_model_response(response, *, protocol, turn_index, allowed_tool_names) -> ProtocolTurn`; move text-fence parsing (currently `react.py:108-172`), native normalization (currently `react.py:391-416`), `<think>` stripping, and reasoning-draft extraction (currently `react.py:486-535`)
-- [ ] 5.2 Create `src/data_agent_baseline/agents/dispatcher.py`: define `dispatch_tool_call(task, call, registry) -> tuple[ToolExecutionResult, bool]`; move tool execution + terminal short-circuit (currently `react.py:537-584`) and tool exception handling (currently `react.py:585-604`); enforce "terminal only after handler success" (D3)
-- [ ] 5.3 Create `src/data_agent_baseline/agents/recorder.py`: define internal event-kind `Literal["model_error","parse_error","empty_tool_calls","tool_error","observation"]` plus `record_step_event(state, event, *, step_index, turn_index, callback) -> StepRecord`; preserve serialization back to `action="__error__"` + `error_payload` for `trace.json` byte-stability (D2)
-- [ ] 5.4 Reduce `react.py` to the loop driver: turn iteration, model invocation, retry counters, terminal halt detection — no protocol parsing, no tool dispatch, no `StepRecord` construction inline
-- [ ] 5.5 Verify `tests/test_react_native.py`, `tests/test_react_text_fallback.py`, `tests/test_partial_trace.py` all pass without modification (other than the empty-tool retry test from 2.2)
-- [ ] 5.6 Verify `tests/test_golden_trace.py` (1.4) still passes byte-for-byte after the split
-- [ ] 5.7 Add `tests/test_protocol_adapter.py` covering: text fence parsing, native arg passthrough, `<think>` stripping, reasoning-draft extraction
-- [ ] 5.8 Add `tests/test_dispatcher.py` covering: success path, handler-raises path, terminal-only-after-success behavior, sandboxing rejection
-- [ ] 5.9 Add `tests/test_recorder.py` covering: each event kind round-trips through the recorder and emits the correct `trace.json` shape
+- [x] 5.1 Create `src/data_agent_baseline/agents/protocol.py`: define `ProtocolTurn` and `adapt_model_response(response, *, protocol, turn_index, allowed_tool_names) -> ProtocolTurn`; move text-fence parsing (currently `react.py:108-172`), native normalization (currently `react.py:391-416`), `<think>` stripping, and reasoning-draft extraction (currently `react.py:486-535`)
+- [x] 5.2 Create `src/data_agent_baseline/agents/dispatcher.py`: define `dispatch_tool_call(task, call, registry) -> tuple[ToolExecutionResult, bool]`; move tool execution + terminal short-circuit (currently `react.py:537-584`) and tool exception handling (currently `react.py:585-604`); enforce "terminal only after handler success" (D3)
+- [x] 5.3 Create `src/data_agent_baseline/agents/recorder.py`: define internal event-kind `Literal["model_error","parse_error","empty_tool_calls","tool_error","observation"]` plus `record_step_event(state, event, *, step_index, turn_index, callback) -> StepRecord`; preserve serialization back to `action="__error__"` + `error_payload` for `trace.json` byte-stability (D2)
+- [x] 5.4 Reduce `react.py` to the loop driver: turn iteration, model invocation, retry counters, terminal halt detection — no protocol parsing, no tool dispatch, no `StepRecord` construction inline
+- [x] 5.5 Verify `tests/test_react_native.py`, `tests/test_react_text_fallback.py`, `tests/test_partial_trace.py` all pass without modification (other than the empty-tool retry test from 2.2)
+- [x] 5.6 Verify `tests/test_golden_trace.py` (1.4) still passes byte-for-byte after the split
+- [x] 5.7 Add `tests/test_protocol_adapter.py` covering: text fence parsing, native arg passthrough, `<think>` stripping, reasoning-draft extraction
+- [x] 5.8 Add `tests/test_dispatcher.py` covering: success path, handler-raises path, terminal-only-after-success behavior, sandboxing rejection
+- [x] 5.9 Add `tests/test_recorder.py` covering: each event kind round-trips through the recorder and emits the correct `trace.json` shape
 
 ## 6. App factory boundary in `runner.py`
 
