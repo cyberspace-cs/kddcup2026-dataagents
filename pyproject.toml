@@ -33,6 +33,9 @@ dev = [
     "pytest-cov>=5.0.0",
     "ruff>=0.11.0",
 ]
+viz = [
+    "streamlit>=1.35.0",
+]
 
 [project.scripts]
 dabench = "data_agent_baseline.cli:main"

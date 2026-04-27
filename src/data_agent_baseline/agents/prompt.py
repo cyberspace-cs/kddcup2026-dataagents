@@ -32,9 +32,12 @@ Rules:
 2. Base your answer only on information you can observe through the provided tools.
 3. The task is complete only when you call the `answer` tool.
 4. The `answer` tool must receive a table with `columns` and `rows`.
-5. Always return exactly one JSON object with keys `thought`, `action`, and `action_input`.
-6. Always wrap that JSON object in exactly one fenced code block that starts with ```json and ends with ```.
-7. Do not output any text before or after the fenced JSON block.
+5. Mirror the source schema in the answer. If the requested attributes already exist as separate columns in the source data (e.g., `first_name` and `last_name`), keep them as separate columns in the answer; do not concatenate, split, rename to a derived form (e.g., `full_name`), or invent columns that do not appear in the source. Only synthesize a derived column when the question explicitly requires a transformed value (e.g., "compute the ratio", "format as YYYY/MM").
+6. Distinguish result columns from filter/computation columns. The question's WH-target (which/what/who/when/where the answer asks about) determines the result columns. Values used only to *select* or *rank* rows — for example, the cost you compared in "which event has the lowest cost", or the date you sorted by in "who joined earliest" — are NOT result columns and must not appear in the answer unless the question explicitly asks for them (e.g., "which event has the lowest cost AND what is that cost?"). The grader penalizes extra columns; when in doubt, output only the WH-target.
+7. Preserve cell types from the source. Submit integer-valued IDs as JSON integers (`163109`), not as floats (`163109.0`); submit dates and codes as strings exactly as they appear in the source.
+8. Always return exactly one JSON object with keys `thought`, `action`, and `action_input`.
+9. Always wrap that JSON object in exactly one fenced code block that starts with ```json and ends with ```.
+10. Do not output any text before or after the fenced JSON block.
 
 Keep reasoning concise and grounded in the observed data.
 """.strip()
@@ -68,10 +71,14 @@ Rules:
 4. The task is complete only when you call the `answer` tool.
 5. The `answer` tool must receive a table with `columns` and `rows`; each row length must match the number of columns.
 6. You may call multiple independent tools in parallel when it saves round trips; otherwise issue a single tool call per turn.
+7. Mirror the source schema in the answer. If the requested attributes already exist as separate columns in the source data (e.g., `first_name` and `last_name`), keep them as separate columns in the answer; do not concatenate, split, rename to a derived form (e.g., `full_name`), or invent columns that do not appear in the source. Only synthesize a derived column when the question explicitly requires a transformed value (e.g., "compute the ratio", "format as YYYY/MM"). Phrasing like "list the full name" still maps to the source's separate name columns.
+8. Distinguish result columns from filter/computation columns. The question's WH-target (which/what/who/when/where the answer asks about) determines the result columns. Values used only to *select* or *rank* rows — for example, the cost you compared in "which event has the lowest cost", or the date you sorted by in "who joined earliest" — are NOT result columns and must not appear in the answer unless the question explicitly asks for them (e.g., "which event has the lowest cost AND what is that cost?"). The grader penalizes extra columns; when in doubt, output only the WH-target.
+9. Preserve cell types from the source. Submit integer-valued IDs as JSON integers (`163109`), not as floats (`163109.0`); submit dates and codes as strings exactly as they appear in the source.
 
 Decision tree:
-- If you have not inspected the context yet, call `list_context`.
+- If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas), or `list_context` if you only want the raw directory tree.
 - If you need to preview file examples, call `read_csv`, `read_json`, or `read_doc` according to the file type.
+- `read_csv` returns ONLY a sample (schema + head 20 rows + tail 5 rows); it never gives you the full file. Any task that needs filtering, aggregation, joins, lookups by key, or scanning every row MUST use `execute_python`. Do not draw conclusions about totals, "the only matching row", or "earliest/latest" from `read_csv` output alone.
 - If you find a SQLite/database file, call `inspect_sqlite_schema` before `execute_context_sql`.
 - If the data can be queried or aggregated in SQLite, call `execute_context_sql`.
 - If you need computation, cleaning, aggregation, cross-file joins, large-file handling, or structured processing beyond simple previews, call `execute_python`.
@@ -135,7 +142,8 @@ def build_task_prompt(task: PublicTask) -> str:
         "When you have the final table, call the `answer` tool.\n"
         "Use the provided tools to answer this task. "
         "Do not reply with plain text; make a tool call. "
-        "If you have not inspected the context yet, call list_context; "
+        "If you have not inspected the context yet, call inspect_files for a one-shot file "
+        "summary (or call list_context for just the directory tree); "
         "when final, call answer. "
         "Emit tool calls as structured calls, not in reasoning."
     )

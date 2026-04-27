@@ -34,6 +34,7 @@ from data_agent_baseline.tools.handlers import (
     handle_answer,
     handle_execute_context_sql,
     handle_execute_python,
+    handle_inspect_files,
     handle_inspect_sqlite_schema,
     handle_list_context,
     handle_read_csv,
@@ -45,6 +46,7 @@ from data_agent_baseline.tools.inputs import (
     EXECUTE_CONTEXT_SQL_SCHEMA,
     EXECUTE_PYTHON_SCHEMA,
     EXECUTE_PYTHON_TIMEOUT_SECONDS,
+    INSPECT_FILES_SCHEMA,
     INSPECT_SQLITE_SCHEMA,
     LIST_CONTEXT_SCHEMA,
     READ_CSV_SCHEMA,
@@ -53,6 +55,7 @@ from data_agent_baseline.tools.inputs import (
     AnswerInput,
     ExecuteContextSqlInput,
     ExecutePythonInput,
+    InspectFilesInput,
     InspectSqliteSchemaInput,
     ListContextInput,
     ReadCsvInput,
@@ -102,6 +105,7 @@ class ToolDefinition:
 # 仅内置工具登记于此；未登记的（用户自定义）工具走原始 dict 透传，保留向后兼容。
 _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "list_context": ListContextInput,
+    "inspect_files": InspectFilesInput,
     "read_csv": ReadCsvInput,
     "read_json": ReadJsonInput,
     "read_doc": ReadDocInput,
@@ -233,17 +237,18 @@ class ToolRegistry:
 
 
 def create_default_tool_registry() -> ToolRegistry:
-    """构造默认 8 件套工具注册表。
+    """构造默认 9 件套工具注册表。
 
     注册顺序（按规范固定）：
     1. list_context           列目录树
-    2. read_csv               预览 CSV
-    3. read_doc               预览文本文档
-    4. read_json              预览 JSON
-    5. inspect_sqlite_schema  sqlite 表结构
-    6. execute_context_sql    sqlite 只读 SQL
-    7. execute_python         子进程执行任意 Python
-    8. answer                 终止 + 提交答案（唯一终止工具）
+    2. inspect_files          一次性回传所有文件的轻量 schema（替代 N+1 次 preview）
+    3. read_csv               预览 CSV
+    4. read_doc               预览文本文档
+    5. read_json              预览 JSON
+    6. inspect_sqlite_schema  sqlite 表结构
+    7. execute_context_sql    sqlite 只读 SQL
+    8. execute_python         子进程执行任意 Python
+    9. answer                 终止 + 提交答案（唯一终止工具）
 
     `input_schema` 里的示例值是"演示"形式（不是真实 JSON Schema），模型看到
     `"columns": ["column_name"]` 会按模式填自己的数据，实测比严谨 schema 更不易出错。
@@ -261,10 +266,25 @@ def create_default_tool_registry() -> ToolRegistry:
             handler=handle_list_context,
         ),
         ToolDefinition(
+            name="inspect_files",
+            description=(
+                "Use when you want a one-shot summary of every file under context: columns, "
+                "dtypes, row counts, table schemas. Pair with or replace list_context, and "
+                "skip the usual sequence of read_csv / read_json / inspect_sqlite_schema calls."
+            ),
+            input_schema=InspectFilesInput.example_value(),
+            json_schema=INSPECT_FILES_SCHEMA,
+            handler=handle_inspect_files,
+        ),
+        ToolDefinition(
             name="read_csv",
             description=(
-                "Use when you need to preview a CSV file, confirm column names, or "
-                "inspect example rows before choosing a computation tool."
+                "Use when you need to inspect a single CSV file: returns columns, "
+                "approximate dtypes, row_count, head (first 20 data rows), and tail "
+                "(last 5 data rows that are not already in head). This is a SAMPLE "
+                "preview, not full data access. For filtering, aggregation, joins, or "
+                "any full-file scan, use execute_python instead — the head/tail will "
+                "miss rows in between."
             ),
             input_schema=ReadCsvInput.example_value(),
             json_schema=READ_CSV_SCHEMA,

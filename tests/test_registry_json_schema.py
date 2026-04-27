@@ -23,6 +23,7 @@ from data_agent_baseline.tools.registry import (
 
 EXPECTED_REQUIRED: dict[str, set[str]] = {
     "list_context": set(),
+    "inspect_files": set(),
     "read_csv": {"path"},
     "read_json": {"path"},
     "read_doc": {"path"},
@@ -149,7 +150,12 @@ def test_to_openai_tools_skips_definitions_without_json_schema() -> None:
 
 
 def test_answer_schema_accepts_heterogeneous_row_cells(registry) -> None:
-    """answer 的 rows 单元格需允许 string / number / boolean / null 四种标量。"""
+    """answer 的 rows 单元格需允许 string / integer / number / boolean / null 五种标量。
+
+    `integer` 单独枚举（而非靠 `number` 兼容）确保 Pydantic 在 union 中优先匹中 int，
+    避免主键 ID 等整数被静默 coerce 成 float（在 prediction.csv 写出 "163109.0"
+    导致与 gold 的 "163109" 字面失配）。
+    """
     schema = registry.definitions["answer"].json_schema
     assert schema is not None
     row_item_schema = schema["properties"]["rows"]["items"]
@@ -157,4 +163,4 @@ def test_answer_schema_accepts_heterogeneous_row_cells(registry) -> None:
     cell_schema = row_item_schema["items"]
     any_of = cell_schema["anyOf"]
     allowed_types = {entry["type"] for entry in any_of}
-    assert allowed_types == {"string", "number", "boolean", "null"}
+    assert allowed_types == {"string", "integer", "number", "boolean", "null"}

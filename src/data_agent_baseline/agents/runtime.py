@@ -38,6 +38,10 @@ class StepRecord:
                         与 `raw_tool_calls` 同约定，仅在同 turn 的首条 StepRecord 上填写
     - usage:            对应本 turn 那次 chat.completions 调用的 token 用量；
                         同样仅在首条 StepRecord 承载，后续并行 tool_call 留 default（全 0）
+    - prompt_messages:  本 turn 发给 LLM 的完整 messages（含 system / user / assistant / tool）；
+                        同 turn 的并行 tool_calls 中只有"首条"承载，便于回放与离线调试
+    - response_message: 模型本 turn 的原始响应（content + tool_calls + reasoning + usage 等）；
+                        与 prompt_messages 同约定，仅 lead 承载
     """
 
     step_index: int
@@ -53,6 +57,8 @@ class StepRecord:
     raw_tool_calls: list[dict[str, Any]] | None = None
     reasoning: str = ""
     usage: TokenUsage = field(default_factory=TokenUsage)
+    prompt_messages: list[dict[str, Any]] | None = None
+    response_message: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """asdict 把 dataclass 递归转成普通 dict（用于 JSON 序列化）。"""

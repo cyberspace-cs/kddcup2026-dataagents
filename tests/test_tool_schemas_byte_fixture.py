@@ -25,6 +25,7 @@ EXPECTED_TOOLS = {
     "answer",
     "execute_context_sql",
     "execute_python",
+    "inspect_files",
     "inspect_sqlite_schema",
     "list_context",
     "read_csv",

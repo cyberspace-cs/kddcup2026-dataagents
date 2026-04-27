@@ -15,9 +15,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from data_agent_baseline.agents.dispatcher import dispatch_tool_call
-from data_agent_baseline.agents.model import ModelAdapter, ModelMessage, TokenUsage
+from data_agent_baseline.agents.model import (
+    ModelAdapter,
+    ModelMessage,
+    ModelResponse,
+    TokenUsage,
+)
 from data_agent_baseline.agents.prompt import (
     build_native_system_prompt,
     build_observation_prompt,
@@ -54,6 +60,42 @@ __all__ = [
     "_extract_reasoning_tool_call_draft",
     "parse_model_step",
 ]
+
+
+def _serialize_message(message: ModelMessage) -> dict[str, Any]:
+    """把 `ModelMessage` 序列化成 JSON 友好的 dict（保留 role/content/tool_calls/tool_call_id）。
+
+    与 `model._message_to_payload` 的差异：本函数为 trace.json 落盘服务，保留所有
+    非 None 字段，便于离线调试时完整还原"当时发给 LLM 的请求"；payload 那边则是
+    专门给 OpenAI SDK 看的，会按角色裁剪字段。
+    """
+    payload: dict[str, Any] = {"role": message.role, "content": message.content}
+    if message.tool_calls is not None:
+        payload["tool_calls"] = message.tool_calls
+    if message.tool_call_id is not None:
+        payload["tool_call_id"] = message.tool_call_id
+    return payload
+
+
+def _serialize_response(response: ModelResponse) -> dict[str, Any]:
+    """把 `ModelResponse` 序列化成 JSON 友好的 dict。
+
+    保留 content / tool_calls / raw_response / reasoning_content / usage / latency_ms：
+    覆盖离线回放与性能分析所需的全部字段。`tool_calls` 中的每项展开成
+    `{id, name, arguments}`，与 `ModelToolCall` 一致。
+    """
+    return {
+        "content": response.content,
+        "tool_calls": [
+            {"id": call.id, "name": call.name, "arguments": call.arguments}
+            for call in response.tool_calls
+        ],
+        "raw_response": response.raw_response,
+        "raw_tool_calls": list(response.raw_tool_calls),
+        "reasoning_content": response.reasoning_content,
+        "usage": response.usage.to_dict(),
+        "latency_ms": response.latency_ms,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,15 +266,22 @@ class ReActAgent:
             turn_index += 1
 
             # ---- 1. 调用模型 ----
+            messages = self._build_messages(task, state)
+            # 提前把 messages 序列化好：即便 model.complete 抛错，也能把当时发出的
+            # prompt_messages 落进 ModelErrorEvent，方便复盘"哪条请求把 LLM 炸了"
+            serialized_prompt = [_serialize_message(message) for message in messages]
             try:
-                response = self.model.complete(self._build_messages(task, state))
+                response = self.model.complete(messages)
             except Exception as exc:
                 # 网络错误 / API 失败：记一条 model_error，让循环在下一轮重试
                 effective_turns += 1
                 step_counter += 1
                 record_step_event(
                     state,
-                    ModelErrorEvent(error=f"model.complete failed: {exc}"),
+                    ModelErrorEvent(
+                        error=f"model.complete failed: {exc}",
+                        prompt_messages=serialized_prompt,
+                    ),
                     step_index=step_counter,
                     turn_index=turn_index,
                     callback=self.step_callback,
@@ -240,6 +289,7 @@ class ReActAgent:
                 continue
 
             # ---- 2. 协议规整 ----
+            serialized_response = _serialize_response(response)
             turn = adapt_model_response(
                 response,
                 protocol=self.protocol,
@@ -258,6 +308,8 @@ class ReActAgent:
                         raw_response=response.raw_response,
                         reasoning=response.reasoning_content,
                         usage=response.usage,
+                        prompt_messages=serialized_prompt,
+                        response_message=serialized_response,
                     ),
                     step_index=step_counter,
                     turn_index=turn_index,
@@ -277,6 +329,8 @@ class ReActAgent:
                         reasoning=response.reasoning_content,
                         usage=response.usage,
                         drafted_tool_call=turn.reasoning_draft,
+                        prompt_messages=serialized_prompt,
+                        response_message=serialized_response,
                     ),
                     step_index=step_counter,
                     turn_index=turn_index,
@@ -309,9 +363,12 @@ class ReActAgent:
                 else:
                     step_tool_call_id = None
                     step_raw_tool_calls = None
-                # usage / reasoning 与 raw_tool_calls 同约定：仅 lead 承载，避免双计
+                # usage / reasoning / prompt_messages / response_message 与 raw_tool_calls
+                # 同约定：仅 lead 承载，避免双计 + 节省体积
                 step_reasoning = response.reasoning_content if is_lead else ""
                 step_usage = response.usage if is_lead else TokenUsage()
+                step_prompt_messages = serialized_prompt if is_lead else None
+                step_response_message = serialized_response if is_lead else None
 
                 try:
                     result, should_terminate = dispatch_tool_call(task, tool_call, self.tools)
@@ -328,6 +385,8 @@ class ReActAgent:
                             raw_tool_calls=step_raw_tool_calls,
                             reasoning=step_reasoning,
                             usage=step_usage,
+                            prompt_messages=step_prompt_messages,
+                            response_message=step_response_message,
                         ),
                         step_index=step_counter,
                         turn_index=turn_index,
@@ -351,6 +410,8 @@ class ReActAgent:
                         raw_tool_calls=step_raw_tool_calls,
                         reasoning=step_reasoning,
                         usage=step_usage,
+                        prompt_messages=step_prompt_messages,
+                        response_message=step_response_message,
                     ),
                     step_index=step_counter,
                     turn_index=turn_index,

@@ -133,9 +133,23 @@ def test_dispatch_bound_violation_reports_minimum(task: PublicTask) -> None:
 
 def test_dispatch_unknown_field_is_rejected(task: PublicTask) -> None:
     registry = create_default_tool_registry()
-    call = _call("read_csv", path="csv/foo.csv", max_rows=20, ttl=5)  # ttl 未声明
+    call = _call("read_csv", path="csv/foo.csv", ttl=5)  # ttl 未声明
 
     with pytest.raises(ValueError, match=r"^read_csv: extra field 'ttl' is not permitted"):
+        dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_read_csv_max_rows_is_rejected(task: PublicTask) -> None:
+    """读 csv 的 head/tail 容量是固定契约，不允许模型用 max_rows 旋钮绕过。
+
+    回归 task_22：原本默认 `max_rows=20` 让模型误以为"我已看到全部 36 行"，
+    导致 row 36 的 `2019-09-12` Dues 记录被静默丢失。现在 read_csv 入参里
+    彻底没有 max_rows / head / tail 字段，过滤/聚合必须切到 execute_python。
+    """
+    registry = create_default_tool_registry()
+    call = _call("read_csv", path="csv/foo.csv", max_rows=200)
+
+    with pytest.raises(ValueError, match=r"^read_csv: extra field 'max_rows' is not permitted"):
         dispatch_tool_call(task, call, registry)
 
 
@@ -153,6 +167,47 @@ def test_dispatch_answer_empty_columns_is_rejected(task: PublicTask) -> None:
 
     with pytest.raises(ValueError, match=r"^answer: field 'columns' must contain at least 1 item"):
         dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_answer_preserves_integer_cells(task: PublicTask) -> None:
+    """JSON 整数 cell 必须以 int 落地，不被 union 中的 float 静默 coerce。
+
+    回归 task_11：模型提交 [[163109, "F", "SLE"]]，落地 prediction.csv 应为
+    `163109,F,SLE` 而非 `163109.0,F,SLE`——后者会与 gold 的字面 `163109` 失配。
+    依赖 AnswerInput.rows 的 union 把 `int` 排在 `float` 之前。
+    """
+    registry = create_default_tool_registry()
+    call = _call(
+        "answer",
+        columns=["ID", "SEX", "Diagnosis"],
+        rows=[[163109, "F", "SLE"], [2803470, "F", "SLE"]],
+    )
+
+    result, should_terminate = dispatch_tool_call(task, call, registry)
+
+    assert result.ok is True
+    assert should_terminate is True
+    assert result.answer is not None
+    cell = result.answer.rows[0][0]
+    assert cell == 163109
+    assert isinstance(cell, int)
+    assert not isinstance(cell, bool)  # bool 是 int 子类，单独防御
+    cell2 = result.answer.rows[1][0]
+    assert cell2 == 2803470
+    assert isinstance(cell2, int)
+
+
+def test_dispatch_answer_preserves_float_cells(task: PublicTask) -> None:
+    """JSON 浮点 cell 必须以 float 落地（不被 int 抢走匹配）。"""
+    registry = create_default_tool_registry()
+    call = _call("answer", columns=["ratio"], rows=[[1.5], [0.25]])
+
+    result, _ = dispatch_tool_call(task, call, registry)
+
+    assert result.answer is not None
+    assert isinstance(result.answer.rows[0][0], float)
+    assert result.answer.rows[0][0] == 1.5
+    assert isinstance(result.answer.rows[1][0], float)
 
 
 # ----- 不可变契约：registry.execute 不修改 caller 的 action_input dict -----

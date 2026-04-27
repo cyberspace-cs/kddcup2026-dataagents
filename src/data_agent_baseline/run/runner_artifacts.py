@@ -158,6 +158,41 @@ def _failure_run_result_payload(task_id: str, failure_reason: str) -> dict[str, 
     }
 
 
+def extract_system_prompt(steps: list[Any]) -> str | None:
+    """从 trace.json 的 steps 中拣出 system prompt（仅看第一步的 prompt_messages）。
+
+    设计动机：完整 prompt_messages 已落在每条 step 上（见 `react.py`），但 system
+    prompt 在所有 turn 中都重复，每条 step 复制一份会让 trace.json 体积重复膨胀；
+    在顶层抽出一份，UI 渲染头卡时直接读顶层即可。
+
+    输入容错：
+    - `steps` 不是 list、为空、第一步不是 dict、`prompt_messages` 缺失或不是 list：返回 None
+    - prompt_messages 中无 system 角色或 system 角色的 content 不是字符串：返回 None
+
+    公开为模块级 API（`extract_system_prompt`）：UI 层与测试都直接 import；
+    见 `data_agent_baseline.ui.streamlit_app` 与 `tests/test_recorder_prompt_capture.py`。
+    """
+    if not steps:
+        return None
+    first = steps[0]
+    if not isinstance(first, dict):
+        return None
+    prompt_messages = cast(Any, first).get("prompt_messages")
+    if not isinstance(prompt_messages, list):
+        return None
+    messages = cast(list[Any], prompt_messages)
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        msg_dict = cast(dict[str, Any], msg)
+        if msg_dict.get("role") != "system":
+            continue
+        content = msg_dict.get("content")
+        if isinstance(content, str):
+            return content
+    return None
+
+
 def _agent_state_to_payload(task_id: str, state: Any) -> dict[str, Any]:
     """把运行中的 `AgentRuntimeState` 快照成 trace.json 兼容的 dict。
 
@@ -170,12 +205,14 @@ def _agent_state_to_payload(task_id: str, state: Any) -> dict[str, Any]:
     （保留 runner 与 agent 内部类型的解耦）。
     """
     answer = state.answer.to_dict() if state.answer is not None else None
+    steps = [step.to_dict() for step in state.steps]
     return {
         "task_id": task_id,
         "answer": answer,
-        "steps": [step.to_dict() for step in state.steps],
+        "steps": steps,
         "failure_reason": state.failure_reason,
         "succeeded": answer is not None and state.failure_reason is None,
+        "system_prompt": extract_system_prompt(steps),
     }
 
 
@@ -314,10 +351,24 @@ def write_task_outputs(
     """把单任务结果落盘为 trace.json（必出）+ prediction.csv（仅当有 answer）。
 
     trace.json 保留完整 ReAct 轨迹用于离线分析；prediction.csv 是评测面向的唯一产物。
+
+    顶层 `system_prompt` 字段在落盘前从 steps[0].prompt_messages 中抽出（若不存在
+    则保留 None）：UI 头卡渲染时直接读顶层而不必扫遍每个 step；step 内
+    prompt_messages 仍保留完整内容用于离线回放。
     """
     task_output_dir = run_output_dir / task_id
     task_output_dir.mkdir(parents=True, exist_ok=True)
     trace_path = task_output_dir / "trace.json"
+
+    # subprocess 路径下 run_result 由 AgentRunResult.to_dict() 产生，没有 system_prompt 字段；
+    # crash/timeout 路径下若 partial trace 已含 system_prompt 则保留之，缺失时再补
+    if "system_prompt" not in run_result:
+        steps = run_result.get("steps")
+        if isinstance(steps, list):
+            run_result["system_prompt"] = extract_system_prompt(cast(list[Any], steps))
+        else:
+            run_result["system_prompt"] = None
+
     _write_json(trace_path, run_result)
 
     # 只要 trace 中有结构合法的 answer 就写 prediction.csv；timeout/crash 路径如果

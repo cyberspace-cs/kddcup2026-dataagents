@@ -46,20 +46,31 @@ StepCallback = Callable[[AgentRuntimeState], None]
 
 @dataclass(frozen=True, slots=True)
 class ModelErrorEvent:
-    """`model.complete` 抛异常。文本协议与原生协议共用。"""
+    """`model.complete` 抛异常。文本协议与原生协议共用。
+
+    `prompt_messages`：当步发给 LLM 的完整 messages（已序列化为 JSON 友好的 dict 列表）；
+    API 失败路径下没有响应，故无 `response_message`。
+    """
 
     error: str
+    prompt_messages: list[dict[str, Any]] | None = None
     kind: EventKind = "model_error"
 
 
 @dataclass(frozen=True, slots=True)
 class ParseErrorEvent:
-    """text 协议下 `parse_model_step` 失败。raw_response/usage/reasoning 来自原响应。"""
+    """text 协议下 `parse_model_step` 失败。raw_response/usage/reasoning 来自原响应。
+
+    `prompt_messages` / `response_message`：分别是当步发给 LLM 的 messages 与原始响应 dict；
+    用于离线调试时回放当时的输入输出。
+    """
 
     error: str
     raw_response: str
     reasoning: str = ""
     usage: TokenUsage = field(default_factory=TokenUsage)
+    prompt_messages: list[dict[str, Any]] | None = None
+    response_message: dict[str, Any] | None = None
     kind: EventKind = "parse_error"
 
 
@@ -78,6 +89,8 @@ class EmptyToolCallsEvent:
     reasoning: str = ""
     usage: TokenUsage = field(default_factory=TokenUsage)
     drafted_tool_call: dict[str, Any] | None = None
+    prompt_messages: list[dict[str, Any]] | None = None
+    response_message: dict[str, Any] | None = None
     kind: EventKind = "empty_tool_calls"
 
 
@@ -87,6 +100,7 @@ class ToolErrorEvent:
 
     `tool_call_id` / `raw_tool_calls` / `reasoning` / `usage` 由 driver 按
     "lead-only"约定填充——同 turn 的并行 tool_calls 中只有首条带这些。
+    `prompt_messages` / `response_message` 同样仅由 lead step 承载。
     """
 
     thought: str
@@ -97,6 +111,8 @@ class ToolErrorEvent:
     raw_tool_calls: list[dict[str, Any]] | None = None
     reasoning: str = ""
     usage: TokenUsage = field(default_factory=TokenUsage)
+    prompt_messages: list[dict[str, Any]] | None = None
+    response_message: dict[str, Any] | None = None
     kind: EventKind = "tool_error"
 
 
@@ -105,6 +121,7 @@ class ObservationEvent:
     """tool handler 成功返回（含 ok=False 但未抛异常的情况，如 execute_python 用户代码失败）。
 
     `tool_call_id` / `raw_tool_calls` / `reasoning` / `usage` 同 ToolErrorEvent 约定。
+    `prompt_messages` / `response_message` 同样仅由 lead step 承载。
     """
 
     thought: str
@@ -117,6 +134,8 @@ class ObservationEvent:
     raw_tool_calls: list[dict[str, Any]] | None = None
     reasoning: str = ""
     usage: TokenUsage = field(default_factory=TokenUsage)
+    prompt_messages: list[dict[str, Any]] | None = None
+    response_message: dict[str, Any] | None = None
     kind: EventKind = "observation"
 
 
@@ -144,6 +163,8 @@ def _empty_tool_calls_observation(drafted_tool_call: dict[str, Any] | None) -> d
 def _to_step_record(event: StepEvent, *, step_index: int, turn_index: int) -> StepRecord:
     """把事件序列化成 StepRecord（保持 trace.json 字节稳定，D2）。"""
     if isinstance(event, ModelErrorEvent):
+        # API 调用失败：没有响应可记，response_message 永远为 None；
+        # prompt_messages 仍然有值，便于排查"哪条请求把模型炸了"
         return StepRecord(
             step_index=step_index,
             turn_index=turn_index,
@@ -155,6 +176,8 @@ def _to_step_record(event: StepEvent, *, step_index: int, turn_index: int) -> St
             ok=False,
             tool_call_id=None,
             raw_tool_calls=None,
+            prompt_messages=event.prompt_messages,
+            response_message=None,
         )
     if isinstance(event, ParseErrorEvent):
         return StepRecord(
@@ -170,6 +193,8 @@ def _to_step_record(event: StepEvent, *, step_index: int, turn_index: int) -> St
             raw_tool_calls=None,
             reasoning=event.reasoning,
             usage=event.usage,
+            prompt_messages=event.prompt_messages,
+            response_message=event.response_message,
         )
     if isinstance(event, EmptyToolCallsEvent):
         return StepRecord(
@@ -185,6 +210,8 @@ def _to_step_record(event: StepEvent, *, step_index: int, turn_index: int) -> St
             raw_tool_calls=None,
             reasoning=event.reasoning,
             usage=event.usage,
+            prompt_messages=event.prompt_messages,
+            response_message=event.response_message,
         )
     if isinstance(event, ToolErrorEvent):
         return StepRecord(
@@ -200,6 +227,8 @@ def _to_step_record(event: StepEvent, *, step_index: int, turn_index: int) -> St
             raw_tool_calls=event.raw_tool_calls,
             reasoning=event.reasoning,
             usage=event.usage,
+            prompt_messages=event.prompt_messages,
+            response_message=event.response_message,
         )
     # ObservationEvent
     return StepRecord(
@@ -215,6 +244,8 @@ def _to_step_record(event: StepEvent, *, step_index: int, turn_index: int) -> St
         raw_tool_calls=event.raw_tool_calls,
         reasoning=event.reasoning,
         usage=event.usage,
+        prompt_messages=event.prompt_messages,
+        response_message=event.response_message,
     )
 
 

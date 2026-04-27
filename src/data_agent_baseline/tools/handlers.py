@@ -16,6 +16,7 @@ from typing import Any
 
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
 from data_agent_baseline.tools.filesystem import (
+    inspect_context_files,
     list_context_tree,
     read_csv_preview,
     read_doc_preview,
@@ -27,6 +28,7 @@ from data_agent_baseline.tools.inputs import (
     AnswerInput,
     ExecuteContextSqlInput,
     ExecutePythonInput,
+    InspectFilesInput,
     InspectSqliteSchemaInput,
     ListContextInput,
     ReadCsvInput,
@@ -63,11 +65,20 @@ def handle_list_context(task: PublicTask, args: ListContextInput) -> ToolExecuti
     return ToolExecutionResult(ok=True, content=list_context_tree(task, max_depth=args.max_depth))
 
 
+def handle_inspect_files(task: PublicTask, _args: InspectFilesInput) -> ToolExecutionResult:
+    """`inspect_files`: 一次性回传 context 下所有文件的轻量 schema。
+
+    入参模型刻意为空（参见 `InspectFilesInput`），handler 直接调度核心 walker。
+    """
+    return ToolExecutionResult(ok=True, content=inspect_context_files(task))
+
+
 def handle_read_csv(task: PublicTask, args: ReadCsvInput) -> ToolExecutionResult:
-    """`read_csv`: 读取 CSV 预览，默认前 20 行。"""
-    return ToolExecutionResult(
-        ok=True, content=read_csv_preview(task, args.path, max_rows=args.max_rows)
-    )
+    """`read_csv`: 返回 CSV 的 schema + head(20) + tail(5)。
+
+    样本固定不让模型调，全量过滤/聚合走 execute_python——参见 `read_csv_preview` docstring。
+    """
+    return ToolExecutionResult(ok=True, content=read_csv_preview(task, args.path))
 
 
 def handle_read_json(task: PublicTask, args: ReadJsonInput) -> ToolExecutionResult:

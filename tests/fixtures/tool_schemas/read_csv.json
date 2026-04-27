@@ -1,16 +1,11 @@
 {
   "function": {
-    "description": "Use when you need to preview a CSV file, confirm column names, or inspect example rows before choosing a computation tool.",
+    "description": "Use when you need to inspect a single CSV file: returns columns, approximate dtypes, row_count, head (first 20 data rows), and tail (last 5 data rows that are not already in head). This is a SAMPLE preview, not full data access. For filtering, aggregation, joins, or any full-file scan, use execute_python instead — the head/tail will miss rows in between.",
     "name": "read_csv",
     "parameters": {
       "additionalProperties": false,
+      "description": "`read_csv` 入参：仅 path，**刻意没有** max_rows / head / tail 旋钮。\n\n设计契约：read_csv 是 inspect-style 工具——返回固定的 schema + head(20) + tail(5)；\n模型无法通过加大窗口绕过样本语义。需要全量过滤/聚合时唯一出口是 execute_python。\n任何 max_rows/limit/offset 字段都会因 `extra=\"forbid\"` 显式报错，把这个边界打到\nPydantic 校验层，让模型立刻拿到可操作的反馈。",
       "properties": {
-        "max_rows": {
-          "default": 20,
-          "description": "Maximum number of preview rows to return.",
-          "minimum": 1,
-          "type": "integer"
-        },
         "path": {
           "description": "Relative path to a CSV file. Examples: 'csv/member.csv', 'data/train.csv'. Paths are relative to the task context directory; DO NOT prepend 'context/'. For example use 'knowledge.md' or 'csv/foo.csv', not 'context/knowledge.md'.",
           "type": "string"

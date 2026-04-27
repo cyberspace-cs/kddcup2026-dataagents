@@ -65,24 +65,36 @@ class ListContextInput(BaseModel):
         return {"max_depth": 4}
 
 
+# `inspect_files` 入参刻意保持空模型：`extra="forbid"` 在 schema 中变 `additionalProperties=false`，
+# 把"无配置全量扫描"语义写进契约——模型即使凭空填字段也会立刻拿到可操作的 ValidationError。
+# 不写 class docstring 是为了避免 Pydantic 把它注入到 JSON Schema 顶层 description（破坏字节稳定性）。
+class InspectFilesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {}
+
+
 class ReadCsvInput(BaseModel):
+    """`read_csv` 入参：仅 path，**刻意没有** max_rows / head / tail 旋钮。
+
+    设计契约：read_csv 是 inspect-style 工具——返回固定的 schema + head(20) + tail(5)；
+    模型无法通过加大窗口绕过样本语义。需要全量过滤/聚合时唯一出口是 execute_python。
+    任何 max_rows/limit/offset 字段都会因 `extra="forbid"` 显式报错，把这个边界打到
+    Pydantic 校验层，让模型立刻拿到可操作的反馈。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     path: Annotated[
         str,
         _path_field(file_kind="CSV file", examples=("csv/member.csv", "data/train.csv")),
     ]
-    max_rows: Annotated[
-        int,
-        _positive_int_field(
-            default=20,
-            description="Maximum number of preview rows to return.",
-        ),
-    ]
 
     @classmethod
     def example_value(cls) -> dict[str, Any]:
-        return {"path": "relative/path/to/file.csv", "max_rows": 20}
+        return {"path": "relative/path/to/file.csv"}
 
 
 class ReadJsonInput(BaseModel):
@@ -219,7 +231,10 @@ class AnswerInput(BaseModel):
         Field(min_length=1, description="Column header names (non-empty)."),
     ]
     rows: Annotated[
-        list[list[str | float | bool | None]],
+        # `int` 必须排在 `float` 之前：Pydantic v2 union 按声明顺序匹配，否则
+        # JSON 整数（如主键 ID 163109）会被先匹中 float 而落地成 163109.0，
+        # 写进 prediction.csv 的字面值就跟 gold 的 "163109" 失配。
+        list[list[str | int | float | bool | None]],
         Field(description="Answer rows; each row's length must match the columns array."),
     ]
 
@@ -238,6 +253,7 @@ class AnswerInput(BaseModel):
 
 
 LIST_CONTEXT_SCHEMA = normalize_for_vllm(ListContextInput.model_json_schema())
+INSPECT_FILES_SCHEMA = normalize_for_vllm(InspectFilesInput.model_json_schema())
 READ_CSV_SCHEMA = normalize_for_vllm(ReadCsvInput.model_json_schema())
 READ_JSON_SCHEMA = normalize_for_vllm(ReadJsonInput.model_json_schema())
 READ_DOC_SCHEMA = normalize_for_vllm(ReadDocInput.model_json_schema())

@@ -1,16 +1,18 @@
 """`dabench` CLI 入口模块。
 
-暴露 4 个子命令：
+暴露 5 个子命令：
 - `status`: 打印项目目录结构与数据集状态
 - `inspect-task <id>`: 查看单任务的元信息与 context 文件树
 - `run-task <id>`: 对单个任务跑一次 ReAct baseline
 - `run-benchmark`: 对数据集里全部（或 `--limit N`）任务批量跑
+- `view`: 启动单任务调试前端（Streamlit），可视化 trace.json 与 prediction
 
 打包发布时入口由 `pyproject.toml` 的 `[project.scripts]` 暴露为 `dabench`，
 直接运行 `python -m data_agent_baseline.cli` 在 Typer + 模块运行器下会无输出，
 务必通过 `uv run dabench ...` 调用。
 """
 
+import subprocess
 from pathlib import Path
 from time import perf_counter
 from typing import Any, cast
@@ -323,6 +325,67 @@ def run_benchmark_command(
     console.print(f"Run output: {run_output_dir}")
     console.print(f"Tasks attempted: {len(artifacts)}")
     console.print(f"Succeeded tasks: {sum(1 for item in artifacts if item.succeeded)}")
+
+
+@app.command("view")
+def view_command(
+    run_id: str = typer.Argument(
+        None,
+        help="Run id 目录名（默认显示选择器，可在浏览器里切换）",
+    ),
+    task: str = typer.Option(
+        None,
+        "--task",
+        help="任务 id（缺省时打开任务选择器）",
+    ),
+    port: int = typer.Option(8501, "--port", help="Streamlit 服务端口"),
+    artifacts_dir: Path = typer.Option(
+        ARTIFACTS_DIR,
+        "--artifacts-dir",
+        help="artifacts 根目录（默认为项目根的 artifacts/）",
+    ),
+    public_data_dir: Path = typer.Option(
+        DATA_DIR / "public",
+        "--public-data-dir",
+        help="公开数据集根目录（用于读取 gold.csv）",
+    ),
+) -> None:
+    """启动单任务调试前端（Streamlit）。
+
+    薄包装：转发到 `streamlit run <ui/streamlit_app.py> -- --run-id ... --task-id ...`。
+    需要先安装 viz 分组：`uv sync --extra viz`。
+    """
+    app_path = Path(__file__).parent / "ui" / "streamlit_app.py"
+    if not app_path.exists():
+        raise typer.BadParameter(f"UI entry not found at {app_path}")
+
+    # streamlit 需要在 `--` 之前设置自身参数，之后透传给目标脚本
+    cmd = [
+        "streamlit",
+        "run",
+        str(app_path),
+        "--server.port",
+        str(port),
+        "--",
+        "--artifacts-dir",
+        str(artifacts_dir),
+        "--public-data-dir",
+        str(public_data_dir),
+    ]
+    if run_id:
+        cmd += ["--run-id", run_id]
+    if task:
+        cmd += ["--task-id", task]
+    try:
+        subprocess.run(cmd, check=True)
+    except FileNotFoundError as exc:
+        # streamlit 未安装时给出友好提示而非 traceback
+        raise typer.BadParameter(
+            "streamlit not found. Install the viz extra first: uv sync --extra viz"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        # streamlit 进程异常退出（用户 Ctrl+C 也会落到这里），让 Typer 静默处理即可
+        raise typer.Exit(code=exc.returncode) from exc
 
 
 def main() -> None:
