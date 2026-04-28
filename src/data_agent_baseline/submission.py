@@ -7,6 +7,12 @@ when `tool_protocol="native"`, plain OpenAIModelAdapter when "text"). main's
 old submission.py instantiated `OpenAIModelAdapter` against the default-native
 ReActAgent, which silently breaks on the first tool call.
 
+Concurrency: tasks run on a `ThreadPoolExecutor` with `app` shared across
+workers. Safe because (1) the OpenAI client is thread-safe, (2) `RateLimitedAdapter`
+serialises via filelock, (3) `ToolRegistry` is frozen + MappingProxyType with
+stateless handlers, (4) `app.new_agent()` mints a fresh ReAct loop per call.
+Worker count: `MAX_WORKERS` env overrides → falls back to `config.run.max_workers`.
+
 §3.7 trade-off: only minimal status lines go to /logs/main.log. ReAct traces
 contain raw rows from /input CSVs (read_csv / inspect_files outputs); the
 official rules treat that as leaked test-set data — best case loss of debug
@@ -20,12 +26,21 @@ Exit codes: 0 ok; 78 (EX_CONFIG) missing env / mounts; 73 (EX_CANTCREAT)
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
 import os
 import sys
+import threading
 import time
 import traceback
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    as_completed,
+)
+from concurrent.futures import (
+    TimeoutError as FuturesTimeout,
+)
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -41,16 +56,21 @@ DEFAULT_LOGS = Path("/logs")
 DEFAULT_CONFIG = Path("/app/configs/react_baseline.example.yaml")
 DEFAULT_GLOBAL_BUDGET_SECONDS = 42_000.0  # ~11.7 h, fits a 50-task batch with headroom
 
+_LOG_LOCK = threading.Lock()
+
 
 def _log(logs_dir: Path, line: str) -> None:
     """Append a status line to /logs/main.log and stderr.
 
     Per §3.7 we only emit metadata here — never tool outputs or raw rows.
+    Lock-guarded so concurrent worker threads don't interleave bytes inside
+    a single line on the file or stderr.
     """
     logs_dir.mkdir(parents=True, exist_ok=True)
-    with (logs_dir / "main.log").open("a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
-    sys.stderr.write(line + "\n")
+    with _LOG_LOCK:
+        with (logs_dir / "main.log").open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        sys.stderr.write(line + "\n")
 
 
 def _write_prediction_csv(path: Path, columns: list[str], rows: list[list[Any]]) -> None:
@@ -168,27 +188,59 @@ def main() -> int:
     config = _build_config(input_root)
     app = build_application(config)
     tasks = app.dataset.iter_tasks()
+    workers = max(1, int(os.environ.get("MAX_WORKERS", config.run.max_workers)))
     _log(
         logs_root,
-        f"start input={input_root} output={output_root} budget={global_budget:.0f}s tasks={len(tasks)}",
+        f"start input={input_root} output={output_root} budget={global_budget:.0f}s "
+        f"tasks={len(tasks)} workers={workers}",
     )
 
     started = time.monotonic()
     completed = 0
     written = 0
-    for task in tasks:
-        elapsed = time.monotonic() - started
-        if elapsed >= global_budget:
-            _log(logs_root, f"budget exhausted at task={task.task_id} elapsed={elapsed:.0f}s")
-            break
-        if _run_one_task(app, task, output_root, logs_root):
-            written += 1
-        completed += 1
+
+    # Submit every task up front; the executor caps concurrency at `workers`
+    # and the global wall budget is enforced by `as_completed(timeout=...)`.
+    # Shared `app` is fine — see module docstring for the thread-safety
+    # argument. `app.new_agent()` is called inside `_run_one_task`, so each
+    # worker gets an isolated ReAct loop.
+    executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="submission")
+    try:
+        futures = {
+            executor.submit(_run_one_task, app, task, output_root, logs_root): task
+            for task in tasks
+        }
+        try:
+            # Re-anchor the budget to "now" so submission overhead doesn't
+            # eat into the deadline observed by `as_completed`.
+            timeout = max(0.0, global_budget - (time.monotonic() - started))
+            for future in as_completed(futures, timeout=timeout):
+                # `_run_one_task` already swallows task-level exceptions and
+                # returns False; suppress() only fires on unexpected
+                # executor-level failures, leaving `wrote` at its default.
+                wrote = False
+                with contextlib.suppress(Exception):
+                    wrote = future.result()
+                if wrote:
+                    written += 1
+                completed += 1
+        except FuturesTimeout:
+            pending = sum(1 for future in futures if not future.done())
+            _log(
+                logs_root,
+                f"budget exhausted; pending={pending} elapsed={time.monotonic() - started:.0f}s",
+            )
+    finally:
+        # `wait=False` so we never block past the wall budget; in-flight
+        # workers finish on their own and any prediction.csv they manage to
+        # write before process exit still counts on disk.
+        executor.shutdown(wait=False, cancel_futures=True)
 
     total_elapsed = time.monotonic() - started
     _log(
         logs_root,
-        f"finished completed={completed}/{len(tasks)} predictions={written} elapsed={total_elapsed:.1f}s",
+        f"finished completed={completed}/{len(tasks)} predictions={written} "
+        f"elapsed={total_elapsed:.1f}s workers={workers}",
     )
     (logs_root / "summary.json").write_text(
         json.dumps(
@@ -197,6 +249,7 @@ def main() -> int:
                 "task_completed": completed,
                 "predictions_written": written,
                 "elapsed_seconds": round(total_elapsed, 1),
+                "workers": workers,
             },
             indent=2,
         )
