@@ -38,29 +38,41 @@ uv run dabench run-benchmark         --config <cfg> [--limit N]
 
 **Do not** invoke via `uv run python -m data_agent_baseline.cli ...` — the Typer + module-runner interaction produces no output in this project.
 
-## 3. Git commit messages: English only
+## 3. Git commit messages
 
-All commit subjects and bodies must be written in **English**, even when chatting with the tool or reviewer in Chinese. Code comments and docstrings may remain in Chinese — this rule is commit-message specific.
+Follow **Conventional Commits + 50/72**, in **English**.
 
-**Format:** Conventional Commits (`type(scope): subject`).
-
-**Do:**
+**Format**
 
 ```
-docs(baseline): add Chinese annotations across all source files
-chore(tooling): integrate ruff and apply first-pass format
+<type>(<scope>): <subject>          # imperative, ≤50 chars (hard max 72), no period
+                                    # ↑ blank line ↓ (only if a body exists)
+<body wrapped at 72 chars>          # optional; only when "why" is non-obvious
+```
+
+**Rules**
+
+- **Subject ≤50 chars** (hard max 72 including the `type(scope):` prefix). Imperative mood: `fix`, not `fixed` / `fixes`.
+- **Body only when it adds value** — explain *why* or a non-obvious trade-off, never restate the diff. Skip for renames, formatting, trivial fixes.
+- **One logical change per commit** — no `feat(a,b,c): X + Y + Z`. Split composite work.
+- **English only** for subject and body. Code comments/docstrings may stay in Chinese; intrinsic Chinese proper nouns (file paths, teammate names like 华/吴) may appear inline.
+- Valid `<type>`: `feat`, `fix`, `docs`, `refactor`, `style`, `test`, `chore`, `perf`, `ci`, `build`. Lowercase. `<scope>` optional.
+- Avoid vague subjects: `update stuff`, `misc`, `WIP`, `fix bug`.
+
+**Examples**
+
+Good:
+
+```
+refactor(tools): rename _schema_normalize to schema_normalize
 fix(runner): prevent zombie subprocess on timeout
+feat(agents): add token-bucket rate limiter
 ```
 
-**Don't:**
+Bad:
 
 ```
-docs(baseline): 给全量源码添加中文注释
-chore(tooling): 集成 ruff 并应用首次格式化
+feat(agents,tools,ui): align ... + debug UI + inspect_files     # >72 chars, 3 things in 1
+docs(baseline): 给全量源码添加中文注释                            # not English
+refactor: updated some files                                    # past tense + vague
 ```
-
-Proper nouns that are intrinsically Chinese (e.g. teammate names 华/吴, file names like `docs/12-two-person-plan.md`) may stay as-is inside an otherwise-English message.
-
----
-
-These three rules are also mirrored in the local AI memory store (`~/.claude/projects/.../memory/`) but are kept here for **team-wide visibility** and for non-Claude tools (Cursor, Copilot, human reviewers) that read repo-root conventions.
