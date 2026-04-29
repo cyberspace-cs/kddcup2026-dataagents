@@ -8,8 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - **PR-1 baseline.** ReAct loop with text-fenced JSON action protocol; eight default
-  tools (`list_context`, `read_csv`, `read_json`, `read_doc`, `inspect_sqlite_schema`,
+  tools (`inspect_files`, `read_csv`, `read_json`, `read_doc`, `inspect_sqlite_schema`,
   `execute_context_sql`, `execute_python`, `answer`); subprocess timeout isolation.
+  `inspect_files` is the zero-decision first-turn entry point — it returns columns,
+  dtypes, row counts, and sqlite/json schemas for every file under `context/` in one
+  call, replacing the previous `list_context` directory walker.
 - **PR-2 dual-key pool + cross-process rate limiter.** `agent.api_keys` enables
   per-task key pinning by `task_index % len(api_keys)`. `agent.rate_limit` wires a
   per-key `FileTokenBucket` (RPM + TPM, `filelock`-protected, atomic state writes,
