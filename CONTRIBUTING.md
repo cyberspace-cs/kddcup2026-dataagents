@@ -3,8 +3,8 @@
 Conventions for code contributions to this repository. They apply equally to human contributors and AI coding assistants (Claude Code, Cursor, etc.).
 
 For developer-loop topics (toolchain, quality gates, project layout) see
-[`docs/development.md`](development.md). For the AI-assistant operational digest
-see [`CLAUDE.md`](../CLAUDE.md) at the repo root.
+[`docs/development.md`](docs/development.md). For the AI-assistant operational
+digest see [`CLAUDE.md`](CLAUDE.md).
 
 ## Git commit messages
 
