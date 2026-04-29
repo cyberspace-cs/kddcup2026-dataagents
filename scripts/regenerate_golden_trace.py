@@ -75,7 +75,12 @@ def _regenerate(
 
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
+        # macOS 上 tempfile 返回 `/var/folders/...`，但 task.context_dir.resolve() 会
+        # 跟随 /var → /private/var symlink；如果不在脚本里也走 resolve()，下面的
+        # `context_dir_str` 替换会漏掉 `/private` 前缀，导致 byte fixture 与
+        # `tests/test_golden_trace` 在不同文件系统上漂移。test 本身用 pytest
+        # tmp_path（已是 `/private/var/...`），不会踩这个坑——只有这个脚本要校正。
+        tmp_path = Path(tmp).resolve()
         dataset_root = tmp_path / "input"
         dataset_root.mkdir()
         shutil.copytree(GOLDEN_DIR / "task_fixture", dataset_root / "task_fixture")

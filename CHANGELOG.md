@@ -42,6 +42,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   numeric / `task_<n>` forms mixable). Composes with `--limit`: range filters
   first, then `--limit` truncates. Empty selection or inverted range exits
   non-zero with a parameter error.
+- **`answer({"from_csv": <abs_path>})` artifact handoff.** New optional field
+  on `answer` for tables already on disk: the runner reads the CSV, infers
+  per-column dtypes (int before float, then bool, str), coerces cells back to
+  source types, and submits an `AnswerTable` exactly like the inline path.
+  XOR with `columns`/`rows` (Pydantic `model_validator` rejects both forms in
+  the same call). Fail-paths (missing file, > 5MB, ragged rows, non-UTF-8,
+  relative path) raise `ValueError` so the dispatcher records a `tool_error`
+  and the ReAct loop retries. `execute_python` exposes
+  `os.environ['DABENCH_ANSWER_DIR']` (`<task_dir>/_answer/`, mkdir'd by the
+  runner before each call) as the convention write location. Ack `content`
+  carries `from_csv.{path, dtypes, head_preview[:5]}` for offline trace
+  audit. Empirical motivation: in run `20260429T192409664288Z`, task_8
+  step 8 spent 87s and 8073 completion tokens re-emitting a 140-row table
+  the model had already printed in step 7; the artifact path replaces that
+  with a ~30-token `{from_csv: ...}` call and a millisecond CSV re-parse.
 
 ### Changed
 - **Configuration loader migrated to Pydantic v2.** `load_app_config` now validates
@@ -126,6 +141,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   grader checks. The pre-existing "Preserve cell types from the source"
   bullet only covered int-vs-float typing for source IDs and did not
   constrain decimal precision on computed values.
+- **System prompt now steers large answer tables to the artifact handoff.**
+  Two bullets appended to `_DATA_OUTPUT_RULES` (so both text and native
+  protocols inherit them): (1) for answers >= 30 rows OR >= 200 cells,
+  prefer `answer({from_csv: <abs path under DABENCH_ANSWER_DIR>})` over
+  inline `columns`/`rows`. The bullet also makes column projection a
+  library-agnostic obligation: decide the column set FIRST from the
+  question's WH-target alone, never enumerate the source row's full key
+  set. Pandas (`df[['col1','col2']].to_csv(...)`, never `df.to_csv(...)`),
+  `csv.DictWriter(fieldnames=[<wh-target>])`, and hand-built rows are
+  all explicitly named so the rule does not leak past whichever API the
+  model picked; (2) always print a verification snapshot (row count,
+  sample rows, final column list) from `execute_python` before calling
+  `answer`, and run two MANDATORY self-checks on it: (a) drop any
+  column whose value is `''`/`None`/`NaN` across all sampled rows
+  (passthrough source column, e.g. `k_symbol`/`bank`/`account` for a
+  withdrawal-listing question); (b) reverse-count: re-read the
+  question, count things it explicitly names you should output, and if
+  the column count exceeds that, trim down to just the WH-target.
+  Empirical motivation: in run `20260429T192409664288Z`, task_8
+  step 8 spent 87s autoregressively re-emitting a 140-row table the
+  model had already printed in step 7 (8073 completion tokens, ~80% of
+  the task wall-clock); the artifact bullet collapsed that to ~30
+  tokens and 24s in run `20260429T210729531308Z`. The same follow-up
+  run, however, revealed the model using `csv.DictWriter` to enumerate
+  all 10 source columns of `trans.csv` (3 of them all-empty for the
+  filtered subset: `k_symbol`/`bank`/`account`) instead of the single
+  WH-target column `trans_id` — the verification print displayed the
+  empty cells in plain sight, and the model proceeded anyway. The
+  library-agnostic projection clause and the two mandatory self-checks
+  close that gap.
+- **`execute_python` tool description now recommends `pandas` for tabular
+  work.** The tool description (a single source of truth surfaced both via
+  `to_openai_tools()` for native function calling and `describe_for_prompt()`
+  for the text protocol) gains a paragraph: "For tabular work (filtering,
+  aggregation, projection, cross-file joins), prefer `pandas` over the `csv`
+  stdlib: `df[df['col'] == ...]` and `df[['target_col']]` make WH-target
+  column selection idiomatic, types are preserved automatically, and
+  `df.head()` / `df.dtypes` print the verification snapshot in one line.
+  Available libs include pandas, numpy, pyarrow, polars, openpyxl. The
+  `csv` module is fine only for trivial reads." Empirical motivation: in
+  run `20260429T210729531308Z` task_8, the model defaulted to
+  `csv.DictReader` + a hand-built dict that enumerated all 10 source
+  columns; pandas' natural `df[[...]]` projection idiom would have steered
+  it toward the single-column answer the grader expects. Pandas import
+  cost (~320ms / `execute_python` call) is small relative to typical
+  task wall-clock and is amortized across multiple calls. The artifact
+  bullet in `_DATA_OUTPUT_RULES` was reordered to put pandas first as
+  the idiomatic write so column projection becomes the path of least
+  resistance.
 
 ### Breaking (internal API only)
 - `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` moved from

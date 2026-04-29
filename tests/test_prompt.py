@@ -245,3 +245,79 @@ def test_text_system_prompt_requires_full_numeric_precision() -> None:
     assert "preserve full numeric precision" in lower
     assert "60.77956989247312" in prompt and "60.78" in prompt
     assert "round only when the question explicitly asks" in lower
+
+
+def test_system_prompts_advertise_artifact_handoff() -> None:
+    """两套 system prompt 都必须告知模型 from_csv artifact 协议 + DABENCH_ANSWER_DIR。
+
+    `_DATA_OUTPUT_RULES` 是单一真相源，所以两套 prompt 拿到的措辞必须字面一致；
+    本断言锁住关键短语，避免 prompt 改动只覆盖一份的回归。
+    """
+    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    native_prompt = build_native_system_prompt()
+
+    for prompt in (text_prompt, native_prompt):
+        # artifact 工作流必须出现两个关键关键词
+        assert "from_csv" in prompt
+        assert "DABENCH_ANSWER_DIR" in prompt
+        # 阈值"30 行 / 200 cell"是模型何时切 artifact 的判定线
+        assert "30+ rows" in prompt and "200+ cells" in prompt
+        # verification print 是 prompt 的另一条新规
+        lower = prompt.lower()
+        assert "print a verification snapshot" in lower
+        assert "before calling `answer`" in lower
+
+
+def test_system_prompts_force_wh_target_column_projection() -> None:
+    """artifact bullet 必须强制按 WH-target 决策列集 + pandas-first 习惯。
+
+    回归 run 20260429T210729531308Z task_8：from_csv 性能优化生效（87s→24s），
+    但模型用 `csv.DictWriter` 手动列出 trans.csv 全部 10 列写进 artifact，
+    prediction.csv 多出 9 列（其中 3 列全为空：k_symbol/bank/account）。
+    上一版 prompt 只禁了 `df.to_csv(<whole>)`，没覆盖 csv.DictWriter / 手写 rows
+    路径；新规则改为：(1)"先按 WH-target 决定列集，库无关"；(2) 把 pandas
+    放在最前作 idiomatic 范式（`df[[...]].to_csv(...)`），让 column projection
+    成为 path of least resistance；(3) 三种 API 都被点名禁令。
+    """
+    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    native_prompt = build_native_system_prompt()
+
+    for prompt in (text_prompt, native_prompt):
+        lower = prompt.lower()
+        # 核心契约：列集来自 WH-target，不来自源 schema
+        assert "decide the column set first from the question's wh-target alone" in lower
+        assert "not from the source schema" in lower
+        # pandas idiomatic 范式（projection 直接出现在示例里）
+        assert "the idiomatic write is pandas" in lower
+        assert "df[df['col'] == ...][['target_col_a', 'target_col_b']]" in prompt
+        # 三种 API 都被点名（pandas / csv.DictWriter / hand-built）
+        assert "csv.dictwriter" in lower
+        assert "hand-build rows" in lower
+        # 三条 NEVER 禁令（大写 NEVER 在 prompt 里是有意为之的强调）
+        assert "NEVER `df.to_csv(...)` on the whole frame" in prompt
+        assert "NEVER pass the source row's full `.keys()`" in prompt
+        assert "NEVER enumerate every source column in your hand-built dict" in prompt
+
+
+def test_system_prompts_mandate_two_verification_self_checks() -> None:
+    """verification bullet 必须给出两条强制 self-check：all-None 列 + 列数 vs 题面计数。
+
+    回归同一个 run：模型实际 PRINT 了 verification snapshot（k_symbol/bank/account
+    在 sample rows 都是 ''），但仍然提交了那 10 列。说明"仅打印"不够——必须把
+    "看到 → 删掉 → 重跑"写成强制流程，并加一条"列数 vs 题面计数"反向校验。
+    """
+    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    native_prompt = build_native_system_prompt()
+
+    for prompt in (text_prompt, native_prompt):
+        lower = prompt.lower()
+        # 触发关键词：'' / None / NaN 全空列必须删
+        assert "two mandatory self-checks" in lower
+        assert "across all sampled rows" in lower
+        assert "passthrough source column" in lower
+        # 给出具体例子（k_symbol/bank/account），不只是抽象描述
+        assert "k_symbol" in prompt or "withdrawal" in lower
+        # 反向计数 self-check（b）
+        assert "count the things it explicitly names you should output" in lower
+        # 反对"以防万一多带几列"
+        assert 'do not "include extra columns just in case"' in lower

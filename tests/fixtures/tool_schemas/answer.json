@@ -10,8 +10,15 @@
           "items": {
             "type": "string"
           },
-          "minItems": 1,
           "type": "array"
+        },
+        "from_csv": {
+          "default": null,
+          "description": "Optional absolute path to a CSV file containing the answer table (header row + data rows). When set, `columns` and `rows` MUST be empty. Use this for tables >= 30 rows or >= 200 cells to avoid burning decode tokens re-emitting the table as JSON. Convention: write the CSV from `execute_python` under `os.environ['DABENCH_ANSWER_DIR']`.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "rows": {
           "description": "Answer rows; each row's length must match the columns array.",
@@ -40,10 +47,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "columns",
-        "rows"
-      ],
+      "required": [],
       "type": "object"
     }
   },

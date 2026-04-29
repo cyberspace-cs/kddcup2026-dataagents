@@ -29,7 +29,9 @@ EXPECTED_REQUIRED: dict[str, set[str]] = {
     "inspect_sqlite_schema": {"path"},
     "execute_context_sql": {"path", "sql"},
     "execute_python": {"code"},
-    "answer": {"columns", "rows"},
+    # answer 现在三字段都可选：inline columns/rows 与 from_csv 通过 model_validator 形成 XOR。
+    # required=[] 在 schema 层把决策权交给 validator，模型仍能拿到结构化错误。
+    "answer": set(),
 }
 
 
@@ -84,6 +86,30 @@ def test_answer_description_explains_submission_contract(registry) -> None:
     assert "submit" in description
     assert "plain text" in description
     assert "ignored" in description
+
+
+def test_execute_python_description_recommends_pandas(registry) -> None:
+    """execute_python 描述必须把 pandas 推为 tabular 工作的默认。
+
+    回归 run 20260429T210729531308Z task_8：模型用 `csv.DictReader` + 手写
+    `transactions.append({...全 10 列...})` 走"路径最阻力小"，导致 fieldnames
+    照搬源 schema。pandas 的 `df[[...]].to_csv(...)` 让 column projection
+    变成习惯写法；同时 import pandas 才能让模型看到自动类型保留 / 一行
+    verification（`df.head()` / `df.dtypes`）的 ergonomic 优势。
+    """
+    description = registry.definitions["execute_python"].description.lower()
+
+    # pandas 推荐 + 反对默认 csv stdlib
+    assert "prefer `pandas` over the `csv` stdlib" in description
+    # 关键 idiom：projection
+    assert "df[['target_col']]" in description
+    # 类型保留与 verification 的 ergonomic 卖点
+    assert "no manual `int()`/`float()` casts" in description
+    assert "df.head()" in description and "df.dtypes" in description
+    # 显式列出 runtime 已装的库，避免模型怀疑可用性
+    assert "pandas, numpy, pyarrow, polars, openpyxl" in description
+    # csv stdlib 仍允许小场景，避免一刀切
+    assert "trivial reads" in description
 
 
 def test_to_openai_tools_produces_expected_shape(registry) -> None:

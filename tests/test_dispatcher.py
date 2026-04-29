@@ -161,12 +161,58 @@ def test_dispatch_answer_row_width_mismatch_reports_index(task: PublicTask) -> N
         dispatch_tool_call(task, call, registry)
 
 
-def test_dispatch_answer_empty_columns_is_rejected(task: PublicTask) -> None:
+def test_dispatch_answer_neither_payload_is_rejected(task: PublicTask) -> None:
+    """既不传 from_csv 也不传 columns/rows → XOR 校验失败提示模型补一份 inline 表。"""
     registry = create_default_tool_registry()
     call = _call("answer", columns=[], rows=[])
 
-    with pytest.raises(ValueError, match=r"^answer: field 'columns' must contain at least 1 item"):
+    with pytest.raises(
+        ValueError, match=r"^answer: columns must be non-empty when from_csv is not set"
+    ):
         dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_answer_xor_violation_is_rejected(task: PublicTask) -> None:
+    """同时传 from_csv 和 inline columns/rows → XOR 校验失败防止两路并存歧义。"""
+    registry = create_default_tool_registry()
+    call = _call(
+        "answer",
+        columns=["a"],
+        rows=[["x"]],
+        from_csv="/tmp/answer.csv",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"^answer: provide either from_csv or columns\+rows, not both",
+    ):
+        dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_answer_inline_path_unchanged_after_from_csv_addition(
+    task: PublicTask,
+) -> None:
+    """回归 #15：from_csv 字段加入后，inline 路径行为必须 byte-identical。
+
+    覆盖原 `test_dispatch_terminal_success_terminates` 的契约：
+    columns/rows 单独提交即终止，answer.columns 落地无误。
+    """
+    registry = create_default_tool_registry()
+    call = _call("answer", columns=["greeting"], rows=[["hi"]])
+
+    result, should_terminate = dispatch_tool_call(task, call, registry)
+
+    assert result.ok is True
+    assert should_terminate is True
+    assert result.answer is not None
+    assert result.answer.columns == ["greeting"]
+    assert result.answer.rows == [["hi"]]
+    # ack content 仍然只暴露 status + counts，不含 from_csv 元信息
+    assert result.content == {
+        "status": "submitted",
+        "column_count": 1,
+        "row_count": 1,
+    }
 
 
 def test_dispatch_answer_preserves_integer_cells(task: PublicTask) -> None:

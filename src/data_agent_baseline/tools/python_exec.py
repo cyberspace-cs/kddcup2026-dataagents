@@ -111,13 +111,19 @@ def _run_python_code(
     code: str,
     stdout_path: str,
     stderr_path: str,
+    answer_dir: str,
     queue: multiprocessing.Queue[Any],
 ) -> None:
     """子进程入口：切换 CWD，设置 exec 命名空间，执行代码。
 
     预置两个便捷变量 `context_root` / `Path` 到 `exec` 命名空间，让模型
     不必自己 `import pathlib` 也能访问 context 目录。
+    `DABENCH_ANSWER_DIR` 在子进程内显式 set，避免依赖父进程 env 在 ThreadPoolExecutor
+    路径下被多个 task 串扰；模型按 prompt 指引把 answer artifact CSV 写到该目录后
+    用 `answer({"from_csv": <abs_path>})` 提交。
     """
+    # 显式 set 而非 setdefault：每次调用都用本任务的目录覆盖（thread-safe by spawn 隔离）
+    os.environ["DABENCH_ANSWER_DIR"] = answer_dir
     namespace: dict[str, Any] = {
         # __builtins__ 必须显式给，否则 exec 出来的代码没有 print/open 等
         "__builtins__": __builtins__,
@@ -151,15 +157,25 @@ def _run_python_code(
 
 
 def execute_python_code(
-    context_root: Path, code: str, *, timeout_seconds: int = 30
+    context_root: Path,
+    code: str,
+    *,
+    answer_dir: Path,
+    timeout_seconds: int = 30,
 ) -> dict[str, Any]:
     """主入口：在子进程中跑代码，带超时和结果回收。
 
     返回结构（各 case 保持同形）：
     - {success: bool, output: str, stderr: str, [error, traceback]}
     这样上层 ReAct 循环始终能拿到 output/stderr 字段用于展示。
+
+    `answer_dir` 必填：子进程会把它 set 到 `os.environ['DABENCH_ANSWER_DIR']`，
+    给 artifact handoff 路径（answer({from_csv}))一个稳定的写盘位置；本函数会
+    `mkdir(parents=True, exist_ok=True)` 确保目录存在再 spawn 子进程。
     """
     resolved_context_root = context_root.resolve()
+    answer_dir.mkdir(parents=True, exist_ok=True)
+    resolved_answer_dir = answer_dir.resolve()
     # 用临时目录存 stdout/stderr，进程结束后自动清理
     with tempfile.TemporaryDirectory() as temp_dir:
         stdout_path = Path(temp_dir) / "stdout.txt"
@@ -177,6 +193,7 @@ def execute_python_code(
                 code,
                 stdout_path.as_posix(),
                 stderr_path.as_posix(),
+                resolved_answer_dir.as_posix(),
                 queue,
             ),
         )

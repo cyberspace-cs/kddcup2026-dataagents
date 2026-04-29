@@ -338,7 +338,17 @@ def create_default_tool_registry() -> ToolRegistry:
                 "beyond simple preview tools. Python runs with the task context "
                 "directory as the working directory and returns captured stdout as `output`. "
                 # 动态把超时秒数写进描述，避免改常量后忘记更新文案
-                f"The execution timeout is fixed at {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds."
+                f"The execution timeout is fixed at {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds. "
+                # pandas / numpy / pyarrow / polars / openpyxl 都已在 runtime image 内；模型默认走 csv
+                # stdlib 时（trace 见 task_8 in run 20260429T210729531308Z）容易把"列出全 10 列源 schema"
+                # 当作路径最阻力小的写法，从而漏掉 WH-target column projection
+                "For tabular work (filtering, aggregation, projection, cross-file joins), "
+                "prefer `pandas` over the `csv` stdlib: `df[df['col'] == ...]` and "
+                "`df[['target_col']]` make WH-target column selection idiomatic, types "
+                "are preserved automatically (no manual `int()`/`float()` casts), and "
+                "`df.head()` / `df.dtypes` print the verification snapshot in one line. "
+                "Available libs include pandas, numpy, pyarrow, polars, openpyxl. The "
+                "`csv` module is fine only for trivial reads (a handful of rows)."
             ),
             input_schema=ExecutePythonInput.example_value(),
             json_schema=EXECUTE_PYTHON_SCHEMA,

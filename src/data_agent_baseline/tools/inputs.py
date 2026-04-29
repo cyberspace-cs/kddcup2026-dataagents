@@ -211,19 +211,43 @@ class AnswerInput(BaseModel):
 
     columns: Annotated[
         list[str],
-        Field(min_length=1, description="Column header names (non-empty)."),
+        Field(default_factory=list, description="Column header names (non-empty)."),
     ]
     rows: Annotated[
         # `int` 必须排在 `float` 之前：Pydantic v2 union 按声明顺序匹配，否则
         # JSON 整数（如主键 ID 163109）会被先匹中 float 而落地成 163109.0，
         # 写进 prediction.csv 的字面值就跟 gold 的 "163109" 失配。
         list[list[str | int | float | bool | None]],
-        Field(description="Answer rows; each row's length must match the columns array."),
+        Field(
+            default_factory=list,
+            description="Answer rows; each row's length must match the columns array.",
+        ),
     ]
+    from_csv: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Optional absolute path to a CSV file containing the answer table "
+                "(header row + data rows). When set, `columns` and `rows` MUST be "
+                "empty. Use this for tables >= 30 rows or >= 200 cells to avoid "
+                "burning decode tokens re-emitting the table as JSON. Convention: "
+                "write the CSV from `execute_python` under "
+                "`os.environ['DABENCH_ANSWER_DIR']`."
+            ),
+        ),
+    ] = None
 
     @model_validator(mode="after")
-    def _check_row_widths(self) -> AnswerInput:
-        # answer 一旦提交即为最终产物；列数错位会让 prediction.csv 对齐崩坏，必须早抛。
+    def _check_payload(self) -> AnswerInput:
+        # answer 一旦提交即为最终产物；XOR 校验外加列数错位都会让 prediction.csv
+        # 对齐崩坏，必须在边界处一次性早抛。
+        if self.from_csv is not None:
+            if self.columns or self.rows:
+                raise ValueError("provide either from_csv or columns+rows, not both")
+            return self
+        if not self.columns:
+            raise ValueError("columns must be non-empty when from_csv is not set")
         width = len(self.columns)
         for index, row in enumerate(self.rows):
             if len(row) != width:
