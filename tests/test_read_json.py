@@ -39,7 +39,7 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def test_object_returns_keys_and_value_preview(tmp_path: Path) -> None:
-    """object：top-level 4 keys；value_preview 给标量原值 + 集合 cardinality。"""
+    """object：top-level 4 keys；value_preview 给标量原值 + 集合 cardinality + array first_item。"""
     task = _make_task(tmp_path)
     _write_json(
         task.context_dir / "config.json",
@@ -56,7 +56,9 @@ def test_object_returns_keys_and_value_preview(tmp_path: Path) -> None:
     assert out["value_preview"] == {
         "a": 1,
         "b": "x",
-        "c": {"kind": "array", "length": 3},
+        # array 在 value_preview 里额外暴露 first_item（这里第一个元素是标量 1）
+        "c": {"kind": "array", "length": 3, "first_item": 1},
+        # object 仍保持 depth=1（避免 ∞ 嵌套），不暴露内部
         "d": {"kind": "object", "key_count": 1},
     }
 
@@ -217,14 +219,79 @@ def test_array_byte_cap_stops_early(tmp_path: Path) -> None:
     assert out["truncated"] is True
 
 
-def test_value_preview_does_not_recurse(tmp_path: Path) -> None:
-    """value_preview 严格 depth=1：嵌套 object 只给 kind+key_count 不再下钻。"""
+def test_value_preview_does_not_recurse_into_objects(tmp_path: Path) -> None:
+    """value_preview 中嵌套 object 严格 depth=1：只给 kind+key_count，避免 ∞ 嵌套。"""
     task = _make_task(tmp_path)
     _write_json(task.context_dir / "nested.json", {"a": {"b": {"c": {"d": 1}}}})
 
     out = read_json_preview(task, "nested.json")
 
     assert out["value_preview"] == {"a": {"kind": "object", "key_count": 1}}
+
+
+def test_value_preview_array_exposes_first_item_for_wrapper_object(tmp_path: Path) -> None:
+    """`{table, records: [...]}` 包装对象（dataset 通用形态）需要看到一条 record 的样子。
+
+    回归 run 20260429T181710702941Z 的 Patient.json 案例：旧（结构化）实现只给
+    `length: 1238` 而不暴露第一条 record 的字段，强制模型每次都先 read_json + 再
+    execute_python 才能拿到 schema by example。
+    """
+    task = _make_task(tmp_path)
+    _write_json(
+        task.context_dir / "Patient.json",
+        {
+            "table": "Patient",
+            "records": [
+                {"id": 30609, "sex": "F", "birth_date": "1962-09-21"},
+                {"id": 57266, "sex": "M", "birth_date": "1971-03-04"},
+            ],
+        },
+    )
+
+    out = read_json_preview(task, "Patient.json")
+
+    assert out["value_preview"] == {
+        "table": "Patient",
+        "records": {
+            "kind": "array",
+            "length": 2,
+            "first_item": {"id": 30609, "sex": "F", "birth_date": "1962-09-21"},
+        },
+    }
+
+
+def test_value_preview_array_first_item_falls_back_to_shape_stub_when_oversized(
+    tmp_path: Path,
+) -> None:
+    """value_preview 中 array 的第一个元素 > 2KB 时，first_item 走 shape stub 而非原值。"""
+    task = _make_task(tmp_path)
+    huge_record = {"big_field": "x" * 5000, "id": 1}
+    _write_json(
+        task.context_dir / "big.json",
+        {"table": "Big", "records": [huge_record]},
+    )
+
+    out = read_json_preview(task, "big.json")
+
+    records_summary = out["value_preview"]["records"]
+    assert records_summary["kind"] == "array"
+    assert records_summary["length"] == 1
+    # 不是原值，是 shape stub
+    assert records_summary["first_item"] == {
+        "kind": "object",
+        "key_count": 2,
+        "keys": ["big_field", "id"],
+    }
+
+
+def test_value_preview_array_omits_first_item_when_empty(tmp_path: Path) -> None:
+    """value_preview 中空数组：只有 kind+length，没有 first_item 字段。"""
+    task = _make_task(tmp_path)
+    _write_json(task.context_dir / "empty_records.json", {"table": "T", "records": []})
+
+    out = read_json_preview(task, "empty_records.json")
+
+    assert out["value_preview"]["records"] == {"kind": "array", "length": 0}
 
 
 def test_max_chars_field_rejected(tmp_path: Path) -> None:

@@ -198,16 +198,33 @@ def _truncate_string_value(text: str) -> tuple[str, bool]:
 
 
 def _summarize_value_for_preview(value: Any) -> Any:
-    """object.value_preview 的"浅层"摘要：标量原值；集合只给 kind+基数。
+    """object.value_preview 的"浅层"摘要：标量原值；集合给 kind+基数；array 额外给 first_item。
 
-    与 inspect_files._summarize_json 形成 strict superset：标量给真实值（read_json
-    的核心增量价值），string 截断到 200 字符；object/array 仅返回 cardinality
-    （key_count / length），不递归展开内部，避免 depth=∞ 风险。
+    与 inspect_files._summarize_json 形成 strict superset：
+    - 标量给真实值（read_json 的核心增量价值），string 截断到 200 字符
+    - object 仅返回 cardinality（key_count），不递归展开内部——避免 depth=∞ 风险
+    - array 返回 length + 第一个元素的样例（first_item），单 item > 2KB 走 shape stub
+
+    array 暴露 first_item 是为了恢复 wrapper-object 形态（dataset 通用 `{table, records: [...]}`）
+    下"看一条记录长什么样"的能力——run 20260429T181710702941Z 显示 13 次 read_json 调用里 12
+    次 wrapper-object，旧实现通过字符串前缀 preview 展示了第一条 record 的字段，新结构化设计
+    若不暴露 first_item 会强制每次都先 read_json 再 execute_python 一次（多走一步）。
     """
     if isinstance(value, dict):
         return {"kind": "object", "key_count": len(cast(dict[Any, Any], value))}
     if isinstance(value, list):
-        return {"kind": "array", "length": len(cast(list[Any], value))}
+        value_list = cast(list[Any], value)
+        result: dict[str, Any] = {"kind": "array", "length": len(value_list)}
+        if value_list:
+            first = value_list[0]
+            # 复用 array head 的单项 byte cap：first_item 序列化 > 2KB 时走 shape stub。
+            # 这样既给到 schema by example，又不让 value_preview 在病态深嵌套下爆炸。
+            serialized = json.dumps(first, ensure_ascii=False)
+            if len(serialized) > _READ_JSON_ITEM_BYTE_LIMIT:
+                result["first_item"] = _shape_stub_for_array_item(first)
+            else:
+                result["first_item"] = first
+        return result
     if isinstance(value, str):
         truncated_text, was_truncated = _truncate_string_value(value)
         if was_truncated:

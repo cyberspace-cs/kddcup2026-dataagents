@@ -86,11 +86,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   key_count, head | keys + value_preview, truncated}` shape with a 5MB
   filesystem guard, parallel to `read_csv`'s SAMPLE preview contract. Top-level
   `array` length and `object` key_count are preserved even under truncation.
-  Callers needing nested extraction, filtering, or deep traversal must use
+  Within `value_preview`, nested arrays additionally expose `first_item` (the
+  first element verbatim if ≤ 2KB, otherwise a shape stub) so that wrapper
+  shapes like `{table, records: [...]}` still surface a record's schema by
+  example without forcing an extra `execute_python` round-trip. Callers needing
+  full nested extraction, filtering, or deep traversal must still use
   `execute_python` with `json.load`. Empirical motivation: 0/37 calls in the
   reference build supplied a custom `max_chars`, while 73% of `read_json`
   invocations were already followed by same-file `execute_python` (100% of
-  those were cross-file joins).
+  those were cross-file joins). The `first_item` refinement responds to a
+  follow-up trace (run 20260429T181710702941Z) where 12/13 read_json calls
+  hit the `{table, records}` wrapper and the original depth-1 design hid every
+  record field.
 - **`read_doc` keyword mode upgraded from "first-match window" to "all matching
   paragraphs".** When `keyword` is provided, `read_doc` now returns every
   paragraph (blank-line-separated) containing the keyword across the whole file
