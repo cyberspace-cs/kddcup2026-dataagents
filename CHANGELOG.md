@@ -91,6 +91,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reference build supplied a custom `max_chars`, while 73% of `read_json`
   invocations were already followed by same-file `execute_python` (100% of
   those were cross-file joins).
+- **`read_doc` keyword mode upgraded from "first-match window" to "all matching
+  paragraphs".** When `keyword` is provided, `read_doc` now returns every
+  paragraph (blank-line-separated) containing the keyword across the whole file
+  — capped at 20 matches / 2KB per paragraph / 8KB total. `start_line` and
+  `line_count` are ignored in keyword mode. Return shape changes:
+  `keyword_match` becomes `{keyword, found, match_count, matches, matches_truncated}`
+  (replacing the prior `{keyword, found, line}` + co-located `preview` window);
+  `preview`, `returned_range`, and `has_more` are `None` in keyword mode.
+  Empirical motivation: in the reference build, `keyword` was used in 1/77
+  `read_doc` calls (1.3%) while 88% of calls hit `has_more=True`; task_46 paged
+  the 1087-line `superhero.md` 7 times sequentially and still failed with
+  `max_steps`. The new contract collapses such serial pagers into a single
+  call. Paging mode (no keyword) is unchanged.
 
 ### Breaking (internal API only)
 - `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` moved from

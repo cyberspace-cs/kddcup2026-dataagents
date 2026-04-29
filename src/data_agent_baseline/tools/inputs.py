@@ -114,13 +114,19 @@ class ReadDocInput(BaseModel):
     line_count: Annotated[
         int,
         _positive_int_field(
-            default=80,
+            default=100,
             description="Number of lines to return in this page.",
         ),
     ]
     keyword: str | None = Field(
         default=None,
-        description="Optional keyword; when set, returns a context window around the first match.",
+        description=(
+            "Optional case-insensitive keyword. When set, returns ALL paragraphs "
+            "(blank-line-separated) containing the keyword across the whole file "
+            "(start_line / line_count are ignored), capped at 20 matches / 8KB total. "
+            "Prefer this over manual paging when searching for an ID/name/term — "
+            "one call replaces a sequential scan."
+        ),
     )
 
     @classmethod
@@ -128,7 +134,7 @@ class ReadDocInput(BaseModel):
         return {
             "path": "relative/path/to/file.md",
             "start_line": 1,
-            "line_count": 80,
+            "line_count": 100,
             "keyword": "optional search text",
         }
 

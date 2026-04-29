@@ -38,6 +38,13 @@ _READ_JSON_ARRAY_HEAD_CAP = 20
 _READ_JSON_ARRAY_HEAD_BYTES = 6 * 1024
 _READ_JSON_ITEM_BYTE_LIMIT = 2 * 1024
 _READ_JSON_STRING_VALUE_CAP = 200
+# read_doc keyword 模式上限（"全文返回所有匹配段落"——避免模型用 read_doc 串行翻页）：
+# - 至多 20 个匹配段落
+# - 单段最多 2KB（超出则尾部追加 "\n..." 截断标记）
+# - 累计字节最多 8KB（与 csv head/tail 输出量级对齐）
+_READ_DOC_KEYWORD_MATCH_CAP = 20
+_READ_DOC_KEYWORD_PARAGRAPH_BYTES = 2 * 1024
+_READ_DOC_KEYWORD_TOTAL_BYTES = 8 * 1024
 # 文档类（md/txt）保留的预览行数。
 _INSPECT_FILES_DOC_HEAD_LINES = 3
 # inspect_files 识别的 sqlite 扩展名集合。
@@ -354,6 +361,82 @@ def _normalize_line_count(line_count: int) -> int:
     return min(300, max(1, int(line_count)))
 
 
+def _split_paragraphs(lines: list[str]) -> list[tuple[int, int, str]]:
+    """把行列表切成段落（连续非空行为一段；空行为分隔），返回 (start, end, text) 列表。
+
+    行号 1-based，闭区间。给 keyword 模式提供"段落级"返回单元——dataset 里的大
+    `doc/*.md` 多为"一段一条记录"的 prose 数据库（superhero.md 1087 行 / 524 段；
+    每段 ≈ 一个英雄/病人/赛事），段是天然的检索粒度。
+    """
+    paragraphs: list[tuple[int, int, str]] = []
+    current: list[str] = []
+    current_start = 0  # 0 表示"当前没有进行中的段"；进入新段时重置为 1-based 行号
+    for one_based_idx, ln in enumerate(lines, start=1):
+        if ln.strip() == "":
+            if current:
+                paragraphs.append((current_start, one_based_idx - 1, "\n".join(current)))
+                current = []
+                current_start = 0
+        else:
+            if not current:
+                current_start = one_based_idx
+            current.append(ln)
+    if current:
+        paragraphs.append((current_start, len(lines), "\n".join(current)))
+    return paragraphs
+
+
+def _collect_keyword_matches(
+    paragraphs: list[tuple[int, int, str]], keyword: str
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """从段落集合中收集所有包含 keyword 的段落（大小写不敏感子串匹配）。
+
+    返回 (matches, match_count, matches_truncated):
+    - matches:           已应用 cap 的返回子集
+    - match_count:       全文匹配总数（即使被 cap 裁掉也如实计数，方便模型判断是否需要更精确的 keyword）
+    - matches_truncated: 返回数 < 总数时为 True（数量上限或字节上限触发）
+
+    上限策略（同 read_csv/read_json 思路："SAMPLE preview not full data access"）：
+    - 至多 20 段；超出仅计数不返回内容
+    - 单段超 2KB → 截到 2KB 并追加 "\n..." 标记 + paragraph_truncated=True
+    - 累计超 8KB → 停止追加新段（已收集的段保留）
+    """
+    needle = keyword.lower()
+    match_count = 0
+    matches: list[dict[str, Any]] = []
+    cumulative_bytes = 0
+    capacity_exhausted = False
+    for start, end, text in paragraphs:
+        if needle not in text.lower():
+            continue
+        match_count += 1
+        if capacity_exhausted:
+            # 仍然计数，但不再 emit；让模型从 match_count vs len(matches) 看出还有多少未返回
+            continue
+        if len(matches) >= _READ_DOC_KEYWORD_MATCH_CAP:
+            capacity_exhausted = True
+            continue
+        paragraph_truncated = False
+        text_to_emit = text
+        if len(text) > _READ_DOC_KEYWORD_PARAGRAPH_BYTES:
+            text_to_emit = text[:_READ_DOC_KEYWORD_PARAGRAPH_BYTES] + "\n..."
+            paragraph_truncated = True
+        if cumulative_bytes + len(text_to_emit) > _READ_DOC_KEYWORD_TOTAL_BYTES and matches:
+            capacity_exhausted = True
+            continue
+        matches.append(
+            {
+                "start_line": start,
+                "end_line": end,
+                "text": text_to_emit,
+                "paragraph_truncated": paragraph_truncated,
+            }
+        )
+        cumulative_bytes += len(text_to_emit)
+    matches_truncated = len(matches) < match_count
+    return matches, match_count, matches_truncated
+
+
 def read_doc_preview(
     task: PublicTask,
     relative_path: str,
@@ -362,10 +445,19 @@ def read_doc_preview(
     line_count: int = 80,
     keyword: str | None = None,
 ) -> dict[str, Any]:
-    """按行读取任意文本类文档（md / txt），可从指定行开始搜索关键词。
+    """文本文档预览。两种模式互斥：
+
+    1. **paging 模式**（无 keyword）：返回 [start_line, start_line+line_count) 行窗口；
+       通过 `has_more` + 下一次 `start_line` 续读。
+    2. **keyword 模式**（提供 keyword）：返回**全文**所有包含该关键词的段落（空行分隔），
+       上限 20 段 / 单段 2KB / 累计 8KB；`start_line` / `line_count` 在此模式下被忽略。
+
+    keyword 模式是为破解模型"用 80 行窗口串行翻 1087 行 prose 数据库"的失败模式
+    （task_46 trace：7 次 read_doc + 11 次 execute_python 仍超步耗尽）设计——
+    一次 keyword 调用替代整段串行扫描。需要全文 regex / 跨段抽取 / 结构化解析时，
+    走 execute_python（read_doc 不返回完整文档内容）。
 
     errors="replace" 把非法字节替换为 U+FFFD，避免个别文件乱码让整个调用崩溃。
-    返回的 `preview` 不加行号，避免污染文档正文语义；行范围通过结构化字段表达。
     """
     path = resolve_context_path(task, relative_path)
     lines = path.read_text(errors="replace").splitlines()
@@ -381,37 +473,30 @@ def read_doc_preview(
             "preview": "",
         }
 
+    if keyword:
+        paragraphs = _split_paragraphs(lines)
+        matches, match_count, matches_truncated = _collect_keyword_matches(paragraphs, keyword)
+        return {
+            "path": relative_path,
+            "total_lines": total_lines,
+            # keyword 模式下 paging 字段无意义：清空避免模型把 returned_range 当作"窗口已读"
+            "returned_range": None,
+            "has_more": False,
+            "keyword_match": {
+                "keyword": keyword,
+                "found": match_count > 0,
+                "match_count": match_count,
+                "matches": matches,
+                "matches_truncated": matches_truncated,
+            },
+            # preview 是 paging 模式专属——keyword 模式的内容全部装在 keyword_match.matches[*].text 里
+            "preview": None,
+        }
+
     normalized_start_line = max(1, int(start_line))
     normalized_line_count = _normalize_line_count(line_count)
 
     start_index = normalized_start_line - 1
-    keyword_match: dict[str, Any] | None = None
-
-    if keyword is not None and keyword != "":
-        lowered_keyword = keyword.lower()
-        match_index = next(
-            (
-                index
-                for index in range(start_index, total_lines)
-                if lowered_keyword in lines[index].lower()
-            ),
-            None,
-        )
-        if match_index is None:
-            keyword_match = {
-                "keyword": keyword,
-                "found": False,
-                "line": None,
-            }
-        else:
-            context_before = normalized_line_count // 3
-            start_index = max(0, match_index - context_before)
-            keyword_match = {
-                "keyword": keyword,
-                "found": True,
-                "line": match_index + 1,
-            }
-
     end_index = min(total_lines, start_index + normalized_line_count)
     selected_lines = lines[start_index:end_index]
     returned_range = None
@@ -426,7 +511,7 @@ def read_doc_preview(
         "total_lines": total_lines,
         "returned_range": returned_range,
         "has_more": end_index < total_lines,
-        "keyword_match": keyword_match,
+        "keyword_match": None,
         "preview": "\n".join(selected_lines),
     }
 
