@@ -21,8 +21,8 @@ stability. See [`tool-registry` spec](../openspec/specs/tool-registry/spec.md).
 
 | Tool | Arguments | Purpose |
 | --- | --- | --- |
-| `list_context` | `max_depth` | List files and directories under `context/`. |
-| `read_csv` | `path`, `max_rows` | CSV preview (header + first N rows + total row count). |
+| `inspect_files` | _(none)_ | One-shot summary of every file under `context/`: columns, dtypes, row counts, table schemas. |
+| `read_csv` | `path` | CSV sample preview (schema + head 20 rows + tail 5 rows). |
 | `read_doc` | `path`, `start_line`, `line_count`, `keyword` | Paged text reader, optional keyword search. |
 | `read_json` | `path`, `max_chars` | JSON preview, truncated by character count. |
 | `inspect_sqlite_schema` | `path` | List tables and columns of a SQLite/DB file. |

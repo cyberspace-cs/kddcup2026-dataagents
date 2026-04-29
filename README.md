@@ -93,8 +93,8 @@ The agent calls into eight tools (registered in `src/data_agent_baseline/tools/r
 
 | Tool | Inputs |
 | --- | --- |
-| `list_context` | `max_depth` |
-| `read_csv` | `path`, `max_rows` |
+| `inspect_files` | _(none)_ |
+| `read_csv` | `path` |
 | `read_json` | `path`, `max_chars` |
 | `read_doc` | `path`, `start_line`, `line_count`, `keyword` |
 | `inspect_sqlite_schema` | `path` |

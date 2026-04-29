@@ -43,9 +43,7 @@ def _resp(
 def test_text_protocol_fence_parses_to_synthetic_call() -> None:
     response = _resp(
         content=(
-            "```json\n"
-            '{"thought": "list files", "action": "list_context", "action_input": {"max_depth": 2}}\n'
-            "```"
+            '```json\n{"thought": "list files", "action": "inspect_files", "action_input": {}}\n```'
         )
     )
 
@@ -53,7 +51,7 @@ def test_text_protocol_fence_parses_to_synthetic_call() -> None:
         response,
         protocol="text",
         turn_index=3,
-        allowed_tool_names=("list_context", "answer"),
+        allowed_tool_names=("inspect_files", "answer"),
     )
 
     assert isinstance(turn, ProtocolTurn)
@@ -62,8 +60,8 @@ def test_text_protocol_fence_parses_to_synthetic_call() -> None:
     assert len(turn.calls) == 1
     call = turn.calls[0]
     assert call.id == "text:3"
-    assert call.name == "list_context"
-    assert call.arguments == {"max_depth": 2}
+    assert call.name == "inspect_files"
+    assert call.arguments == {}
 
 
 def test_text_protocol_parse_failure_returns_parse_error() -> None:
@@ -111,14 +109,14 @@ def test_parse_model_step_accepts_unfenced_json() -> None:
 
 
 def test_native_protocol_passes_through_tool_calls() -> None:
-    call = ModelToolCall(id="call_42", name="list_context", arguments={"max_depth": 1})
+    call = ModelToolCall(id="call_42", name="inspect_files", arguments={})
     response = _resp(content="thinking", tool_calls=[call])
 
     turn = adapt_model_response(
         response,
         protocol="native",
         turn_index=1,
-        allowed_tool_names=("list_context",),
+        allowed_tool_names=("inspect_files",),
     )
 
     assert turn.parse_error is None
@@ -128,10 +126,11 @@ def test_native_protocol_passes_through_tool_calls() -> None:
 
 
 def test_native_protocol_empty_calls_extracts_known_draft() -> None:
+    # 用 read_doc 测 XML draft 的 parameter 解析（inspect_files 无参数无法验证此路径）
     reasoning = (
         "<tool_call>\n"
-        "<function=list_context>\n"
-        "<parameter=max_depth>3</parameter>\n"
+        "<function=read_doc>\n"
+        "<parameter=path>knowledge.md</parameter>\n"
         "</function>\n"
         "</tool_call>\n"
     )
@@ -141,14 +140,14 @@ def test_native_protocol_empty_calls_extracts_known_draft() -> None:
         response,
         protocol="native",
         turn_index=1,
-        allowed_tool_names=("list_context", "answer"),
+        allowed_tool_names=("read_doc", "answer"),
     )
 
     assert turn.calls == ()
     assert turn.parse_error is None
     assert turn.reasoning_draft is not None
-    assert turn.reasoning_draft["function"] == "list_context"
-    assert turn.reasoning_draft["arguments"] == {"max_depth": 3}
+    assert turn.reasoning_draft["function"] == "read_doc"
+    assert turn.reasoning_draft["arguments"] == {"path": "knowledge.md"}
     assert turn.reasoning_draft["executed"] is False
 
 
@@ -163,7 +162,7 @@ def test_native_protocol_empty_calls_skips_unknown_tool_draft() -> None:
         response,
         protocol="native",
         turn_index=1,
-        allowed_tool_names=("list_context",),
+        allowed_tool_names=("inspect_files",),
     )
 
     assert turn.calls == ()

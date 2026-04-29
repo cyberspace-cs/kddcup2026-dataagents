@@ -149,7 +149,7 @@ def test_reasoning_tool_call_draft_parser_handles_answer_json_arguments() -> Non
         "no tool-call draft here",
         (
             "<tool_call><function=unknown_tool></function></tool_call>"
-            "<tool_call><function=list_context></function></tool_call>"
+            "<tool_call><function=inspect_files></function></tool_call>"
         ),
     ],
 )
@@ -158,10 +158,8 @@ def test_reasoning_tool_call_draft_parser_rejects_invalid_drafts(reasoning: str)
 
 
 def test_native_multi_step_until_answer(task: PublicTask) -> None:
-    # 先 list_context，再 answer 结束
-    list_call, list_raw = _build_tool_call(
-        call_id="call_1", name="list_context", arguments={"max_depth": 2}
-    )
+    # 先 inspect_files，再 answer 结束
+    list_call, list_raw = _build_tool_call(call_id="call_1", name="inspect_files", arguments={})
     answer_call, answer_raw = _build_tool_call(
         call_id="call_2",
         name="answer",
@@ -197,7 +195,7 @@ def test_native_multi_step_until_answer(task: PublicTask) -> None:
     assert result.answer.columns == ["result"]
     assert len(result.steps) == 2
     first, second = result.steps
-    assert first.action == "list_context"
+    assert first.action == "inspect_files"
     assert first.tool_call_id == "call_1"
     assert first.turn_index == 1
     assert first.step_index == 1
@@ -209,13 +207,9 @@ def test_native_multi_step_until_answer(task: PublicTask) -> None:
 
 def test_native_parallel_tool_calls_share_turn_index(task: PublicTask) -> None:
     # 同一轮返回 2 个非终止 tool_calls + 下一轮 answer
-    list_call, list_raw = _build_tool_call(
-        call_id="c_a", name="list_context", arguments={"max_depth": 1}
-    )
-    # 造第二个 list_context（parallel 分支：测试循环能正确聚合）
-    list_call_2, list_raw_2 = _build_tool_call(
-        call_id="c_b", name="list_context", arguments={"max_depth": 2}
-    )
+    list_call, list_raw = _build_tool_call(call_id="c_a", name="inspect_files", arguments={})
+    # 造第二个 inspect_files（parallel 分支：测试循环能正确聚合）
+    list_call_2, list_raw_2 = _build_tool_call(call_id="c_b", name="inspect_files", arguments={})
     answer_call, answer_raw = _build_tool_call(
         call_id="c_done",
         name="answer",
@@ -272,7 +266,7 @@ def test_native_answer_short_circuits_same_turn(task: PublicTask) -> None:
         arguments={"columns": ["c"], "rows": [["v"]]},
     )
     list_call, list_raw = _build_tool_call(
-        call_id="should_not_run", name="list_context", arguments={"max_depth": 1}
+        call_id="should_not_run", name="inspect_files", arguments={}
     )
     adapter = ScriptedNativeModelAdapter(
         [
@@ -294,7 +288,7 @@ def test_native_answer_short_circuits_same_turn(task: PublicTask) -> None:
     result = agent.run(task)
 
     assert result.succeeded is True
-    # 只有 answer 被记录；后续 list_context 被短路
+    # 只有 answer 被记录；后续 inspect_files 被短路
     assert len(result.steps) == 1
     assert result.steps[0].action == "answer"
     assert result.steps[0].tool_call_id == "first_answer"
@@ -311,17 +305,17 @@ def test_native_build_messages_uses_tool_role(task: PublicTask) -> None:
         protocol="native",
     )
 
-    # 模拟一个已完成步骤的 state：assistant 曾并行调用 2 个 list_context
+    # 模拟一个已完成步骤的 state：assistant 曾并行调用 2 个 inspect_files
     raw_tool_calls = [
         {
             "id": "tc1",
             "type": "function",
-            "function": {"name": "list_context", "arguments": "{}"},
+            "function": {"name": "inspect_files", "arguments": "{}"},
         },
         {
             "id": "tc2",
             "type": "function",
-            "function": {"name": "list_context", "arguments": "{}"},
+            "function": {"name": "inspect_files", "arguments": "{}"},
         },
     ]
     state = AgentRuntimeState()
@@ -330,10 +324,10 @@ def test_native_build_messages_uses_tool_role(task: PublicTask) -> None:
             step_index=1,
             turn_index=1,
             thought="exploring",
-            action="list_context",
+            action="inspect_files",
             action_input={},
             raw_response="exploring",
-            observation={"ok": True, "tool": "list_context", "content": {}},
+            observation={"ok": True, "tool": "inspect_files", "content": {}},
             ok=True,
             tool_call_id="tc1",
             raw_tool_calls=raw_tool_calls,
@@ -344,10 +338,10 @@ def test_native_build_messages_uses_tool_role(task: PublicTask) -> None:
             step_index=2,
             turn_index=1,
             thought="exploring",
-            action="list_context",
+            action="inspect_files",
             action_input={},
             raw_response="exploring",
-            observation={"ok": True, "tool": "list_context", "content": {}},
+            observation={"ok": True, "tool": "inspect_files", "content": {}},
             ok=True,
             tool_call_id="tc2",
             raw_tool_calls=None,
@@ -527,7 +521,7 @@ def test_native_reasoning_tool_call_drafts_use_empty_retry_budget(
 ) -> None:
     reasoning_draft = """
 <tool_call>
-<function=list_context>
+<function=inspect_files>
 </function>
 </tool_call>
 """
@@ -633,12 +627,8 @@ def test_native_empty_tool_calls_have_independent_retry_limit(task: PublicTask) 
 
 def test_native_total_usage_aggregates_per_turn_usage(task: PublicTask) -> None:
     # 两轮调用，每轮塞入不同 usage；中间一轮返回并行 tool_calls 但只有 lead 承载 usage
-    list_call_a, list_raw_a = _build_tool_call(
-        call_id="p_a", name="list_context", arguments={"max_depth": 1}
-    )
-    list_call_b, list_raw_b = _build_tool_call(
-        call_id="p_b", name="list_context", arguments={"max_depth": 2}
-    )
+    list_call_a, list_raw_a = _build_tool_call(call_id="p_a", name="inspect_files", arguments={})
+    list_call_b, list_raw_b = _build_tool_call(call_id="p_b", name="inspect_files", arguments={})
     answer_call, answer_raw = _build_tool_call(
         call_id="done",
         name="answer",

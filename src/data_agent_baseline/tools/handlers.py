@@ -17,7 +17,6 @@ from typing import Any
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
 from data_agent_baseline.tools.filesystem import (
     inspect_context_files,
-    list_context_tree,
     read_csv_preview,
     read_doc_preview,
     read_json_preview,
@@ -30,7 +29,6 @@ from data_agent_baseline.tools.inputs import (
     ExecutePythonInput,
     InspectFilesInput,
     InspectSqliteSchemaInput,
-    ListContextInput,
     ReadCsvInput,
     ReadDocInput,
     ReadJsonInput,
@@ -58,11 +56,6 @@ class ToolExecutionResult:
 # 统一的 handler 签名：第二个参数对内置工具是已验证的 BaseModel 实例（详见 _INPUT_MODELS），
 # 对未在 _INPUT_MODELS 注册的用户自定义工具则透传原始 dict。
 ToolHandler = Callable[[PublicTask, Any], ToolExecutionResult]
-
-
-def handle_list_context(task: PublicTask, args: ListContextInput) -> ToolExecutionResult:
-    """`list_context`: 展示 context/ 目录树，默认深度 4。"""
-    return ToolExecutionResult(ok=True, content=list_context_tree(task, max_depth=args.max_depth))
 
 
 def handle_inspect_files(task: PublicTask, _args: InspectFilesInput) -> ToolExecutionResult:

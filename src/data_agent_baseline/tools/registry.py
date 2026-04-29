@@ -36,7 +36,6 @@ from data_agent_baseline.tools.handlers import (
     handle_execute_python,
     handle_inspect_files,
     handle_inspect_sqlite_schema,
-    handle_list_context,
     handle_read_csv,
     handle_read_doc,
     handle_read_json,
@@ -48,7 +47,6 @@ from data_agent_baseline.tools.inputs import (
     EXECUTE_PYTHON_TIMEOUT_SECONDS,
     INSPECT_FILES_SCHEMA,
     INSPECT_SQLITE_SCHEMA,
-    LIST_CONTEXT_SCHEMA,
     READ_CSV_SCHEMA,
     READ_DOC_SCHEMA,
     READ_JSON_SCHEMA,
@@ -57,7 +55,6 @@ from data_agent_baseline.tools.inputs import (
     ExecutePythonInput,
     InspectFilesInput,
     InspectSqliteSchemaInput,
-    ListContextInput,
     ReadCsvInput,
     ReadDocInput,
     ReadJsonInput,
@@ -104,7 +101,6 @@ class ToolDefinition:
 # 工具名 → 对应入参模型；ToolRegistry.execute 用这张表把原始 dict 翻译成已验证模型实例。
 # 仅内置工具登记于此；未登记的（用户自定义）工具走原始 dict 透传，保留向后兼容。
 _INPUT_MODELS: dict[str, type[BaseModel]] = {
-    "list_context": ListContextInput,
     "inspect_files": InspectFilesInput,
     "read_csv": ReadCsvInput,
     "read_json": ReadJsonInput,
@@ -237,18 +233,17 @@ class ToolRegistry:
 
 
 def create_default_tool_registry() -> ToolRegistry:
-    """构造默认 9 件套工具注册表。
+    """构造默认 8 件套工具注册表。
 
     注册顺序（按规范固定）：
-    1. list_context           列目录树
-    2. inspect_files          一次性回传所有文件的轻量 schema（替代 N+1 次 preview）
-    3. read_csv               预览 CSV
-    4. read_doc               预览文本文档
-    5. read_json              预览 JSON
-    6. inspect_sqlite_schema  sqlite 表结构
-    7. execute_context_sql    sqlite 只读 SQL
-    8. execute_python         子进程执行任意 Python
-    9. answer                 终止 + 提交答案（唯一终止工具）
+    1. inspect_files          一次性回传所有文件的轻量 schema（首步探查的零决策入口）
+    2. read_csv               预览 CSV
+    3. read_doc               预览文本文档
+    4. read_json              预览 JSON
+    5. inspect_sqlite_schema  sqlite 表结构
+    6. execute_context_sql    sqlite 只读 SQL
+    7. execute_python         子进程执行任意 Python
+    8. answer                 终止 + 提交答案（唯一终止工具）
 
     `input_schema` 里的示例值是"演示"形式（不是真实 JSON Schema），模型看到
     `"columns": ["column_name"]` 会按模式填自己的数据，实测比严谨 schema 更不易出错。
@@ -256,21 +251,12 @@ def create_default_tool_registry() -> ToolRegistry:
     """
     definitions: list[ToolDefinition] = [
         ToolDefinition(
-            name="list_context",
-            description=(
-                "Use first to discover which files and directories exist under context "
-                "and what file types are available."
-            ),
-            input_schema=ListContextInput.example_value(),
-            json_schema=LIST_CONTEXT_SCHEMA,
-            handler=handle_list_context,
-        ),
-        ToolDefinition(
             name="inspect_files",
             description=(
-                "Use when you want a one-shot summary of every file under context: columns, "
-                "dtypes, row counts, table schemas. Pair with or replace list_context, and "
-                "skip the usual sequence of read_csv / read_json / inspect_sqlite_schema calls."
+                "Use first to bootstrap context exploration: returns a one-shot summary "
+                "of every file under context (columns, dtypes, row counts, table schemas). "
+                "This replaces the usual sequence of read_csv / read_json / "
+                "inspect_sqlite_schema calls for initial discovery."
             ),
             input_schema=InspectFilesInput.example_value(),
             json_schema=INSPECT_FILES_SCHEMA,

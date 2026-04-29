@@ -49,22 +49,6 @@ def _positive_int_field(*, default: int, description: str) -> Any:
     return Field(default=default, ge=1, description=description)
 
 
-class ListContextInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    max_depth: Annotated[
-        int,
-        _positive_int_field(
-            default=4,
-            description="Maximum directory depth to walk when listing files.",
-        ),
-    ]
-
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {"max_depth": 4}
-
-
 # `inspect_files` 入参刻意保持空模型：`extra="forbid"` 在 schema 中变 `additionalProperties=false`，
 # 把"无配置全量扫描"语义写进契约——模型即使凭空填字段也会立刻拿到可操作的 ValidationError。
 # 不写 class docstring 是为了避免 Pydantic 把它注入到 JSON Schema 顶层 description（破坏字节稳定性）。
@@ -252,7 +236,6 @@ class AnswerInput(BaseModel):
         return {"columns": ["column_name"], "rows": [["value_1"]]}
 
 
-LIST_CONTEXT_SCHEMA = normalize_for_vllm(ListContextInput.model_json_schema())
 INSPECT_FILES_SCHEMA = normalize_for_vllm(InspectFilesInput.model_json_schema())
 READ_CSV_SCHEMA = normalize_for_vllm(ReadCsvInput.model_json_schema())
 READ_JSON_SCHEMA = normalize_for_vllm(ReadJsonInput.model_json_schema())

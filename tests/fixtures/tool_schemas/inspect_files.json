@@ -1,6 +1,6 @@
 {
   "function": {
-    "description": "Use when you want a one-shot summary of every file under context: columns, dtypes, row counts, table schemas. Pair with or replace list_context, and skip the usual sequence of read_csv / read_json / inspect_sqlite_schema calls.",
+    "description": "Use first to bootstrap context exploration: returns a one-shot summary of every file under context (columns, dtypes, row counts, table schemas). This replaces the usual sequence of read_csv / read_json / inspect_sqlite_schema calls for initial discovery.",
     "name": "inspect_files",
     "parameters": {
       "additionalProperties": false,

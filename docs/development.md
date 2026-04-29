@@ -64,7 +64,7 @@ src/data_agent_baseline/
 │   └── runtime.py               # AgentRuntimeState, AgentRunResult
 ├── tools/
 │   ├── registry.py              # ToolDefinition + immutable ToolRegistry
-│   ├── filesystem.py            # list_context, read_csv, read_doc, read_json
+│   ├── filesystem.py            # inspect_files, read_csv, read_doc, read_json
 │   ├── sqlite.py                # inspect_sqlite_schema, execute_context_sql
 │   └── python_exec.py           # execute_python (subprocess + queue)
 ├── benchmark/

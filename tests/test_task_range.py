@@ -24,7 +24,6 @@ from data_agent_baseline.config import (
 from data_agent_baseline.run import runner as runner_mod
 from data_agent_baseline.run.runner import TaskRunArtifacts
 
-
 # ---------- _parse_task_range ----------------------------------------------------
 
 
@@ -146,9 +145,7 @@ def test_run_benchmark_filters_by_task_range(
     assert fake.calls == ["task_3", "task_5", "task_8"]
 
 
-def test_run_benchmark_range_then_limit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_benchmark_range_then_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _CapturingSingleTask()
     monkeypatch.setattr(runner_mod, "run_single_task", fake)
     _patch_dataset(
@@ -191,9 +188,7 @@ def test_run_benchmark_rejects_inverted_range(
     assert fake.calls == []
 
 
-def test_run_benchmark_no_range_runs_all(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_benchmark_no_range_runs_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """task_range=None 时退化回 PR 之前的全量行为。"""
     fake = _CapturingSingleTask()
     monkeypatch.setattr(runner_mod, "run_single_task", fake)

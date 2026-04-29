@@ -248,7 +248,7 @@ def test_native_adapter_omits_optional_fields_by_default(monkeypatch: pytest.Mon
 def test_native_adapter_captures_reasoning_and_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     response = _make_response(
         content="",
-        reasoning_content="I should call list_context",
+        reasoning_content="I should call inspect_files",
         usage=_make_usage(prompt=500, completion=80, total=580, cached=200, reasoning=60),
     )
     _install_fake_openai(monkeypatch, response)
@@ -256,6 +256,6 @@ def test_native_adapter_captures_reasoning_and_usage(monkeypatch: pytest.MonkeyP
 
     result = adapter.complete([ModelMessage(role="user", content="hello")])
 
-    assert result.reasoning_content == "I should call list_context"
+    assert result.reasoning_content == "I should call inspect_files"
     assert result.usage == TokenUsage(500, 80, 580, 200, 60)
     assert result.latency_ms >= 0

@@ -22,7 +22,6 @@ from data_agent_baseline.tools.registry import (
 )
 
 EXPECTED_REQUIRED: dict[str, set[str]] = {
-    "list_context": set(),
     "inspect_files": set(),
     "read_csv": {"path"},
     "read_json": {"path"},

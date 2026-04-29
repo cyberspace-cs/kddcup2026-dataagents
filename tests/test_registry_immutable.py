@@ -24,7 +24,6 @@ from data_agent_baseline.tools.registry import (
 )
 
 _EXPECTED_ORDER = [
-    "list_context",
     "inspect_files",
     "read_csv",
     "read_doc",

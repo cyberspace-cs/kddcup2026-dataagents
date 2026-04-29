@@ -58,7 +58,7 @@ def _tool_call(call_id: str, name: str, arguments: dict) -> tuple[ModelToolCall,
 
 
 def test_step_callback_fires_after_each_append(task: PublicTask) -> None:
-    list_call, list_raw = _tool_call("c1", "list_context", {"max_depth": 1})
+    list_call, list_raw = _tool_call("c1", "inspect_files", {})
     answer_call, answer_raw = _tool_call("c2", "answer", {"columns": ["v"], "rows": [["ok"]]})
     adapter = ScriptedNativeModelAdapter(
         [
@@ -136,7 +136,7 @@ def test_step_callback_exception_is_swallowed(task: PublicTask) -> None:
 def test_partial_trace_writer_round_trip(tmp_path: Path, task: PublicTask) -> None:
     """端到端：writer 写盘 → load 回来应能命中 task_id + steps。"""
     trace_path = tmp_path / "task_1" / "trace.json"
-    list_call, list_raw = _tool_call("c1", "list_context", {"max_depth": 1})
+    list_call, list_raw = _tool_call("c1", "inspect_files", {})
     # 刻意不给 answer：模拟"任务中途"快照
     adapter = ScriptedNativeModelAdapter(
         [
@@ -163,7 +163,7 @@ def test_partial_trace_writer_round_trip(tmp_path: Path, task: PublicTask) -> No
     assert loaded["succeeded"] is False  # 增量快照永远标 False
     assert loaded["answer"] is None
     assert len(loaded["steps"]) == 1
-    assert loaded["steps"][0]["action"] == "list_context"
+    assert loaded["steps"][0]["action"] == "inspect_files"
 
 
 def test_load_partial_trace_handles_missing_and_corrupt(tmp_path: Path) -> None:
@@ -186,7 +186,7 @@ def test_merge_partial_with_failure_preserves_steps(tmp_path: Path) -> None:
         json.dumps(
             {
                 "task_id": "task_1",
-                "steps": [{"step_index": 1, "action": "list_context"}],
+                "steps": [{"step_index": 1, "action": "inspect_files"}],
                 "answer": None,
                 "failure_reason": None,
                 "succeeded": False,

@@ -34,12 +34,12 @@ def _make_task(tmp_path: Path) -> PublicTask:
 
 
 def _build_two_turn_adapter() -> ScriptedNativeModelAdapter:
-    """两轮脚本：list_context → answer。供"两步任务"路径使用。"""
-    list_call = ModelToolCall(id="c1", name="list_context", arguments={"max_depth": 1})
+    """两轮脚本：inspect_files → answer。供"两步任务"路径使用。"""
+    list_call = ModelToolCall(id="c1", name="inspect_files", arguments={})
     list_raw = {
         "id": "c1",
         "type": "function",
-        "function": {"name": "list_context", "arguments": json.dumps({"max_depth": 1})},
+        "function": {"name": "inspect_files", "arguments": json.dumps({})},
     }
     answer_call = ModelToolCall(
         id="c2",
@@ -97,7 +97,7 @@ def test_step_records_carry_prompt_and_response(tmp_path: Path) -> None:
     assert step1.response_message is not None
     assert step1.response_message["content"] == "step1"
     assert len(step1.response_message["tool_calls"]) == 1
-    assert step1.response_message["tool_calls"][0]["name"] == "list_context"
+    assert step1.response_message["tool_calls"][0]["name"] == "inspect_files"
     assert step1.response_message["usage"]["prompt_tokens"] == 10
 
     # ---- Step 2: prompt 应含 system + user + assistant(step1) + tool(step1 obs) ----
@@ -146,17 +146,17 @@ def test_parallel_tool_calls_only_lead_step_carries_prompt_and_response(
     """
     task = _make_task(tmp_path)
 
-    list_call_a = ModelToolCall(id="par_a", name="list_context", arguments={"max_depth": 1})
-    list_call_b = ModelToolCall(id="par_b", name="list_context", arguments={"max_depth": 2})
+    list_call_a = ModelToolCall(id="par_a", name="inspect_files", arguments={})
+    list_call_b = ModelToolCall(id="par_b", name="inspect_files", arguments={})
     list_raw_a = {
         "id": "par_a",
         "type": "function",
-        "function": {"name": "list_context", "arguments": json.dumps({"max_depth": 1})},
+        "function": {"name": "inspect_files", "arguments": json.dumps({})},
     }
     list_raw_b = {
         "id": "par_b",
         "type": "function",
-        "function": {"name": "list_context", "arguments": json.dumps({"max_depth": 2})},
+        "function": {"name": "inspect_files", "arguments": json.dumps({})},
     }
     answer_call = ModelToolCall(
         id="done",
@@ -173,7 +173,7 @@ def test_parallel_tool_calls_only_lead_step_carries_prompt_and_response(
     }
     adapter = ScriptedNativeModelAdapter(
         [
-            # 第一轮：并行 2 个 list_context（产生 2 条 StepRecord，共享 turn_index）
+            # 第一轮：并行 2 个 inspect_files（产生 2 条 StepRecord，共享 turn_index）
             ModelResponse(
                 content="parallel explore",
                 tool_calls=[list_call_a, list_call_b],

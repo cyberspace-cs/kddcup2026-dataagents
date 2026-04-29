@@ -72,7 +72,6 @@ def test_native_system_prompt_includes_tool_decision_tree() -> None:
     prompt = build_native_system_prompt()
 
     for keyword in [
-        "list_context",
         "inspect_files",
         "read_csv",
         "read_json",
@@ -106,7 +105,6 @@ def test_task_prompt_keeps_only_task_specific_context(tmp_path: Path) -> None:
     assert "make a tool call" not in lower
     assert "<think>" not in lower
     assert "inspect_files" not in lower
-    assert "list_context" not in lower
     assert "context/" not in lower  # 路径约定已上移至 system prompt
 
 
@@ -121,7 +119,7 @@ def test_system_prompts_carry_path_convention() -> None:
 
     for prompt in (
         build_native_system_prompt(),
-        build_system_prompt("- list_context: Use first to inspect context."),
+        build_system_prompt("- inspect_files: Use first to inspect context."),
     ):
         assert "Path convention" in prompt
         assert PATH_CONVENTION_NOTE in prompt
@@ -129,7 +127,7 @@ def test_system_prompts_carry_path_convention() -> None:
 
 def test_system_prompts_share_grouped_sections() -> None:
     """两套 system prompt 都用 `## <section>` 分组，模型 attention 可按段 routing。"""
-    text_prompt = build_system_prompt("- list_context: Use first to inspect context.")
+    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     native_prompt = build_native_system_prompt()
 
     # 两协议共有的段落
@@ -152,7 +150,7 @@ def test_system_prompts_share_data_conventions_text() -> None:
     """
     from data_agent_baseline.agents.prompt import _DATA_OUTPUT_RULES
 
-    text_prompt = build_system_prompt("- list_context: Use first to inspect context.")
+    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     native_prompt = build_native_system_prompt()
 
     assert _DATA_OUTPUT_RULES in text_prompt
@@ -160,7 +158,7 @@ def test_system_prompts_share_data_conventions_text() -> None:
 
 
 def test_text_system_prompt_keeps_text_protocol_contract() -> None:
-    prompt = build_system_prompt("- list_context: Use first to inspect context.")
+    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
 
     assert "single ```json fenced block" in prompt
     assert "tool_calls" not in prompt
@@ -192,7 +190,7 @@ def test_native_system_prompt_requires_cell_type_preservation() -> None:
 
 def test_text_system_prompt_requires_source_schema_mirroring() -> None:
     """文本协议下同样要约束 schema mirroring + cell type preservation。"""
-    prompt = build_system_prompt("- list_context: Use first to inspect context.")
+    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     lower = prompt.lower()
 
     assert "mirror the source schema" in lower
@@ -221,7 +219,7 @@ def test_native_system_prompt_distinguishes_result_from_filter_columns() -> None
 
 def test_text_system_prompt_distinguishes_result_from_filter_columns() -> None:
     """文本协议下同样需要 result-vs-filter column 规则。"""
-    prompt = build_system_prompt("- list_context: Use first to inspect context.")
+    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     lower = prompt.lower()
 
     assert "distinguish result columns from filter" in lower

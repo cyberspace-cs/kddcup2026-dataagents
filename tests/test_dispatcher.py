@@ -34,7 +34,7 @@ def _call(name: str, **arguments: object) -> ModelToolCall:
 
 def test_dispatch_non_terminal_success_does_not_terminate(task: PublicTask) -> None:
     registry = create_default_tool_registry()
-    call = _call("list_context", max_depth=2)
+    call = _call("inspect_files")
 
     result, should_terminate = dispatch_tool_call(task, call, registry)
 
@@ -215,10 +215,11 @@ def test_dispatch_answer_preserves_float_cells(task: PublicTask) -> None:
 
 def test_registry_execute_does_not_mutate_payload_on_success(task: PublicTask) -> None:
     registry = create_default_tool_registry()
-    payload: dict[str, object] = {"max_depth": 2}
+    # 用 read_doc：fixture 里有 hello.txt；多字段 payload 才能验出 Pydantic alias-injection 之类的隐性 mutation
+    payload: dict[str, object] = {"path": "hello.txt", "start_line": 1, "line_count": 1}
     snapshot = dict(payload)
 
-    registry.execute(task, "list_context", payload)
+    registry.execute(task, "read_doc", payload)
 
     assert payload == snapshot
     assert set(payload.keys()) == set(snapshot.keys())

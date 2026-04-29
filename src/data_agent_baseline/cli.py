@@ -269,9 +269,7 @@ def run_benchmark_command(
     if task_range is not None:
         range_start, range_end = task_range
         selected_dirs = [
-            path
-            for path in selected_dirs
-            if range_start <= task_id_number(path.name) <= range_end
+            path for path in selected_dirs if range_start <= task_id_number(path.name) <= range_end
         ]
     if limit is not None:
         selected_dirs = selected_dirs[:limit]

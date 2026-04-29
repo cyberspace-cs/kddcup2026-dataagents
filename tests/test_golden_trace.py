@@ -27,12 +27,12 @@ GOLDEN_DIR = Path(__file__).parent / "fixtures" / "golden"
 
 
 def _scripted_adapter() -> ScriptedNativeModelAdapter:
-    """两轮固定脚本：list_context → answer。"""
-    list_call = ModelToolCall(id="call_1", name="list_context", arguments={"max_depth": 1})
+    """两轮固定脚本：inspect_files → answer。"""
+    list_call = ModelToolCall(id="call_1", name="inspect_files", arguments={})
     list_raw = {
         "id": "call_1",
         "type": "function",
-        "function": {"name": "list_context", "arguments": json.dumps({"max_depth": 1})},
+        "function": {"name": "inspect_files", "arguments": json.dumps({})},
     }
     answer_call = ModelToolCall(
         id="call_2",
@@ -50,9 +50,9 @@ def _scripted_adapter() -> ScriptedNativeModelAdapter:
     return ScriptedNativeModelAdapter(
         [
             ModelResponse(
-                content="Let me list the context first.",
+                content="Let me inspect the context first.",
                 tool_calls=[list_call],
-                raw_response="Let me list the context first.",
+                raw_response="Let me inspect the context first.",
                 raw_tool_calls=[list_raw],
                 usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
                 latency_ms=0,

@@ -13,11 +13,11 @@ The tool registry SHALL expose tools as `ToolDefinition` instances with the fiel
 
 ### Requirement: Default tool inventory is exactly 8 tools
 
-The default registry built by `create_default_tool_registry` SHALL contain exactly these tool names, in registration order: `list_context`, `read_csv`, `read_doc`, `read_json`, `inspect_sqlite_schema`, `execute_context_sql`, `execute_python`, `answer`.
+The default registry built by `create_default_tool_registry` SHALL contain exactly these tool names, in registration order: `inspect_files`, `read_csv`, `read_doc`, `read_json`, `inspect_sqlite_schema`, `execute_context_sql`, `execute_python`, `answer`.
 
 #### Scenario: Default registry tool inventory
 - **WHEN** `create_default_tool_registry(task=task, ...)` is called for any valid task
-- **THEN** `list(registry.definitions.keys()) == ["list_context", "read_csv", "read_doc", "read_json", "inspect_sqlite_schema", "execute_context_sql", "execute_python", "answer"]`
+- **THEN** `list(registry.definitions.keys()) == ["inspect_files", "read_csv", "read_doc", "read_json", "inspect_sqlite_schema", "execute_context_sql", "execute_python", "answer"]`
 
 ### Requirement: Registry is immutable post-construction
 

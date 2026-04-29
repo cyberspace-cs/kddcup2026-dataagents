@@ -26,7 +26,7 @@ def task(tmp_path: Path) -> PublicTask:
     task_dir = tmp_path / "task_1"
     context_dir = task_dir / "context"
     context_dir.mkdir(parents=True)
-    # 放一个简单文件便于 list_context 有内容可看
+    # 放一个简单文件便于 inspect_files 有内容可看
     (context_dir / "hello.txt").write_text("hello\n")
     return PublicTask(
         record=TaskRecord(
@@ -47,9 +47,9 @@ def test_text_protocol_runs_single_action_per_turn(task: PublicTask) -> None:
         [
             _fenced(
                 {
-                    "thought": "list the context",
-                    "action": "list_context",
-                    "action_input": {"max_depth": 2},
+                    "thought": "inspect the context",
+                    "action": "inspect_files",
+                    "action_input": {},
                 }
             ),
             _fenced(

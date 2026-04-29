@@ -80,7 +80,7 @@ Keep reasoning concise and grounded in the observed data.
 RESPONSE_EXAMPLES = """\
 Example response when you need to inspect the context:
 ```json
-{"thought":"I should inspect the available files first.","action":"list_context","action_input":{"max_depth":4}}
+{"thought":"I should inspect the available files first.","action":"inspect_files","action_input":{}}
 ```
 
 Example response when you have the final answer:
@@ -111,7 +111,7 @@ You are a ReAct-style data agent with native function calling.
 {_DATA_OUTPUT_RULES}
 
 ## Decision tree
-- If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas), or `list_context` if you only want the raw directory tree.
+- If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas).
 - If you need to preview file examples, call `read_csv`, `read_json`, or `read_doc` according to the file type.
 - `read_csv` returns ONLY a sample (schema + head 20 rows + tail 5 rows); it never gives you the full file. Any task that needs filtering, aggregation, joins, lookups by key, or scanning every row MUST use `execute_python`. Do not draw conclusions about totals, "the only matching row", or "earliest/latest" from `read_csv` output alone.
 - If you find a SQLite/database file, call `inspect_sqlite_schema` before `execute_context_sql`.

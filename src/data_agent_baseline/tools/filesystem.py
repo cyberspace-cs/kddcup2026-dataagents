@@ -463,7 +463,7 @@ def _format_for_inspect(rel_path: str, abs_path: Path) -> dict[str, Any]:
 def inspect_context_files(task: PublicTask) -> dict[str, Any]:
     """一次性扫描 context_dir 下所有文件的轻量 schema。
 
-    替代"先 list_context 再对每个文件挨个 read_*"的 N+1 模式：
+    替代"先列目录再对每个文件挨个 read_*"的 N+1 模式：
     遍历整棵目录树，按扩展名分流到对应 introspection（csv/json/sqlite/md/txt），
     其它格式（xlsx/parquet/...）按 supported=false 占位返回，提示模型转 execute_python。
 

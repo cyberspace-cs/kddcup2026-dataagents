@@ -96,8 +96,8 @@ def test_empty_tool_calls_event_no_draft_uses_long_message() -> None:
 
 def test_empty_tool_calls_event_with_draft_uses_short_message() -> None:
     draft = {
-        "function": "list_context",
-        "arguments": {"max_depth": 2},
+        "function": "inspect_files",
+        "arguments": {},
         "source": "reasoning_content",
         "executed": False,
     }
@@ -145,10 +145,10 @@ def test_tool_error_event_preserves_call_metadata() -> None:
 def test_observation_event_uses_tool_name_as_action() -> None:
     step = _record_one(
         ObservationEvent(
-            thought="list it",
-            tool_name="list_context",
-            arguments={"max_depth": 2},
-            content={"entries": []},
+            thought="inspect it",
+            tool_name="inspect_files",
+            arguments={},
+            content={"files": []},
             ok=True,
             raw_response="",
             tool_call_id="c1",
@@ -158,12 +158,12 @@ def test_observation_event_uses_tool_name_as_action() -> None:
         )
     )
 
-    assert step.action == "list_context"
-    assert step.action_input == {"max_depth": 2}
+    assert step.action == "inspect_files"
+    assert step.action_input == {}
     assert step.observation == {
         "ok": True,
-        "tool": "list_context",
-        "content": {"entries": []},
+        "tool": "inspect_files",
+        "content": {"files": []},
     }
     assert step.ok is True
     assert step.tool_call_id == "c1"

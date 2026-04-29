@@ -27,7 +27,6 @@ EXPECTED_TOOLS = {
     "execute_python",
     "inspect_files",
     "inspect_sqlite_schema",
-    "list_context",
     "read_csv",
     "read_doc",
     "read_json",
