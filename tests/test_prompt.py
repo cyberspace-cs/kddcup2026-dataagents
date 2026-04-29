@@ -225,3 +225,23 @@ def test_text_system_prompt_distinguishes_result_from_filter_columns() -> None:
     assert "distinguish result columns from filter" in lower
     assert "wh-target" in lower
     assert "grader penalizes extra columns" in lower
+
+
+def test_native_system_prompt_requires_full_numeric_precision() -> None:
+    """计算得到的浮点必须保留全精度——回归 task_10 把 60.77956989247312 压成 60.78。"""
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "preserve full numeric precision" in lower
+    assert "60.77956989247312" in prompt and "60.78" in prompt
+    assert "round only when the question explicitly asks" in lower
+
+
+def test_text_system_prompt_requires_full_numeric_precision() -> None:
+    """文本协议下同样需要"计算值不许擅自舍入"规则。"""
+    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    lower = prompt.lower()
+
+    assert "preserve full numeric precision" in lower
+    assert "60.77956989247312" in prompt and "60.78" in prompt
+    assert "round only when the question explicitly asks" in lower

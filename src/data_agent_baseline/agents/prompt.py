@@ -37,7 +37,8 @@ _INTRO = (
 _DATA_OUTPUT_RULES = """\
 - Mirror the source schema in the answer. If the requested attributes already exist as separate columns in the source data (e.g., `first_name` and `last_name`), keep them as separate columns in the answer; do not concatenate, split, rename to a derived form (e.g., `full_name`), or invent columns that do not appear in the source. Only synthesize a derived column when the question explicitly requires a transformed value (e.g., "compute the ratio", "format as YYYY/MM"). Phrasing like "list the full name" still maps to the source's separate name columns.
 - Distinguish result columns from filter/computation columns. The question's WH-target (which/what/who/when/where the answer asks about) determines the result columns. Values used only to *select* or *rank* rows — for example, the cost you compared in "which event has the lowest cost", or the date you sorted by in "who joined earliest" — are NOT result columns and must not appear in the answer unless the question explicitly asks for them (e.g., "which event has the lowest cost AND what is that cost?"). The grader penalizes extra columns; when in doubt, output only the WH-target.
-- Preserve cell types from the source. Submit integer-valued IDs as JSON integers (`163109`), not as floats (`163109.0`); submit dates and codes as strings exactly as they appear in the source."""
+- Preserve cell types from the source. Submit integer-valued IDs as JSON integers (`163109`), not as floats (`163109.0`); submit dates and codes as strings exactly as they appear in the source.
+- Preserve full numeric precision for computed values (averages, ratios, sums, etc.). Submit the raw value as Python prints it (e.g. `60.77956989247312`), not a human-readable rounded form (e.g. `60.78`). Round only when the question explicitly asks for a specific precision."""
 
 # 共享：path 字段约定段。`PATH_CONVENTION_NOTE` 由 tools/inputs.py 定义并
 # 被 5 个 path 字段的 schema description 复用；这里再插一份到 system prompt

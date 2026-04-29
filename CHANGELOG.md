@@ -114,6 +114,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the 1087-line `superhero.md` 7 times sequentially and still failed with
   `max_steps`. The new contract collapses such serial pagers into a single
   call. Paging mode (no keyword) is unchanged.
+- **System prompt now requires full numeric precision for computed values.**
+  Averages, ratios, sums, etc. must be submitted as Python prints them (e.g.
+  `60.77956989247312`), not in a human-readable rounded form (e.g. `60.78`).
+  Rounding is only permitted when the question explicitly asks for a specific
+  precision. The rule sits in `_DATA_OUTPUT_RULES` so both text and native
+  protocols receive it. Empirical motivation: in run
+  20260429T192409664288Z, task_10's `execute_python` returned
+  `60.77956989247312` for the average female-superhero weight; the model's
+  next turn submitted `[[60.78]]` to `answer`, losing precision that the
+  grader checks. The pre-existing "Preserve cell types from the source"
+  bullet only covered int-vs-float typing for source IDs and did not
+  constrain decimal precision on computed values.
 
 ### Breaking (internal API only)
 - `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` moved from
