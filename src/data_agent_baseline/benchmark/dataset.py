@@ -21,10 +21,11 @@ from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRec
 TASK_DIR_PREFIX = "task_"
 
 
-def _task_number(task_id: str) -> int:
-    """从 `task_<n>` 中提取出数字 n，用作自然数排序键。
+def task_id_number(task_id: str) -> int:
+    """从 `task_<n>` 中提取出数字 n，用作自然数排序键 / range 过滤。
 
     非法前缀直接抛错：调用方有责任保证仅传入 `task_dirs()` 产出的目录名。
+    公共名（无下划线）让 CLI / runner 复用同一份解析逻辑去做 task-range 过滤。
     """
     if not task_id.startswith(TASK_DIR_PREFIX):
         raise ValueError(f"Invalid task id: {task_id}")
@@ -84,7 +85,7 @@ class DABenchPublicDataset:
             if path.is_dir() and path.name.startswith(TASK_DIR_PREFIX)
         ]
         # 自然数排序：避免字典序把 task_10 排到 task_2 前面
-        task_dirs.sort(key=lambda path: _task_number(path.name))
+        task_dirs.sort(key=lambda path: task_id_number(path.name))
         return task_dirs
 
     def list_task_ids(self) -> list[str]:

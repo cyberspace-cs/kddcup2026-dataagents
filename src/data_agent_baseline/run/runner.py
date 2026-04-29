@@ -25,7 +25,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING
 
-from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
+from data_agent_baseline.benchmark.dataset import DABenchPublicDataset, task_id_number
 from data_agent_baseline.config import AppConfig
 from data_agent_baseline.run.app import build_application
 from data_agent_baseline.run.runner_artifacts import (
@@ -121,6 +121,7 @@ def run_benchmark(
     model: ModelAdapter | None = None,
     tools: ToolRegistry | None = None,
     limit: int | None = None,
+    task_range: tuple[int, int] | None = None,
     progress_callback: Callable[[TaskRunArtifacts], None] | None = None,
 ) -> tuple[Path, list[TaskRunArtifacts]]:
     """批量跑一批任务并生成 summary.json。
@@ -135,7 +136,9 @@ def run_benchmark(
       （线程池 + 子进程叠加是因为 OpenAI 调用主要是 IO 等待，线程足够释放并发；
        子进程用来硬隔离超时/崩溃）
 
-    `progress_callback` 在每个任务完成时触发，主要供 CLI 渲染进度条。
+    `task_range=(start, end)`（含两端，按 task_<n> 中的 n 过滤）和 `limit` 正交且
+    顺序固定：先 range 过滤，再用 limit 截断。例如 `task_range=(5, 20), limit=3`
+    跑 task_5/6/7。`progress_callback` 在每个任务完成时触发，主要供 CLI 渲染进度条。
     """
     # 先建目录再做其他事：run_id 冲突要立刻暴露
     effective_run_id, run_output_dir = create_run_output_dir(
@@ -144,6 +147,11 @@ def run_benchmark(
 
     dataset = DABenchPublicDataset(config.dataset.root_path)
     tasks = dataset.iter_tasks()
+    if task_range is not None:
+        start, end = task_range
+        if start > end:
+            raise ValueError(f"task_range start ({start}) must be <= end ({end}).")
+        tasks = [task for task in tasks if start <= task_id_number(task.task_id) <= end]
     # limit 起 "抽样调试" 作用；切前 N 个（任务已按编号排序）
     if limit is not None:
         tasks = tasks[:limit]

@@ -4,7 +4,7 @@
 - `status`: 打印项目目录结构与数据集状态
 - `inspect-task <id>`: 查看单任务的元信息与 context 文件树
 - `run-task <id>`: 对单个任务跑一次 ReAct baseline
-- `run-benchmark`: 对数据集里全部（或 `--limit N`）任务批量跑
+- `run-benchmark`: 对数据集里全部（或 `--limit N` / `--range S-E`）任务批量跑
 - `view`: 启动单任务调试前端（Streamlit），可视化 trace.json 与 prediction
 
 打包发布时入口由 `pyproject.toml` 的 `[project.scripts]` 暴露为 `dabench`，
@@ -30,7 +30,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
+from data_agent_baseline.benchmark.dataset import DABenchPublicDataset, task_id_number
 from data_agent_baseline.config import load_app_config
 from data_agent_baseline.run.runner import (
     TaskRunArtifacts,
@@ -56,6 +56,45 @@ console = Console()
 def _status_value(path: Path) -> str:
     """把路径是否存在渲染成 `status` 表格里的 present/missing 文案。"""
     return "present" if path.exists() else "missing"
+
+
+def _coerce_task_number(token: str) -> int:
+    """`--range` 每端的解析：纯数字直接 int，`task_<n>` 借公共 task_id_number 走前缀校验。"""
+    cleaned = token.strip()
+    if cleaned.startswith("task_"):
+        return task_id_number(cleaned)
+    return int(cleaned)
+
+
+def _parse_task_range(spec: str) -> tuple[int, int]:
+    """把 `--range` 字符串解析成 (start, end)，两端含。
+
+    支持 `5-10` / `task_5-task_10` / 混合形式。错误一律转成 `typer.BadParameter`，
+    让 CLI 出干净的错误提示而不是 traceback。
+    """
+    cleaned = spec.strip()
+    left, sep, right = cleaned.partition("-")
+    if not sep or not left.strip() or not right.strip():
+        raise typer.BadParameter(
+            f"--range 需要 START-END 形式（例如 '5-10' 或 'task_5-task_10'），收到 '{spec}'.",
+            param_hint="--range",
+        )
+    try:
+        start = _coerce_task_number(left)
+        end = _coerce_task_number(right)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"--range 解析失败 ('{spec}'): {exc}", param_hint="--range"
+        ) from exc
+    if start < 1:
+        raise typer.BadParameter(
+            f"--range 起始任务号必须 >= 1，收到 {start}.", param_hint="--range"
+        )
+    if start > end:
+        raise typer.BadParameter(
+            f"--range 起始 ({start}) 不能大于结束 ({end}).", param_hint="--range"
+        )
+    return start, end
 
 
 def _format_compact_rate(completed_count: int, elapsed_seconds: float) -> str:
@@ -211,14 +250,37 @@ def run_task_command(
 def run_benchmark_command(
     config: Path = typer.Option(..., exists=True, dir_okay=False, help="YAML config path."),
     limit: int | None = typer.Option(None, min=1, help="Maximum number of tasks to run."),
+    range_spec: str | None = typer.Option(
+        None,
+        "--range",
+        help=(
+            "Inclusive task range, e.g. '5-10' or 'task_5-task_10'. "
+            "Combines with --limit (range filters first, then limit truncates)."
+        ),
+    ),
 ) -> None:
     """Run the ReAct baseline on multiple tasks from the config selection."""
     app_config = load_app_config(config)
     dataset = DABenchPublicDataset(app_config.dataset.root_path)
-    # 提前算一次总任务数用于进度条 total；limit 起 “抽样调试” 作用
-    task_total = len(dataset.iter_tasks())
+    task_range = _parse_task_range(range_spec) if range_spec else None
+    # 用 task_dirs()（仅 listdir + sort，不读 task.json）算总数，跟 runner 的过滤逻辑
+    # 等价：先按 range 过滤，再用 limit 截断。这样进度条 total 和真正跑的任务数一致。
+    selected_dirs = dataset.task_dirs()
+    if task_range is not None:
+        range_start, range_end = task_range
+        selected_dirs = [
+            path
+            for path in selected_dirs
+            if range_start <= task_id_number(path.name) <= range_end
+        ]
     if limit is not None:
-        task_total = min(task_total, limit)
+        selected_dirs = selected_dirs[:limit]
+    task_total = len(selected_dirs)
+    if task_total == 0:
+        raise typer.BadParameter(
+            "Selection (range/limit) produced 0 tasks; nothing to run.",
+            param_hint="--range" if task_range is not None else "--limit",
+        )
     effective_workers = app_config.run.max_workers
 
     # ---- 进度条列定义 ----
@@ -298,6 +360,7 @@ def run_benchmark_command(
             run_output_dir, artifacts = run_benchmark(
                 config=app_config,
                 limit=limit,
+                task_range=task_range,
                 progress_callback=on_task_complete,
             )
         except (ValueError, FileExistsError) as exc:
