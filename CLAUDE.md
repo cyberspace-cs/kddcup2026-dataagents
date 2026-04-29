@@ -38,11 +38,11 @@ uv run dabench run-benchmark         --config <cfg> [--limit N] [--range S-E]
 
 **Do not** invoke via `uv run python -m data_agent_baseline.cli ...` — the Typer + module-runner interaction produces no output in this project.
 
-## 3. Code contribution rules — see [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)
+## 3. Code contribution rules — see [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 That file is the canonical source for:
 
 - **Git commit messages** — Conventional Commits + 50/72, English-only, one logical change per commit.
 - **CHANGELOG maintenance** — what to record, what to skip, how to format entries, when releases promote `[Unreleased]`.
 
-The rules apply identically to human contributors and AI assistants. If a discrepancy ever arises between this file and `docs/CONTRIBUTING.md`, the latter wins.
+The rules apply identically to human contributors and AI assistants. If a discrepancy ever arises between this file and `CONTRIBUTING.md`, the latter wins.

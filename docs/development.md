@@ -81,7 +81,7 @@ Tests live under `tests/`, with shared fixtures in `tests/helpers/` (notably
 ## Contributing rules
 
 Commit-message format and `CHANGELOG.md` maintenance live in their own document:
-[`CONTRIBUTING.md`](CONTRIBUTING.md). Repository-specific developer rules below.
+[`CONTRIBUTING.md`](../CONTRIBUTING.md). Repository-specific developer rules below.
 
 - **Don't bypass `uv`.** `pip install`, raw `python`, and `.venv/bin/python` are out.
 - **Keep wire formats stable.** `trace.json`, `summary.json`, `prediction.csv`, and
