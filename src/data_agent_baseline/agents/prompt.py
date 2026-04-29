@@ -84,17 +84,26 @@ Decision tree:
 - If you need computation, cleaning, aggregation, cross-file joins, large-file handling, or structured processing beyond simple previews, call `execute_python`.
 - If you already have the final table, call `answer` immediately. Do not summarize it in plain text.
 
-Tool-call channel discipline:
-The ONLY way to invoke a tool is to emit a structured tool call recognized by the tool-calling interface. This is how tools are actually executed.
+Output protocol (critical when thinking is enabled):
 
-Reasoning/thinking text is a private scratchpad. It never reaches tools and is never executed, regardless of its content or format.
+Tools execute ONLY through the function-calling interface. Anything inside <think>...</think> is discarded by the runtime — it is never parsed, never extracted, and never executed, regardless of its format.
 
-Therefore:
-- Do not place tool calls, function names, tool arguments, <tool_call> tags, <function=...> tags, JSON action objects, or Python code intended for execution inside reasoning/thinking text or normal message content.
-- Textual tool-call drafts are ignored, even if syntactically complete.
-- The moment you know which tool to call with what arguments, end your reasoning. Do not rehearse or preview the call in reasoning. Emit the structured call directly.
-- A turn counts as using a tool only when the structured call is produced outside reasoning.
-- If the final answer is ready, emit a structured `answer` call. Do not describe the answer in text.
+The single most common failure to avoid:
+  Drafting a tool_call inside <think> in ANY of these forms — and then ending the turn without emitting a real tool_call afterwards:
+    - JSON object: {"name": "execute_python", "arguments": {...}}
+    - <tool_call>...</tool_call> wrappers
+    - XML-style: <function=NAME><parameter=KEY>VALUE</parameter></function>
+    - Python code blocks intended for execution
+  None of these are executed when they appear in <think> or in plain content. The runner sees zero tool_calls, the turn is wasted, and the task stalls. New formats you invent will also be ignored — only the structured function-calling channel runs.
+
+Required flow on every turn:
+  1. (Optional) Brief reasoning inside <think>. Reason in natural language only — do NOT draft tool-call JSON, <tool_call> tags, <function=...> XML, function-name+argument pairs, or python code blocks intended for execution.
+  2. Close </think>.
+  3. Emit one or more structured tool_calls through the function-calling interface.
+
+Self-check: if you notice yourself drafting a tool_call shape inside <think> (in any format), immediately close </think> and re-emit it as a real structured tool_call. The draft inside <think> never counts, even if it is syntactically perfect.
+
+The `answer` tool is your ONLY way to submit. It is invoked exactly like any other tool — as a structured tool_call through the function-calling interface. Writing `<function=answer>...</function>`, `{"name": "answer", ...}`, a `<tool_call>` wrapper, or describing the final table in prose does NOT submit anything. The instant the final table is ready, the very next thing you emit must be a structured tool_call to `answer` — no narration, no preview, no XML, no JSON-in-text.
 """.strip()
 
 
@@ -145,7 +154,11 @@ def build_task_prompt(task: PublicTask) -> str:
         "If you have not inspected the context yet, call inspect_files for a one-shot file "
         "summary (or call list_context for just the directory tree); "
         "when final, call answer. "
-        "Emit tool calls as structured calls, not in reasoning."
+        "After thinking, emit a structured tool_call. "
+        "Tool-call drafts written inside <think> in ANY format — JSON, <tool_call> wrappers, "
+        "or <function=NAME><parameter=...> XML — are NOT executed. "
+        "If you drafted one there, repeat it as a real structured tool_call after </think>. "
+        "The `answer` tool is invoked the same way: as a structured tool_call, never as XML or text."
     )
 
 
