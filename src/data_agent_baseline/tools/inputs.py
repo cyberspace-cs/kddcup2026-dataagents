@@ -28,7 +28,7 @@ EXECUTE_PYTHON_TIMEOUT_SECONDS = 30
 # - 必须相对于任务的 context 目录
 # - **不要** 带 `context/` 前缀，哪怕 system prompt 里提到过 `context/`
 # 用常量收敛文案，后续调整只改一处，保证 8 个 schema 描述一致，减少模型的歧义。
-_PATH_CONVENTION_NOTE = (
+PATH_CONVENTION_NOTE = (
     "Paths are relative to the task context directory; DO NOT prepend 'context/'. "
     "For example use 'knowledge.md' or 'csv/foo.csv', not 'context/knowledge.md'."
 )
@@ -39,7 +39,7 @@ def _path_field(*, file_kind: str, examples: tuple[str, ...]) -> Any:
     example_text = ", ".join(repr(ex) for ex in examples)
     return Field(
         description=(
-            f"Relative path to a {file_kind}. Examples: {example_text}. " + _PATH_CONVENTION_NOTE
+            f"Relative path to a {file_kind}. Examples: {example_text}. " + PATH_CONVENTION_NOTE
         ),
     )
 
@@ -183,7 +183,7 @@ class ExecuteContextSqlInput(BaseModel):
         Field(
             description=(
                 "Relative path to the sqlite/db file. "
-                "Examples: 'db/clinical.sqlite', 'main.db'. " + _PATH_CONVENTION_NOTE
+                "Examples: 'db/clinical.sqlite', 'main.db'. " + PATH_CONVENTION_NOTE
             ),
         ),
     ]

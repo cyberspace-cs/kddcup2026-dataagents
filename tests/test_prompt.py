@@ -35,15 +35,29 @@ def test_native_system_prompt_requires_tool_calls() -> None:
 
 
 def test_native_system_prompt_keeps_tool_calls_out_of_reasoning() -> None:
+    """`<think>` 内的 tool_call draft 一律不被执行；prompt 必须把这一点讲透。
+
+    commit 9e5a24f 把抽象的 "private scratchpad" 警告替换成了具体的失败示例 +
+    Required flow + Self-check。本测试钉死新版 prompt 的关键短语，避免再次脱同步。
+    """
     prompt = build_native_system_prompt()
     lower = prompt.lower()
 
-    assert "the only way to invoke a tool is to emit a structured tool call" in lower
-    assert "reasoning/thinking text is a private scratchpad" in lower
-    assert "never reaches tools and is never executed" in lower
-    assert "textual tool-call drafts are ignored" in lower
-    assert "do not rehearse or preview the call in reasoning" in lower
-    assert "structured `answer` call" in lower
+    # 核心契约：<think> 内的内容会被 runtime 丢弃
+    assert "anything inside <think>...</think> is discarded by the runtime" in lower
+    assert "never parsed, never extracted, and never executed" in lower
+
+    # 显式列举常见失败形态（JSON / <tool_call> / <function=...>）
+    assert "the single most common failure to avoid" in lower
+    assert "<tool_call>...</tool_call> wrappers" in lower
+    assert "<function=name><parameter=key>value</parameter></function>" in lower
+
+    # 给出正向流程与自检
+    assert "required flow on every turn" in lower
+    assert "self-check" in lower
+
+    # answer 工具是唯一的提交通道
+    assert "the `answer` tool is your only way to submit" in lower
 
 
 def test_native_system_prompt_includes_tool_decision_tree() -> None:
@@ -67,18 +81,42 @@ def test_native_system_prompt_custom_override_is_preserved() -> None:
     assert build_native_system_prompt("custom native prompt") == "custom native prompt"
 
 
-def test_task_prompt_adds_near_tool_call_instruction(tmp_path: Path) -> None:
+def test_task_prompt_keeps_only_task_specific_context(tmp_path: Path) -> None:
+    """user 消息只承载任务特定上下文：question 本身。
+
+    跨任务的不变量（工具决策、tool_call 协议、`<think>` 内 draft 不执行、
+    路径约定）全部由 system prompt + path 字段 schema description 承担。
+    user 消息保持极简，最大化 prompt cache 命中率与 `Question:` 的注意力。
+    """
     prompt = build_task_prompt(_task(tmp_path))
     lower = prompt.lower()
 
-    assert "paths inside the context directory" in lower
-    assert "do not prepend 'context/'" in lower
-    assert "use the provided tools to answer this task" in lower
-    assert "do not reply with plain text; make a tool call" in lower
-    assert "call inspect_files" in lower
-    assert "call list_context" in lower
-    assert "when final, call answer" in lower
-    assert "emit tool calls as structured calls, not in reasoning" in lower
+    # 仅承载 task-specific 的 question
+    assert prompt == "Question: Find the requested value."
+
+    # 不变量不应再在 user 消息里重复
+    assert "make a tool call" not in lower
+    assert "<think>" not in lower
+    assert "inspect_files" not in lower
+    assert "list_context" not in lower
+    assert "context/" not in lower  # 路径约定已上移至 system prompt
+
+
+def test_system_prompts_carry_path_convention() -> None:
+    """两套 system prompt 都必须显式声明 path 字段约定。
+
+    路径约定是跨任务不变量；上移到 system prompt 后，user prompt 不再重复。
+    `_PATH_CONVENTION_NOTE`（tools/inputs.py）作为单一真相源，
+    分别在 system prompt 与 5 个 path 字段 schema description 中复用。
+    """
+    from data_agent_baseline.tools.inputs import PATH_CONVENTION_NOTE
+
+    for prompt in (
+        build_native_system_prompt(),
+        build_system_prompt("- list_context: Use first to inspect context."),
+    ):
+        assert "Path convention" in prompt
+        assert PATH_CONVENTION_NOTE in prompt
 
 
 def test_text_system_prompt_keeps_text_protocol_contract() -> None:

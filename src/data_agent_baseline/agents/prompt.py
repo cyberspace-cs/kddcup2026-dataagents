@@ -16,13 +16,15 @@ from __future__ import annotations
 import json
 
 from data_agent_baseline.benchmark.schema import PublicTask
+from data_agent_baseline.tools.inputs import PATH_CONVENTION_NOTE
 
 # ReAct 系统提示词基座：权限边界 + 输出契约
 # 关键约束点：
 #  - 只能通过工具读取 context/ 下文件（防止越权推理）
 #  - 必须以 answer 工具结束（没有它，循环只能因 max_steps 被动终止）
 #  - 响应格式严格，是为了让 parse_model_step 能稳定提取
-REACT_SYSTEM_PROMPT = """
+REACT_SYSTEM_PROMPT = (
+    """
 You are a ReAct-style data agent.
 
 You are solving a task from a public dataset. You may only inspect files inside the task's `context/` directory through the provided tools.
@@ -41,6 +43,8 @@ Rules:
 
 Keep reasoning concise and grounded in the observed data.
 """.strip()
+    + f"\n\nPath convention (applies to every tool `path` argument):\n{PATH_CONVENTION_NOTE}"
+)
 
 # few-shot：展示首轮探索和最终 answer 两种形态
 # 刻意分别给出一个 "未终止" 和一个 "终止" 的样例，避免模型只模仿其一
@@ -59,7 +63,8 @@ Example response when you have the final answer:
 
 # 原生 function calling 用的系统提示：工具定义通过 OpenAI `tools=[...]` 下推，
 # 因此此处不再复述工具表 / 响应格式——只保留不变的身份与语义约束。
-REACT_NATIVE_SYSTEM_PROMPT = """
+REACT_NATIVE_SYSTEM_PROMPT = (
+    """
 You are a ReAct-style data agent with native function calling.
 
 You are solving a task from a public dataset. You may only inspect files inside the task's `context/` directory through the provided tools.
@@ -105,6 +110,8 @@ Self-check: if you notice yourself drafting a tool_call shape inside <think> (in
 
 The `answer` tool is your ONLY way to submit. It is invoked exactly like any other tool — as a structured tool_call through the function-calling interface. Writing `<function=answer>...</function>`, `{"name": "answer", ...}`, a `<tool_call>` wrapper, or describing the final table in prose does NOT submit anything. The instant the final table is ready, the very next thing you emit must be a structured tool_call to `answer` — no narration, no preview, no XML, no JSON-in-text.
 """.strip()
+    + f"\n\nPath convention (applies to every tool `path` argument):\n{PATH_CONVENTION_NOTE}"
+)
 
 
 def build_system_prompt(tool_descriptions: str, system_prompt: str | None = None) -> str:
@@ -138,28 +145,12 @@ def build_native_system_prompt(system_prompt: str | None = None) -> str:
 def build_task_prompt(task: PublicTask) -> str:
     """任务起始的 user 消息。
 
-    只注入问题本身与路径约定，其他上下文交由模型通过 `list_context` 等工具主动探索。
-
-    **路径约定措辞**有意避免"relative to context directory"这种被 Qwen 误读为
-    "需要加 context/ 前缀"的表达，改为正向示例＋反向禁止，最大化消歧。
+    只承载**任务特定**的内容——具体到这一题的 `question`。所有跨任务的
+    不变量（工具决策、tool_call 协议、`<think>` 内 draft 不被执行、
+    路径约定 `PATH_CONVENTION_NOTE`）都在 system prompt 与 path 字段
+    schema description 中下发，单一真相源、利于 prompt cache 命中。
     """
-    return (
-        f"Question: {task.question}\n"
-        "Tool `path` arguments are paths INSIDE the context directory; "
-        "do NOT prepend 'context/'. For example use 'knowledge.md' or "
-        "'csv/foo.csv', not 'context/knowledge.md'. "
-        "When you have the final table, call the `answer` tool.\n"
-        "Use the provided tools to answer this task. "
-        "Do not reply with plain text; make a tool call. "
-        "If you have not inspected the context yet, call inspect_files for a one-shot file "
-        "summary (or call list_context for just the directory tree); "
-        "when final, call answer. "
-        "After thinking, emit a structured tool_call. "
-        "Tool-call drafts written inside <think> in ANY format — JSON, <tool_call> wrappers, "
-        "or <function=NAME><parameter=...> XML — are NOT executed. "
-        "If you drafted one there, repeat it as a real structured tool_call after </think>. "
-        "The `answer` tool is invoked the same way: as a structured tool_call, never as XML or text."
-    )
+    return f"Question: {task.question}"
 
 
 def build_observation_prompt(observation: dict[str, object]) -> str:
