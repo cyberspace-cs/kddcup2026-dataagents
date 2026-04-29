@@ -29,13 +29,19 @@ _READ_CSV_TAIL_ROWS = 5
 # read_json 预览的硬上限：
 # - 文件大小 5MB（与 _summarize_json 对齐；超出直接走 execute_python 流读）
 # - object：列前 50 个 keys + 前 20 个 keys 的浅层 value preview
-# - array：前 20 项 head，单项 ≤ 2KB（超大转 shape stub），整体 ≤ 6KB
+# - 顶层 array：前 20 项 head，单项 ≤ 2KB（超大转 shape stub），累计 ≤ 6KB
+# - value_preview 中的嵌套 array：前 3 项 head（用更紧的 cap），累计 ≤ 4KB；
+#   独立常量是为了不让 value_preview 在最坏情况撑爆 observation——top-level
+#   array head 6KB × 20 keys 会变 120KB，而 value_preview head 用 3-item/4KB
+#   能把同一脏 case 限制在 80KB 量级，仍保留每个 array 的"几条样本"信号
 # - 单字符串值上限 200 字符（截断后挂 value_truncated 标记）
 _READ_JSON_SIZE_LIMIT = 5 * 1024 * 1024
 _READ_JSON_OBJECT_KEYS_CAP = 50
 _READ_JSON_OBJECT_VALUE_PREVIEW_CAP = 20
 _READ_JSON_ARRAY_HEAD_CAP = 20
 _READ_JSON_ARRAY_HEAD_BYTES = 6 * 1024
+_READ_JSON_VALUE_PREVIEW_HEAD_CAP = 3
+_READ_JSON_VALUE_PREVIEW_HEAD_BYTES = 4 * 1024
 _READ_JSON_ITEM_BYTE_LIMIT = 2 * 1024
 _READ_JSON_STRING_VALUE_CAP = 200
 # read_doc keyword 模式上限（"全文返回所有匹配段落"——避免模型用 read_doc 串行翻页）：
@@ -198,33 +204,37 @@ def _truncate_string_value(text: str) -> tuple[str, bool]:
 
 
 def _summarize_value_for_preview(value: Any) -> Any:
-    """object.value_preview 的"浅层"摘要：标量原值；集合给 kind+基数；array 额外给 first_item。
+    """object.value_preview 的"浅层"摘要：标量原值；集合给 kind+基数；array 额外给 head 样本。
 
     与 inspect_files._summarize_json 形成 strict superset：
     - 标量给真实值（read_json 的核心增量价值），string 截断到 200 字符
     - object 仅返回 cardinality（key_count），不递归展开内部——避免 depth=∞ 风险
-    - array 返回 length + 第一个元素的样例（first_item），单 item > 2KB 走 shape stub
+    - array 返回与顶层 array 同形态的 `{kind, length, head, head_truncation, truncated}`，
+      但用更紧的 cap（前 3 项 / 累计 4KB）；单 item > 2KB 仍走 shape stub
 
-    array 暴露 first_item 是为了恢复 wrapper-object 形态（dataset 通用 `{table, records: [...]}`）
-    下"看一条记录长什么样"的能力——run 20260429T181710702941Z 显示 13 次 read_json 调用里 12
-    次 wrapper-object，旧实现通过字符串前缀 preview 展示了第一条 record 的字段，新结构化设计
-    若不暴露 first_item 会强制每次都先 read_json 再 execute_python 一次（多走一步）。
+    array 暴露 head 样本是为了：
+    (a) 恢复 wrapper-object 形态（dataset 通用 `{table, records: [...]}`）下"看几条记录长什么样"
+        的能力——run 20260429T181710702941Z 显示 13 次 read_json 调用里 12 次落到这种 shape
+    (b) 消除"顶层 array head[:20] vs 嵌套 array head[:1]"的 20× 取样不对称：3 条样本是异质性
+        / 排序信号检测的标准小样本，远比单条更有判断力
     """
     if isinstance(value, dict):
         return {"kind": "object", "key_count": len(cast(dict[Any, Any], value))}
     if isinstance(value, list):
         value_list = cast(list[Any], value)
-        result: dict[str, Any] = {"kind": "array", "length": len(value_list)}
-        if value_list:
-            first = value_list[0]
-            # 复用 array head 的单项 byte cap：first_item 序列化 > 2KB 时走 shape stub。
-            # 这样既给到 schema by example，又不让 value_preview 在病态深嵌套下爆炸。
-            serialized = json.dumps(first, ensure_ascii=False)
-            if len(serialized) > _READ_JSON_ITEM_BYTE_LIMIT:
-                result["first_item"] = _shape_stub_for_array_item(first)
-            else:
-                result["first_item"] = first
-        return result
+        length = len(value_list)
+        head, head_truncation = _array_head_with_caps(
+            value_list,
+            item_cap=_READ_JSON_VALUE_PREVIEW_HEAD_CAP,
+            aggregate_bytes=_READ_JSON_VALUE_PREVIEW_HEAD_BYTES,
+        )
+        return {
+            "kind": "array",
+            "length": length,
+            "head": head,
+            "head_truncation": head_truncation,
+            "truncated": length > len(head) or head_truncation is not None,
+        }
     if isinstance(value, str):
         truncated_text, was_truncated = _truncate_string_value(value)
         if was_truncated:
@@ -256,11 +266,19 @@ def _shape_stub_for_array_item(item: Any) -> dict[str, Any]:
     return {"kind": "scalar", "value_kind": type(item).__name__}
 
 
-def _array_head_with_caps(items: list[Any]) -> tuple[list[Any], str | None]:
-    """生成 array 的前 N 项预览，二级上限：单项 2KB + 累计 6KB。
+def _array_head_with_caps(
+    items: list[Any],
+    *,
+    item_cap: int = _READ_JSON_ARRAY_HEAD_CAP,
+    aggregate_bytes: int = _READ_JSON_ARRAY_HEAD_BYTES,
+) -> tuple[list[Any], str | None]:
+    """生成 array 的前 N 项预览，二级上限：单项 _READ_JSON_ITEM_BYTE_LIMIT + 累计 aggregate_bytes。
+
+    顶层 `kind=array` 用默认（20 项 / 6KB）；value_preview 中嵌套 array 用收紧的
+    （3 项 / 4KB）。共享同一段截断逻辑，避免两套实现漂移。
 
     返回 (head, head_truncation):
-    - head_truncation == "byte_cap"   累计字节超 6KB 提前停止
+    - head_truncation == "byte_cap"   累计字节超 aggregate_bytes 提前停止
     - head_truncation == "item_cap"   至少有一项被替换为 shape stub
     - head_truncation is None         全量内嵌、无截断
     """
@@ -268,12 +286,12 @@ def _array_head_with_caps(items: list[Any]) -> tuple[list[Any], str | None]:
     cumulative_bytes = 0
     item_cap_hit = False
     byte_cap_hit = False
-    for item in items[:_READ_JSON_ARRAY_HEAD_CAP]:
+    for item in items[:item_cap]:
         serialized = json.dumps(item, ensure_ascii=False)
         if len(serialized) > _READ_JSON_ITEM_BYTE_LIMIT:
             stub = _shape_stub_for_array_item(item)
             stub_bytes = len(json.dumps(stub, ensure_ascii=False))
-            if cumulative_bytes + stub_bytes > _READ_JSON_ARRAY_HEAD_BYTES and head:
+            if cumulative_bytes + stub_bytes > aggregate_bytes and head:
                 # stub 都塞不下：说明累计已经爆了，停止追加
                 byte_cap_hit = True
                 break
@@ -281,7 +299,7 @@ def _array_head_with_caps(items: list[Any]) -> tuple[list[Any], str | None]:
             cumulative_bytes += stub_bytes
             item_cap_hit = True
             continue
-        if cumulative_bytes + len(serialized) > _READ_JSON_ARRAY_HEAD_BYTES and head:
+        if cumulative_bytes + len(serialized) > aggregate_bytes and head:
             byte_cap_hit = True
             break
         head.append(item)
