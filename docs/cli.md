@@ -20,7 +20,7 @@ uv run dabench <subcommand> --config <path/to/config.yaml> [options]
 | `status` | Print project paths, dataset root, and public task counts. |
 | `inspect-task <task_id>` | Show task metadata and the file tree under `context/`. |
 | `run-task <task_id>` | Run the agent on a single task and write outputs. |
-| `run-benchmark` | Run the agent across the dataset (optionally `--limit N`). |
+| `run-benchmark` | Run the agent across the dataset (optionally `--limit N` and/or `--range S-E`). |
 
 All commands require `--config <path>`. The YAML is validated by Pydantic v2 on entry; a
 schema violation aborts with non-zero exit before any task runs.
@@ -39,6 +39,13 @@ uv run dabench run-task task_1 --config configs/react_baseline.local.yaml
 
 # Run the first 5 tasks
 uv run dabench run-benchmark --limit 5 --config configs/react_baseline.local.yaml
+
+# Run a contiguous task subset (inclusive on both ends)
+uv run dabench run-benchmark --range 5-10 --config configs/react_baseline.local.yaml
+uv run dabench run-benchmark --range task_5-task_10 --config configs/react_baseline.local.yaml
+
+# Combine: range filters first, then --limit truncates → runs task_2..task_4
+uv run dabench run-benchmark --range 2-8 --limit 3 --config configs/react_baseline.local.yaml
 ```
 
 ## Config schema

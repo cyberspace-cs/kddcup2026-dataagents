@@ -85,7 +85,7 @@ uv run dabench <command> --config PATH [options]
 | `status` | Show project paths, config path, dataset root, and public task counts. |
 | `inspect-task` | Show task metadata and list accessible files under `context/`. |
 | `run-task` | Run the agent on one task. |
-| `run-benchmark` | Run the agent across the dataset. Accepts `--limit N`. |
+| `run-benchmark` | Run the agent across the dataset. Accepts `--limit N` and `--range S-E`. |
 
 ## Tools
 

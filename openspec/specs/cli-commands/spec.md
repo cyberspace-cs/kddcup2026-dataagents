@@ -27,6 +27,22 @@ Every subcommand SHALL accept `--config <path>` and SHALL load + validate the YA
 - **WHEN** `run-benchmark --limit 2 --config <cfg>` runs against a dataset of 5 tasks
 - **THEN** the resulting `summary.json` contains exactly 2 task entries (the first two in natural order)
 
+### Requirement: `run-benchmark --range S-E` selects a task-id range
+
+`run-benchmark` SHALL accept `--range S-E` and process only tasks whose `task_<n>` number falls in `[S, E]` (both endpoints inclusive). Either endpoint MAY be given as a bare integer (`5`) or as a full task id (`task_5`); the two forms MAY be mixed. The range MAY combine with `--limit`: filtering by range MUST happen before truncation by `--limit`. A range that selects zero tasks SHALL exit non-zero with a parameter error rather than starting an empty run. Inverted (`S > E`), zero, or non-numeric endpoints SHALL exit non-zero with a parameter error.
+
+#### Scenario: Range 3-5 selects task_3..task_5
+- **WHEN** `run-benchmark --range 3-5 --config <cfg>` runs against a dataset of 10 tasks
+- **THEN** the resulting `summary.json` contains exactly 3 task entries (task_3, task_4, task_5)
+
+#### Scenario: Range combined with limit truncates after filtering
+- **WHEN** `run-benchmark --range 2-8 --limit 3 --config <cfg>` runs against a dataset of 10 tasks
+- **THEN** the resulting `summary.json` contains exactly 3 task entries (task_2, task_3, task_4)
+
+#### Scenario: Empty selection exits non-zero
+- **WHEN** `run-benchmark --range 100-200 --config <cfg>` runs against a dataset of 10 tasks
+- **THEN** the process exits non-zero with a message indicating zero tasks selected
+
 ### Requirement: Run-id resolution is deterministic given `--run-id`
 
 When `--run-id <X>` is supplied, the runner SHALL use `X` verbatim (after single-segment validation). When omitted, an auto-generated microsecond-precision UTC id is used.

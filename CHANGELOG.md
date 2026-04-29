@@ -34,6 +34,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Documentation reset.** New concise English-only docs under `docs/`:
   `architecture.md`, `cli.md`, `agent-protocol.md`, `development.md`. Each
   capability has a canonical spec under `openspec/specs/<name>/spec.md`.
+- **`run-benchmark --range S-E` task selector.** Filters by `task_<n>` number,
+  e.g. `--range 5-10` or `--range task_5-task_10` (both endpoints inclusive,
+  numeric / `task_<n>` forms mixable). Composes with `--limit`: range filters
+  first, then `--limit` truncates. Empty selection or inverted range exits
+  non-zero with a parameter error.
 
 ### Changed
 - **Configuration loader migrated to Pydantic v2.** `load_app_config` now validates
