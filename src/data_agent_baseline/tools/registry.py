@@ -290,8 +290,14 @@ def create_default_tool_registry() -> ToolRegistry:
         ToolDefinition(
             name="read_json",
             description=(
-                "Use when you need to preview a JSON file, confirm top-level fields, "
-                "or inspect sample structured records."
+                "Use when you need to preview a single JSON file: returns a "
+                "structured summary keyed by `kind` — `array` (length + first 20 "
+                "items), `object` (key_count + first 50 keys + value_preview for "
+                "first 20 keys), or `scalar` (the value). This is a SAMPLE "
+                "preview, not full data access. For nested field extraction, "
+                "filtering, cross-file joins, or deep traversal, use execute_python "
+                "instead. Files larger than 5MB are skipped; stream them via "
+                "execute_python with json.load."
             ),
             input_schema=ReadJsonInput.example_value(),
             json_schema=READ_JSON_SCHEMA,

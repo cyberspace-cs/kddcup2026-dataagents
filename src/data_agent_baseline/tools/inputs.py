@@ -88,17 +88,10 @@ class ReadJsonInput(BaseModel):
         str,
         _path_field(file_kind="JSON file", examples=("json/Patient.json", "zip_code.json")),
     ]
-    max_chars: Annotated[
-        int,
-        _positive_int_field(
-            default=4000,
-            description="Maximum number of characters to return from the JSON preview.",
-        ),
-    ]
 
     @classmethod
     def example_value(cls) -> dict[str, Any]:
-        return {"path": "relative/path/to/file.json", "max_chars": 4000}
+        return {"path": "relative/path/to/file.json"}
 
 
 class ReadDocInput(BaseModel):

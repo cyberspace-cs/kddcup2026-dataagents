@@ -75,10 +75,8 @@ def handle_read_csv(task: PublicTask, args: ReadCsvInput) -> ToolExecutionResult
 
 
 def handle_read_json(task: PublicTask, args: ReadJsonInput) -> ToolExecutionResult:
-    """`read_json`: 读取 JSON 并按字符数截断，默认 4000 字符。"""
-    return ToolExecutionResult(
-        ok=True, content=read_json_preview(task, args.path, max_chars=args.max_chars)
-    )
+    """`read_json`: 返回 JSON 的结构化预览（kind + length/keys + 浅层 value preview）。"""
+    return ToolExecutionResult(ok=True, content=read_json_preview(task, args.path))
 
 
 def handle_read_doc(task: PublicTask, args: ReadDocInput) -> ToolExecutionResult:

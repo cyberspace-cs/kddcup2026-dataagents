@@ -24,7 +24,7 @@ stability. See [`tool-registry` spec](../openspec/specs/tool-registry/spec.md).
 | `inspect_files` | _(none)_ | One-shot summary of every file under `context/`: columns, dtypes, row counts, table schemas. |
 | `read_csv` | `path` | CSV sample preview (schema + head 20 rows + tail 5 rows). |
 | `read_doc` | `path`, `start_line`, `line_count`, `keyword` | Paged text reader, optional keyword search. |
-| `read_json` | `path`, `max_chars` | JSON preview, truncated by character count. |
+| `read_json` | `path` | Structured JSON preview (kind + length/keys + sample values, 5MB guard). |
 | `inspect_sqlite_schema` | `path` | List tables and columns of a SQLite/DB file. |
 | `execute_context_sql` | `path`, `sql`, `limit` | Read-only SQL against a SQLite/DB file in `context/`. |
 | `execute_python` | `code` | Run arbitrary Python with cwd pinned to the task `context/`. |

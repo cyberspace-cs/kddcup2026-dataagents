@@ -81,6 +81,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Strict bool/int coercion.** YAML quoted booleans/integers (`"false"`, `"0"`,
   `"16384"`) are now rejected. Use unquoted YAML scalars (`false`, `0`, `16384`).
   The previous behavior silently flipped quoted bools (`bool("false") == True`).
+- **`read_json` becomes inspect-style.** The `max_chars` parameter is removed
+  (`extra='forbid'` rejects it). Output is now a structured `{kind, length |
+  key_count, head | keys + value_preview, truncated}` shape with a 5MB
+  filesystem guard, parallel to `read_csv`'s SAMPLE preview contract. Top-level
+  `array` length and `object` key_count are preserved even under truncation.
+  Callers needing nested extraction, filtering, or deep traversal must use
+  `execute_python` with `json.load`. Empirical motivation: 0/37 calls in the
+  reference build supplied a custom `max_chars`, while 73% of `read_json`
+  invocations were already followed by same-file `execute_python` (100% of
+  those were cross-file joins).
 
 ### Breaking (internal API only)
 - `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` moved from

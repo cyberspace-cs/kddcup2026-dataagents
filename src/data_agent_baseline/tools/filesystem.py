@@ -10,7 +10,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from data_agent_baseline.benchmark.schema import PublicTask
 
@@ -26,6 +26,18 @@ _INSPECT_FILES_DTYPE_SAMPLE = 5
 # 全量过滤/聚合一律走 execute_python，read_csv 只做 schema + sample。
 _READ_CSV_HEAD_ROWS = 20
 _READ_CSV_TAIL_ROWS = 5
+# read_json 预览的硬上限：
+# - 文件大小 5MB（与 _summarize_json 对齐；超出直接走 execute_python 流读）
+# - object：列前 50 个 keys + 前 20 个 keys 的浅层 value preview
+# - array：前 20 项 head，单项 ≤ 2KB（超大转 shape stub），整体 ≤ 6KB
+# - 单字符串值上限 200 字符（截断后挂 value_truncated 标记）
+_READ_JSON_SIZE_LIMIT = 5 * 1024 * 1024
+_READ_JSON_OBJECT_KEYS_CAP = 50
+_READ_JSON_OBJECT_VALUE_PREVIEW_CAP = 20
+_READ_JSON_ARRAY_HEAD_CAP = 20
+_READ_JSON_ARRAY_HEAD_BYTES = 6 * 1024
+_READ_JSON_ITEM_BYTE_LIMIT = 2 * 1024
+_READ_JSON_STRING_VALUE_CAP = 200
 # 文档类（md/txt）保留的预览行数。
 _INSPECT_FILES_DOC_HEAD_LINES = 3
 # inspect_files 识别的 sqlite 扩展名集合。
@@ -167,22 +179,173 @@ def read_csv_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
     }
 
 
-def read_json_preview(
-    task: PublicTask, relative_path: str, *, max_chars: int = 4000
-) -> dict[str, Any]:
-    """读取 JSON 并按字符数截断预览。
+def _truncate_string_value(text: str) -> tuple[str, bool]:
+    """对字符串型值做 200 字符上限截断；返回 (截断后字符串, 是否被截).
 
-    先 loads → dumps：一来验证 JSON 合法性，二来统一缩进让模型更易阅读。
-    ensure_ascii=False 保留中文原样字符，减少 token 消耗。
+    超长字符串值（descriptions / 长文本字段）会撑爆 observation；统一在此处把限。
+    上层只需要把 `value_truncated: True` 挂到对应字段，提示模型换 execute_python 细读。
+    """
+    if len(text) <= _READ_JSON_STRING_VALUE_CAP:
+        return text, False
+    return text[:_READ_JSON_STRING_VALUE_CAP], True
+
+
+def _summarize_value_for_preview(value: Any) -> Any:
+    """object.value_preview 的"浅层"摘要：标量原值；集合只给 kind+基数。
+
+    与 inspect_files._summarize_json 形成 strict superset：标量给真实值（read_json
+    的核心增量价值），string 截断到 200 字符；object/array 仅返回 cardinality
+    （key_count / length），不递归展开内部，避免 depth=∞ 风险。
+    """
+    if isinstance(value, dict):
+        return {"kind": "object", "key_count": len(cast(dict[Any, Any], value))}
+    if isinstance(value, list):
+        return {"kind": "array", "length": len(cast(list[Any], value))}
+    if isinstance(value, str):
+        truncated_text, was_truncated = _truncate_string_value(value)
+        if was_truncated:
+            return {"value": truncated_text, "value_truncated": True}
+        return truncated_text
+    # int / float / bool / None：原值返回
+    return value
+
+
+def _shape_stub_for_array_item(item: Any) -> dict[str, Any]:
+    """单 item > 2KB 时的占位形态：尽量保留结构线索而不携带原始内容。"""
+    if isinstance(item, dict):
+        keys: list[str] = list(cast(dict[str, Any], item).keys())
+        return {
+            "kind": "object",
+            "key_count": len(keys),
+            "keys": keys[:10],
+        }
+    if isinstance(item, list):
+        item_list = cast(list[Any], item)
+        first_kind: str | None = None
+        if item_list:
+            first_kind = type(item_list[0]).__name__
+        return {
+            "kind": "array",
+            "length": len(item_list),
+            "first_item_kind": first_kind,
+        }
+    return {"kind": "scalar", "value_kind": type(item).__name__}
+
+
+def _array_head_with_caps(items: list[Any]) -> tuple[list[Any], str | None]:
+    """生成 array 的前 N 项预览，二级上限：单项 2KB + 累计 6KB。
+
+    返回 (head, head_truncation):
+    - head_truncation == "byte_cap"   累计字节超 6KB 提前停止
+    - head_truncation == "item_cap"   至少有一项被替换为 shape stub
+    - head_truncation is None         全量内嵌、无截断
+    """
+    head: list[Any] = []
+    cumulative_bytes = 0
+    item_cap_hit = False
+    byte_cap_hit = False
+    for item in items[:_READ_JSON_ARRAY_HEAD_CAP]:
+        serialized = json.dumps(item, ensure_ascii=False)
+        if len(serialized) > _READ_JSON_ITEM_BYTE_LIMIT:
+            stub = _shape_stub_for_array_item(item)
+            stub_bytes = len(json.dumps(stub, ensure_ascii=False))
+            if cumulative_bytes + stub_bytes > _READ_JSON_ARRAY_HEAD_BYTES and head:
+                # stub 都塞不下：说明累计已经爆了，停止追加
+                byte_cap_hit = True
+                break
+            head.append(stub)
+            cumulative_bytes += stub_bytes
+            item_cap_hit = True
+            continue
+        if cumulative_bytes + len(serialized) > _READ_JSON_ARRAY_HEAD_BYTES and head:
+            byte_cap_hit = True
+            break
+        head.append(item)
+        cumulative_bytes += len(serialized)
+    truncation: str | None = None
+    if byte_cap_hit:
+        truncation = "byte_cap"
+    elif item_cap_hit:
+        truncation = "item_cap"
+    return head, truncation
+
+
+def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
+    """JSON 的 inspect-style 预览：返回结构化 `{kind, length|key_count, head|keys+value_preview}`。
+
+    与 `inspect_files._summarize_json` 形成 strict superset：
+    - object：列出前 50 个 keys + 前 20 个 keys 的浅层 value preview（标量原值；
+      集合给 cardinality 而不展开）
+    - array：前 20 项 head，单项 > 2KB 替换为 shape stub，累计 > 6KB 提前停止
+    - scalar：直接返回原值，字符串超 200 字符截断
+    - 文件 > 5MB：跳过 loads，返回 `kind="unknown" + skipped=True`，提示走 execute_python
+
+    与旧版 `preview` 字符串前缀截断的关键差异：array 的 length 与 object 的 key_count
+    永远不会被截断丢失——这两个数字是模型决定下一步（继续看还是切 execute_python）的核心。
     """
     path = resolve_context_path(task, relative_path)
+    size = path.stat().st_size
+    if size > _READ_JSON_SIZE_LIMIT:
+        return {
+            "path": relative_path,
+            "kind": "unknown",
+            "size": size,
+            "skipped": True,
+            "reason": "File exceeds 5MB; use execute_python with json.load to stream.",
+        }
     payload = json.loads(path.read_text())
-    preview = json.dumps(payload, ensure_ascii=False, indent=2)
+
+    if isinstance(payload, dict):
+        payload_dict = cast(dict[str, Any], payload)
+        keys: list[str] = list(payload_dict.keys())
+        key_count = len(keys)
+        listed_keys = keys[:_READ_JSON_OBJECT_KEYS_CAP]
+        # 显式按 keys[:20] 顺序构建 value_preview，保证 dict 插入顺序确定（CPython
+        # 3.7+ 默认即 insertion order，但写显式循环避免依赖隐式行为）。
+        value_preview: dict[str, Any] = {}
+        for key in keys[:_READ_JSON_OBJECT_VALUE_PREVIEW_CAP]:
+            value_preview[key] = _summarize_value_for_preview(payload_dict[key])
+        keys_truncated = key_count > _READ_JSON_OBJECT_KEYS_CAP
+        return {
+            "path": relative_path,
+            "kind": "object",
+            "key_count": key_count,
+            "keys": listed_keys,
+            "keys_truncated": keys_truncated,
+            "value_preview": value_preview,
+            # truncated 是"上游 observation 不完整"的统一信号，便于模型一眼识别要不要切 execute_python
+            "truncated": keys_truncated or key_count > _READ_JSON_OBJECT_VALUE_PREVIEW_CAP,
+        }
+
+    if isinstance(payload, list):
+        payload_list = cast(list[Any], payload)
+        length = len(payload_list)
+        head, head_truncation = _array_head_with_caps(payload_list)
+        truncated = length > len(head) or head_truncation is not None
+        return {
+            "path": relative_path,
+            "kind": "array",
+            "length": length,
+            "head": head,
+            "head_truncation": head_truncation,
+            "truncated": truncated,
+        }
+
+    # scalar（int / float / str / bool / None）：直接给原值，字符串过长截断
+    if isinstance(payload, str):
+        truncated_text, was_truncated = _truncate_string_value(payload)
+        result: dict[str, Any] = {
+            "path": relative_path,
+            "kind": "scalar",
+            "value": truncated_text,
+        }
+        if was_truncated:
+            result["value_truncated"] = True
+        return result
     return {
         "path": relative_path,
-        "preview": preview[:max_chars],
-        # truncated=True 提示模型需要换工具（execute_python）细读
-        "truncated": len(preview) > max_chars,
+        "kind": "scalar",
+        "value": payload,
     }
 
 
