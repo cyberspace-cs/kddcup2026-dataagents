@@ -33,46 +33,16 @@ The project exposes a Typer CLI through the `dabench` entrypoint (declared in `p
 uv run dabench status        --config configs/react_baseline.example.yaml
 uv run dabench inspect-task <task_id> --config <cfg>
 uv run dabench run-task     <task_id> --config <cfg>
-uv run dabench run-benchmark         --config <cfg> [--limit N]
+uv run dabench run-benchmark         --config <cfg> [--limit N] [--range S-E]
 ```
 
 **Do not** invoke via `uv run python -m data_agent_baseline.cli ...` — the Typer + module-runner interaction produces no output in this project.
 
-## 3. Git commit messages
+## 3. Code contribution rules — see [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)
 
-Follow **Conventional Commits + 50/72**, in **English**.
+That file is the canonical source for:
 
-**Format**
+- **Git commit messages** — Conventional Commits + 50/72, English-only, one logical change per commit.
+- **CHANGELOG maintenance** — what to record, what to skip, how to format entries, when releases promote `[Unreleased]`.
 
-```
-<type>(<scope>): <subject>          # imperative, ≤50 chars (hard max 72), no period
-                                    # ↑ blank line ↓ (only if a body exists)
-<body wrapped at 72 chars>          # optional; only when "why" is non-obvious
-```
-
-**Rules**
-
-- **Subject ≤50 chars** (hard max 72 including the `type(scope):` prefix). Imperative mood: `fix`, not `fixed` / `fixes`.
-- **Body only when it adds value** — explain *why* or a non-obvious trade-off, never restate the diff. Skip for renames, formatting, trivial fixes.
-- **One logical change per commit** — no `feat(a,b,c): X + Y + Z`. Split composite work.
-- **English only** for subject and body. Code comments/docstrings may stay in Chinese; intrinsic Chinese proper nouns (file paths, teammate names like 华/吴) may appear inline.
-- Valid `<type>`: `feat`, `fix`, `docs`, `refactor`, `style`, `test`, `chore`, `perf`, `ci`, `build`. Lowercase. `<scope>` optional.
-- Avoid vague subjects: `update stuff`, `misc`, `WIP`, `fix bug`.
-
-**Examples**
-
-Good:
-
-```
-refactor(tools): rename _schema_normalize to schema_normalize
-fix(runner): prevent zombie subprocess on timeout
-feat(agents): add token-bucket rate limiter
-```
-
-Bad:
-
-```
-feat(agents,tools,ui): align ... + debug UI + inspect_files     # >72 chars, 3 things in 1
-docs(baseline): 给全量源码添加中文注释                            # not English
-refactor: updated some files                                    # past tense + vague
-```
+The rules apply identically to human contributors and AI assistants. If a discrepancy ever arises between this file and `docs/CONTRIBUTING.md`, the latter wins.
