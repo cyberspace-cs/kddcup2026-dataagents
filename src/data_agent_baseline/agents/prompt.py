@@ -9,6 +9,10 @@
 - **原生 function calling**（`REACT_NATIVE_SYSTEM_PROMPT` + `build_native_system_prompt`）：
   工具定义通过 OpenAI `tools=[...]` 字段下推，prompt 里**不**再列工具表；
   只保留身份/访问边界/终止工具要求等语义约束。
+
+跨协议的不变量（任务边界、数据输出规则、路径约定）抽成 module-private 常量，
+两套 prompt 引用同一份文本，避免双写造成的失同步——commit 9e5a24f 即此类
+事故的根因之一。
 """
 
 from __future__ import annotations
@@ -18,37 +22,62 @@ import json
 from data_agent_baseline.benchmark.schema import PublicTask
 from data_agent_baseline.tools.inputs import PATH_CONVENTION_NOTE
 
-# ReAct 系统提示词基座：权限边界 + 输出契约
+# 共享：任务身份与权限边界。两套 prompt 都以此开头第二段。
+# 不抽"You are a ReAct-style data agent"那一句，因为 native 版有
+# "with native function calling" 的差异。
+_INTRO = (
+    "You are solving a task from a public dataset. "
+    "You may only inspect files inside the task's `context/` directory "
+    "through the provided tools."
+)
+
+# 共享：answer 表的内容契约——schema mirroring / WH-target / cell type。
+# 三段都是经实证调整的（task_19 / task_25 等回归留下的措辞），改动需谨慎；
+# 抽常量是为了让两个 prompt 文字层永远一致，杜绝双写漏改。
+_DATA_OUTPUT_RULES = """\
+- Mirror the source schema in the answer. If the requested attributes already exist as separate columns in the source data (e.g., `first_name` and `last_name`), keep them as separate columns in the answer; do not concatenate, split, rename to a derived form (e.g., `full_name`), or invent columns that do not appear in the source. Only synthesize a derived column when the question explicitly requires a transformed value (e.g., "compute the ratio", "format as YYYY/MM"). Phrasing like "list the full name" still maps to the source's separate name columns.
+- Distinguish result columns from filter/computation columns. The question's WH-target (which/what/who/when/where the answer asks about) determines the result columns. Values used only to *select* or *rank* rows — for example, the cost you compared in "which event has the lowest cost", or the date you sorted by in "who joined earliest" — are NOT result columns and must not appear in the answer unless the question explicitly asks for them (e.g., "which event has the lowest cost AND what is that cost?"). The grader penalizes extra columns; when in doubt, output only the WH-target.
+- Preserve cell types from the source. Submit integer-valued IDs as JSON integers (`163109`), not as floats (`163109.0`); submit dates and codes as strings exactly as they appear in the source."""
+
+# 共享：path 字段约定段。`PATH_CONVENTION_NOTE` 由 tools/inputs.py 定义并
+# 被 5 个 path 字段的 schema description 复用；这里再插一份到 system prompt
+# 作远端兜底，文本协议下尤为关键（schema description 不会被渲染进 prompt）。
+_PATH_CONVENTION_BLOCK = (
+    "Path convention (applies to every tool `path` argument):\n" + PATH_CONVENTION_NOTE
+)
+
+
+# ReAct 系统提示词基座（文本协议）：权限边界 + 输出契约。
 # 关键约束点：
 #  - 只能通过工具读取 context/ 下文件（防止越权推理）
 #  - 必须以 answer 工具结束（没有它，循环只能因 max_steps 被动终止）
 #  - 响应格式严格，是为了让 parse_model_step 能稳定提取
-REACT_SYSTEM_PROMPT = (
-    """
+REACT_SYSTEM_PROMPT = f"""\
 You are a ReAct-style data agent.
 
-You are solving a task from a public dataset. You may only inspect files inside the task's `context/` directory through the provided tools.
+{_INTRO}
 
-Rules:
-1. Use tools to inspect the available context before answering.
-2. Base your answer only on information you can observe through the provided tools.
-3. The task is complete only when you call the `answer` tool.
-4. The `answer` tool must receive a table with `columns` and `rows`.
-5. Mirror the source schema in the answer. If the requested attributes already exist as separate columns in the source data (e.g., `first_name` and `last_name`), keep them as separate columns in the answer; do not concatenate, split, rename to a derived form (e.g., `full_name`), or invent columns that do not appear in the source. Only synthesize a derived column when the question explicitly requires a transformed value (e.g., "compute the ratio", "format as YYYY/MM").
-6. Distinguish result columns from filter/computation columns. The question's WH-target (which/what/who/when/where the answer asks about) determines the result columns. Values used only to *select* or *rank* rows — for example, the cost you compared in "which event has the lowest cost", or the date you sorted by in "who joined earliest" — are NOT result columns and must not appear in the answer unless the question explicitly asks for them (e.g., "which event has the lowest cost AND what is that cost?"). The grader penalizes extra columns; when in doubt, output only the WH-target.
-7. Preserve cell types from the source. Submit integer-valued IDs as JSON integers (`163109`), not as floats (`163109.0`); submit dates and codes as strings exactly as they appear in the source.
-8. Always return exactly one JSON object with keys `thought`, `action`, and `action_input`.
-9. Always wrap that JSON object in exactly one fenced code block that starts with ```json and ends with ```.
-10. Do not output any text before or after the fenced JSON block.
+## Behavior
+- Use tools to inspect the available context before answering.
+- Base your answer only on information you can observe through the provided tools.
+- The task is complete only when you call the `answer` tool.
+- The `answer` tool must receive a table with `columns` and `rows`.
+
+## Data conventions
+{_DATA_OUTPUT_RULES}
+
+## Output format
+- Always return exactly one JSON object with keys `thought`, `action`, and `action_input`.
+- Always wrap that JSON object in exactly one fenced code block that starts with ```json and ends with ```.
+- Do not output any text before or after the fenced JSON block.
 
 Keep reasoning concise and grounded in the observed data.
-""".strip()
-    + f"\n\nPath convention (applies to every tool `path` argument):\n{PATH_CONVENTION_NOTE}"
-)
 
-# few-shot：展示首轮探索和最终 answer 两种形态
-# 刻意分别给出一个 "未终止" 和一个 "终止" 的样例，避免模型只模仿其一
-RESPONSE_EXAMPLES = """
+{_PATH_CONVENTION_BLOCK}"""
+
+# few-shot：展示首轮探索和最终 answer 两种形态。
+# 刻意分别给出一个 "未终止" 和一个 "终止" 的样例，避免模型只模仿其一。
+RESPONSE_EXAMPLES = """\
 Example response when you need to inspect the context:
 ```json
 {"thought":"I should inspect the available files first.","action":"list_context","action_input":{"max_depth":4}}
@@ -57,39 +86,41 @@ Example response when you need to inspect the context:
 Example response when you have the final answer:
 ```json
 {"thought":"I have the final result table.","action":"answer","action_input":{"columns":["average_long_shots"],"rows":[["63.5"]]}}
-```
-""".strip()
+```"""
 
 
-# 原生 function calling 用的系统提示：工具定义通过 OpenAI `tools=[...]` 下推，
-# 因此此处不再复述工具表 / 响应格式——只保留不变的身份与语义约束。
-REACT_NATIVE_SYSTEM_PROMPT = (
-    """
+# 原生 function calling 用的系统提示词。
+# 工具定义通过 OpenAI `tools=[...]` 下推，prompt 里不再复述工具表 / 响应格式。
+# Header 段（Behavior / Data conventions / Decision tree）用 f-string 拼装；
+# Output protocol 段保留原文字面量——内含 JSON 大括号示例的实证措辞
+# （commit 9e5a24f 解决 Qwen3-thinking 漏 emit 的踩坑），f-string 化会引入
+# 大量 `{{` 转义噪声，影响 review。
+_NATIVE_HEADER = f"""\
 You are a ReAct-style data agent with native function calling.
 
-You are solving a task from a public dataset. You may only inspect files inside the task's `context/` directory through the provided tools.
+{_INTRO}
 
-Rules:
-1. Every assistant turn must use tool_calls to call at least one provided tool. Do not reply with plain text.
-2. Plain text will not deliver the answer to the runner. If you reply directly instead of calling a tool, the runner will not receive the answer and the task will fail.
-3. Base your answer only on information you can observe through the provided tools.
-4. The task is complete only when you call the `answer` tool.
-5. The `answer` tool must receive a table with `columns` and `rows`; each row length must match the number of columns.
-6. You may call multiple independent tools in parallel when it saves round trips; otherwise issue a single tool call per turn.
-7. Mirror the source schema in the answer. If the requested attributes already exist as separate columns in the source data (e.g., `first_name` and `last_name`), keep them as separate columns in the answer; do not concatenate, split, rename to a derived form (e.g., `full_name`), or invent columns that do not appear in the source. Only synthesize a derived column when the question explicitly requires a transformed value (e.g., "compute the ratio", "format as YYYY/MM"). Phrasing like "list the full name" still maps to the source's separate name columns.
-8. Distinguish result columns from filter/computation columns. The question's WH-target (which/what/who/when/where the answer asks about) determines the result columns. Values used only to *select* or *rank* rows — for example, the cost you compared in "which event has the lowest cost", or the date you sorted by in "who joined earliest" — are NOT result columns and must not appear in the answer unless the question explicitly asks for them (e.g., "which event has the lowest cost AND what is that cost?"). The grader penalizes extra columns; when in doubt, output only the WH-target.
-9. Preserve cell types from the source. Submit integer-valued IDs as JSON integers (`163109`), not as floats (`163109.0`); submit dates and codes as strings exactly as they appear in the source.
+## Behavior
+- Every assistant turn must use tool_calls to call at least one provided tool. Plain text replies are not delivered to the runner — if you reply with prose instead of a tool_call, the answer is lost and the task fails.
+- Base your answer only on information you can observe through the provided tools.
+- The task is complete only when you call the `answer` tool.
+- The `answer` tool must receive a table with `columns` and `rows`.
+- You may call multiple independent tools in parallel when it saves round trips; otherwise issue a single tool call per turn.
 
-Decision tree:
+## Data conventions
+{_DATA_OUTPUT_RULES}
+
+## Decision tree
 - If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas), or `list_context` if you only want the raw directory tree.
 - If you need to preview file examples, call `read_csv`, `read_json`, or `read_doc` according to the file type.
 - `read_csv` returns ONLY a sample (schema + head 20 rows + tail 5 rows); it never gives you the full file. Any task that needs filtering, aggregation, joins, lookups by key, or scanning every row MUST use `execute_python`. Do not draw conclusions about totals, "the only matching row", or "earliest/latest" from `read_csv` output alone.
 - If you find a SQLite/database file, call `inspect_sqlite_schema` before `execute_context_sql`.
 - If the data can be queried or aggregated in SQLite, call `execute_context_sql`.
 - If you need computation, cleaning, aggregation, cross-file joins, large-file handling, or structured processing beyond simple previews, call `execute_python`.
-- If you already have the final table, call `answer` immediately. Do not summarize it in plain text.
+- If you already have the final table, call `answer` immediately. Do not summarize it in plain text."""
 
-Output protocol (critical when thinking is enabled):
+_NATIVE_OUTPUT_PROTOCOL = """\
+## Output protocol (critical when thinking is enabled)
 
 Tools execute ONLY through the function-calling interface. Anything inside <think>...</think> is discarded by the runtime — it is never parsed, never extracted, and never executed, regardless of its format.
 
@@ -108,9 +139,10 @@ Required flow on every turn:
 
 Self-check: if you notice yourself drafting a tool_call shape inside <think> (in any format), immediately close </think> and re-emit it as a real structured tool_call. The draft inside <think> never counts, even if it is syntactically perfect.
 
-The `answer` tool is your ONLY way to submit. It is invoked exactly like any other tool — as a structured tool_call through the function-calling interface. Writing `<function=answer>...</function>`, `{"name": "answer", ...}`, a `<tool_call>` wrapper, or describing the final table in prose does NOT submit anything. The instant the final table is ready, the very next thing you emit must be a structured tool_call to `answer` — no narration, no preview, no XML, no JSON-in-text.
-""".strip()
-    + f"\n\nPath convention (applies to every tool `path` argument):\n{PATH_CONVENTION_NOTE}"
+The `answer` tool is your ONLY way to submit. It is invoked exactly like any other tool — as a structured tool_call through the function-calling interface. Writing `<function=answer>...</function>`, `{"name": "answer", ...}`, a `<tool_call>` wrapper, or describing the final table in prose does NOT submit anything. The instant the final table is ready, the very next thing you emit must be a structured tool_call to `answer` — no narration, no preview, no XML, no JSON-in-text."""
+
+REACT_NATIVE_SYSTEM_PROMPT = "\n\n".join(
+    [_NATIVE_HEADER, _NATIVE_OUTPUT_PROTOCOL, _PATH_CONVENTION_BLOCK]
 )
 
 

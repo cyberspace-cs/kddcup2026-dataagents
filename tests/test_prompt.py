@@ -25,13 +25,21 @@ def _task(tmp_path: Path) -> PublicTask:
 
 
 def test_native_system_prompt_requires_tool_calls() -> None:
+    """Behavior 段的核心契约：必须 tool_calls + 纯文本不送达。
+
+    旧版 prompt 把这两点拆成 Rule 1 / Rule 2 同义复述；现已合并为一条。
+    """
     prompt = build_native_system_prompt()
     lower = prompt.lower()
 
+    # 必须用 tool_calls 调用至少一个工具
     assert "must use tool_calls" in lower
-    assert "do not reply with plain text" in lower
-    assert "plain text will not deliver the answer" in lower
-    assert "each row length must match the number of columns" in lower
+    # 纯文本不会送达 runner（合并后的措辞）
+    assert "plain text replies are not delivered to the runner" in lower
+    assert "the answer is lost and the task fails" in lower
+
+    # row-length 校验由 `AnswerInput` Pydantic schema 兜底，不再在 prompt 里复述
+    assert "each row length must match" not in lower
 
 
 def test_native_system_prompt_keeps_tool_calls_out_of_reasoning() -> None:
@@ -106,7 +114,7 @@ def test_system_prompts_carry_path_convention() -> None:
     """两套 system prompt 都必须显式声明 path 字段约定。
 
     路径约定是跨任务不变量；上移到 system prompt 后，user prompt 不再重复。
-    `_PATH_CONVENTION_NOTE`（tools/inputs.py）作为单一真相源，
+    `PATH_CONVENTION_NOTE`（tools/inputs.py）作为单一真相源，
     分别在 system prompt 与 5 个 path 字段 schema description 中复用。
     """
     from data_agent_baseline.tools.inputs import PATH_CONVENTION_NOTE
@@ -117,6 +125,38 @@ def test_system_prompts_carry_path_convention() -> None:
     ):
         assert "Path convention" in prompt
         assert PATH_CONVENTION_NOTE in prompt
+
+
+def test_system_prompts_share_grouped_sections() -> None:
+    """两套 system prompt 都用 `## <section>` 分组，模型 attention 可按段 routing。"""
+    text_prompt = build_system_prompt("- list_context: Use first to inspect context.")
+    native_prompt = build_native_system_prompt()
+
+    # 两协议共有的段落
+    for section in ("## Behavior", "## Data conventions"):
+        assert section in text_prompt
+        assert section in native_prompt
+
+    # text-only 段落
+    assert "## Output format" in text_prompt
+    # native-only 段落
+    assert "## Decision tree" in native_prompt
+    assert "## Output protocol" in native_prompt
+
+
+def test_system_prompts_share_data_conventions_text() -> None:
+    """`## Data conventions` 段在两个 prompt 必须字面一致——单一真相源。
+
+    回归保护：commit 9e5a24f 等历史事故都源于"两个 prompt 各写一遍数据规则、
+    改一处漏一处"。本测试通过共享常量 `_DATA_OUTPUT_RULES` 强制两份输出一致。
+    """
+    from data_agent_baseline.agents.prompt import _DATA_OUTPUT_RULES
+
+    text_prompt = build_system_prompt("- list_context: Use first to inspect context.")
+    native_prompt = build_native_system_prompt()
+
+    assert _DATA_OUTPUT_RULES in text_prompt
+    assert _DATA_OUTPUT_RULES in native_prompt
 
 
 def test_text_system_prompt_keeps_text_protocol_contract() -> None:
