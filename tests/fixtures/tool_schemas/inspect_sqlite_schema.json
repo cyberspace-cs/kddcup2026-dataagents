@@ -1,6 +1,6 @@
 {
   "function": {
-    "description": "Use first when you find a sqlite/db file and need to know its tables, columns, and schema before writing SQL.",
+    "description": "Use first when you find a sqlite/db file (`.db` / `.sqlite` / `.sqlite3`) and need to know its tables, columns, and schema before writing SQL. do NOT call on `.csv` / `.json` / `.md` / `.txt` paths.",
     "name": "inspect_sqlite_schema",
     "parameters": {
       "additionalProperties": false,

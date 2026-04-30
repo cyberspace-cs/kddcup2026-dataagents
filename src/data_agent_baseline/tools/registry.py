@@ -312,8 +312,19 @@ def create_default_tool_registry() -> ToolRegistry:
         ToolDefinition(
             name="inspect_sqlite_schema",
             description=(
-                "Use first when you find a sqlite/db file and need to know its "
-                "tables, columns, and schema before writing SQL."
+                "Use first when you find a sqlite/db file (`.db` / `.sqlite` / "
+                "`.sqlite3`) and need to know its tables, columns, and schema "
+                "before writing SQL. "
+                # 回归 run 20260430-013 task_16 类故障：模型对 `csv/trans.csv` 调
+                # execute_context_sql。OpenAI tools[].description 在 native function
+                # calling 下 attention 高于 system prompt 中的 Decision-tree bullet，
+                # 所以 do-NOT 必须落在 description 才能可靠覆盖 routing 偏置。
+                # 失败签名 + 备选工具路由不在此处复述：由 sqlite.py 的
+                # `_maybe_raise_non_sqlite_path_error` 在违规时翻译成 observation.error
+                # 下发——description 只负责"预防"，运行时负责"纠正"，分工互补，避免
+                # 在 description 里维护两套独立的扩展名→工具映射（已踩过两段措辞不
+                # 一致的坑）。
+                "do NOT call on `.csv` / `.json` / `.md` / `.txt` paths."
             ),
             input_schema=InspectSqliteSchemaInput.example_value(),
             json_schema=INSPECT_SQLITE_SCHEMA,
@@ -322,9 +333,12 @@ def create_default_tool_registry() -> ToolRegistry:
         ToolDefinition(
             name="execute_context_sql",
             description=(
-                "Use when data in a sqlite/db file can be answered with read-only SQL "
-                "queries or aggregations. Call inspect_sqlite_schema first for an "
-                "unknown database."
+                "Use when data in a sqlite/db file (`.db` / `.sqlite` / `.sqlite3`) "
+                "can be answered with read-only SQL queries or aggregations. Call "
+                "inspect_sqlite_schema first for an unknown database. "
+                # 同 inspect_sqlite_schema：description 仅 do-NOT 预防，
+                # 失败签名 + 备选工具路由由 sqlite.py 运行时翻译。
+                "do NOT call on `.csv` / `.json` / `.md` / `.txt` paths."
             ),
             input_schema=ExecuteContextSqlInput.example_value(),
             json_schema=EXECUTE_CONTEXT_SQL_SCHEMA,
@@ -333,22 +347,25 @@ def create_default_tool_registry() -> ToolRegistry:
         ToolDefinition(
             name="execute_python",
             description=(
-                "Use when you need computation, cleaning, aggregation, cross-file "
-                "joins, large-file streaming, structured processing, or anything "
-                "beyond simple preview tools. Python runs with the task context "
-                "directory as the working directory and returns captured stdout as `output`. "
+                "Use when you need computation, aggregation, cross-file joins, or "
+                "large-file scans beyond the preview tools. Working directory: the "
+                "task context dir; stdout returns as `output`. "
                 # 动态把超时秒数写进描述，避免改常量后忘记更新文案
-                f"The execution timeout is fixed at {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds. "
-                # pandas / numpy / pyarrow / polars / openpyxl 都已在 runtime image 内；模型默认走 csv
-                # stdlib 时（trace 见 task_8 in run 20260429T210729531308Z）容易把"列出全 10 列源 schema"
-                # 当作路径最阻力小的写法，从而漏掉 WH-target column projection
-                "For tabular work (filtering, aggregation, projection, cross-file joins), "
-                "use `pandas`: `df[df['col'] == ...]` and `df[['target_col']]` make "
-                "WH-target column selection idiomatic, types are preserved automatically "
-                "(no manual `int()`/`float()` casts), and `df.head()` / `df.dtypes` "
-                "print the verification snapshot in one line. Available libs include "
-                "pandas, numpy, pyarrow, polars, openpyxl. The `csv` module is fine only "
-                "for trivial reads (a handful of rows)."
+                f"Timeout: {EXECUTE_PYTHON_TIMEOUT_SECONDS} s per call. "
+                # `_DATA_OUTPUT_RULES` 的 pandas 强制只覆盖 30+rows / 200+cells 的 artifact 写入路径；
+                # 小答案与读路径不在它的覆盖里，这里的"default to pandas"是补这个独家信号。
+                # WH-target / 三段式投影 / cell-type 保真等细则不再复述（_DATA_OUTPUT_RULES 已写明）。
+                "Default to `pandas` for tabular work — projections, filters, and "
+                "joins are idiomatic and types are preserved automatically. "
+                "Available libs: pandas, numpy, pyarrow, polars, openpyxl. "
+                "The `csv` module is fine only for trivial reads (a handful of rows). "
+                # 回归 run 20260430-013 task_16：模型先试 pd.read_sql_query(q, "sqlite:///...")
+                # 吃 ImportError 再回落到 sqlite3.connect。SQLAlchemy 不在 runtime image 内，
+                # URI 形式永远不可达——`do NOT` 框定行为反向，消除"先尝试再 fallback"的浪费步。
+                "For `.db` / `.sqlite` files, use `sqlite3.connect(path)` + "
+                '`pd.read_sql_query(query, conn)`; do NOT try the pandas URI form '
+                '(`"sqlite:///..."`) — SQLAlchemy is not installed and it fails '
+                "with `ImportError`."
             ),
             input_schema=ExecutePythonInput.example_value(),
             json_schema=EXECUTE_PYTHON_SCHEMA,

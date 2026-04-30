@@ -1,6 +1,6 @@
 {
   "function": {
-    "description": "Use when data in a sqlite/db file can be answered with read-only SQL queries or aggregations. Call inspect_sqlite_schema first for an unknown database.",
+    "description": "Use when data in a sqlite/db file (`.db` / `.sqlite` / `.sqlite3`) can be answered with read-only SQL queries or aggregations. Call inspect_sqlite_schema first for an unknown database. do NOT call on `.csv` / `.json` / `.md` / `.txt` paths.",
     "name": "execute_context_sql",
     "parameters": {
       "additionalProperties": false,

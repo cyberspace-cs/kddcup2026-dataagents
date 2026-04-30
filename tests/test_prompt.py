@@ -132,6 +132,35 @@ def test_native_system_prompt_warns_execute_python_is_stateless() -> None:
     assert "combine read + filter + projection + verification into one call" in lower
 
 
+def test_execute_python_tool_description_pins_sqlite_in_python_idiom() -> None:
+    """`.db` 文件在 `execute_python` 里必须 sqlite3.connect + pd.read_sql_query。
+
+    回归 run 20260430-013 task_16：模型先试 `pd.read_sql_query(q, "sqlite:///...")`
+    吃 ImportError，下一步才回落到 `sqlite3.connect`。本环境不安装 SQLAlchemy，
+    URI 形式永远不可达——`do NOT` 反向框定行为，消除"先尝试再 fallback"的浪费步。
+
+    规则只落在 `ToolDefinition.description`（不在 prompt.py Decision tree
+    里复述），因为该字段经两条通道**每轮**下发：
+      - 文本协议的 `Available tools` 列表（经 `describe_for_prompt`）
+      - 原生 function calling 的 `tools=[...]` schema 的 `description` 字段
+    既然每轮必到，就没有"漏发"的失败模式，prompt 里再写一份只是冗余。
+    """
+    from data_agent_baseline.tools.registry import create_default_tool_registry
+
+    desc = create_default_tool_registry().definitions["execute_python"].description
+    lower = desc.lower()
+
+    # 推荐路径：sqlite3 连接对象 + pandas 读
+    assert "sqlite3.connect(path)" in desc
+    assert "pd.read_sql_query(query, conn)" in desc
+    # 反向框定 + 失败原因：URI 形式 + SQLAlchemy 未安装 + ImportError
+    assert "do not try the pandas uri form" in lower
+    assert "sqlite:///" in lower
+    assert "sqlalchemy" in lower
+    assert "not installed" in lower
+    assert "importerror" in lower
+
+
 def test_native_system_prompt_enforces_format_tolerance() -> None:
     """题/数格式不一致时按最粗共有形截断/归一匹配。
 
@@ -139,10 +168,16 @@ def test_native_system_prompt_enforces_format_tolerance() -> None:
     `1:54.455` 死磕字面相等，找不到匹配后又把"closest numeric match"
     当兜底，错选 number=44。
 
-    保留 format tolerance 一条；曾经一并写过的 "singular tolerance"
-    实测（run 008/010/011/012 共四轮）无效——模型每次都能围绕"the X
-    单数 → 挑较好的一个"合理化绕过任何禁令措辞，所以删除以减少 prompt
-    噪声。Singular 引发的多行答案目前作为已知 model-capability 边界。
+    2026-04-30 调整：规则从 `## Decision tree` 段（routing 信号）搬到
+    `_DATA_OUTPUT_RULES`（数据规约）。Decision tree 里其余 8 条都是
+    "If X → call Y" 的工具路由，混入值比较规则会稀释路由 attention；
+    迁到 `_DATA_OUTPUT_RULES` 后还顺带让文本协议首次拿到这条防护
+    （Decision tree 是 `_NATIVE_HEADER` 独享段，文本协议看不到）。
+
+    曾经一并写过的 "singular tolerance" 实测（run 008/010/011/012 共四轮）
+    无效——模型每次都能围绕"the X 单数 → 挑较好的一个"合理化绕过任何禁令
+    措辞，所以删除以减少 prompt 噪声。Singular 引发的多行答案目前作为
+    已知 model-capability 边界。
     """
     prompt = build_native_system_prompt()
     lower = prompt.lower()
@@ -152,6 +187,23 @@ def test_native_system_prompt_enforces_format_tolerance() -> None:
     assert "normalize or truncate" in lower
     assert "coarsest shared form" in lower
     # 不允许"closest numeric match"作为字面不匹配的兜底
+    assert 'do not fall back to "closest numeric match"' in lower
+
+
+def test_text_system_prompt_enforces_format_tolerance() -> None:
+    """文本协议同样需要 format tolerance 防护。
+
+    迁移前文本协议完全没有这条规则（Decision tree 是 `_NATIVE_HEADER`
+    独享段）。规则现在落在 `_DATA_OUTPUT_RULES`，两协议共享，
+    `test_system_prompts_share_data_conventions_text` 已锁定字面一致；
+    本测试是面向规则本身的语义钉子，删常量也能立刻定位回归点。
+    """
+    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    lower = prompt.lower()
+
+    assert "format tolerance" in lower
+    assert "normalize or truncate" in lower
+    assert "coarsest shared form" in lower
     assert 'do not fall back to "closest numeric match"' in lower
 
 
