@@ -204,7 +204,7 @@ def _parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], l
     return header, typed, dtypes
 
 
-def handle_answer(_task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
+def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
     """`answer`: 终止工具，提交最终答案表。
 
     两种入参分支由 `AnswerInput._check_payload` 互斥强制：
@@ -212,7 +212,12 @@ def handle_answer(_task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
     - artifact (`from_csv`)：handler 读取磁盘 CSV → 列级 dtype 推断 → cell 强转 →
       构 AnswerTable；任何 IO/格式/越界错误以 `ValueError` 上抛，dispatcher 翻译成
       `ToolErrorEvent`，ReAct 循环续跑让模型 retry
+
+    提交成功路径上会清理 `_answer/answer.csv`：模型在 `execute_python` 里写出的
+    artifact 此时已被 `_parse_answer_csv` 全量读入内存（或 inline 路径压根没用到），
+    保留磁盘文件只会污染输入树（曾被误读为参考答案）。任一返回前 unlink 一次即可。
     """
+    artifact_path = task.task_dir / "_answer" / "answer.csv"
     if args.from_csv is not None:
         path = pathlib.Path(args.from_csv).expanduser()
         if not path.is_absolute():
@@ -225,6 +230,9 @@ def handle_answer(_task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
             )
         columns, rows, dtypes = _parse_answer_csv(path)
         answer = AnswerTable(columns=columns, rows=rows)
+        # 优先 unlink 模型实际提交的那份；artifact_path 兜底（万一二者不一致）
+        path.unlink(missing_ok=True)
+        artifact_path.unlink(missing_ok=True)
         return ToolExecutionResult(
             ok=True,
             content={
@@ -246,6 +254,8 @@ def handle_answer(_task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
     columns = list(args.columns)
     rows = [list(row) for row in args.rows]
     answer = AnswerTable(columns=columns, rows=rows)
+    # 即便走 inline，模型可能先写过 _answer/answer.csv 再切回 inline，残留同样要清掉
+    artifact_path.unlink(missing_ok=True)
     return ToolExecutionResult(
         ok=True,
         content={

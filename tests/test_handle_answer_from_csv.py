@@ -292,3 +292,49 @@ def test_from_csv_missing_file_hint_messages_are_actionable(
         handle_answer(task, args)
 
     assert str(tmp_path / "nope.csv") in str(exc_info.value)
+
+
+# ----- 补充：成功提交后 artifact 自动清理（避免污染输入树） -----
+
+
+def test_from_csv_unlinks_artifact_after_successful_submission(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """模型提交成功后，from_csv 指向的 CSV 必须被删除。
+
+    输入树污染回归：曾出现 `data/public/input/task_*/_answer/answer.csv` 残留，
+    造成离线分析时把它误读成"项目自带参考答案"。失败路径不在本测试覆盖范围，
+    那里保留文件让 ReAct 循环 retry 时 to_csv 直接覆盖更稳。
+    """
+    csv_path = _write(
+        tmp_path / "_answer" / "answer.csv",
+        "id,name\n1,alpha\n2,beta\n",
+    )
+    assert csv_path.exists()
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = handle_answer(task, args)
+
+    assert result.ok is True
+    assert not csv_path.exists()
+
+
+def test_inline_submission_clears_stale_answer_artifact(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """走 inline 也清理 `task.task_dir/_answer/answer.csv`。
+
+    场景：模型先用 execute_python 写出 _answer/answer.csv，但最终决定换 inline
+    提交（例如 row count 缩水后切回 inline 更省 token）。残留文件必须一起清，
+    否则下一次离线分析又会把它误当"参考答案"读入。
+    """
+    stale = task.task_dir / "_answer" / "answer.csv"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("id\n999\n", encoding="utf-8")
+    assert stale.exists()
+
+    args = AnswerInput.model_validate({"columns": ["id"], "rows": [[1], [2]]})
+    result = handle_answer(task, args)
+
+    assert result.ok is True
+    assert not stale.exists()
