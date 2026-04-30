@@ -1,6 +1,6 @@
 {
   "function": {
-    "description": "Use when you need to preview a single JSON file: returns a structured summary keyed by `kind` — `array` (length + first 20 items), `object` (key_count + first 50 keys + value_preview for first 20 keys), or `scalar` (the value). This is a SAMPLE preview, not full data access. For nested field extraction, filtering, cross-file joins, or deep traversal, use execute_python instead. Files larger than 5MB are skipped; stream them via execute_python with json.load.",
+    "description": "Use when you need to preview a single JSON file: returns a structured summary keyed by `kind` — `array` (length + first 20 items), `object` (key_count + first 50 keys + value_preview for first 20 keys), or `scalar` (the value). This is a SAMPLE preview, not full data access. For nested field extraction, filtering, cross-file joins, or deep traversal, use execute_python instead. Files larger than 100MB return a streamed schema (`kind` + `keys` + `sample_value_kinds` for object; `length` + `first_item_kind` for array) without full load.",
     "name": "read_json",
     "parameters": {
       "additionalProperties": false,

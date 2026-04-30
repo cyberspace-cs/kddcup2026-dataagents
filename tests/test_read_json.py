@@ -5,7 +5,7 @@
 - object → keys + key_count + 浅层 value_preview（标量原值；集合给 cardinality 不展开）。
 - array → length + 前 20 项 head（单项 ≤ 2KB 走 shape stub；累计 ≤ 6KB）。
 - scalar → 原值（字符串截断到 200 字符）。
-- 文件 > 5MB → kind=unknown + skipped=True，提示走 execute_python。
+- 文件 > 100MB → 走 ijson 流式抽取，返回 streamed=True + 与 full-load 同名字段。
 - 不再有 `max_chars` 字段；`extra="forbid"` 在 ToolRegistry.execute 边界处直接拒绝。
 """
 
@@ -151,24 +151,74 @@ def test_empty_object(tmp_path: Path) -> None:
     assert out["truncated"] is False
 
 
-def test_oversized_file_short_circuits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """文件 > 5MB：跳过 loads，返回 skipped=True + reason 引导走 execute_python。
+def test_oversized_file_returns_streamed_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """文件超过 load cap：走 ijson 流式 schema 抽取，返回 streamed=True + 真实 keys/key_count。
 
-    monkeypatch 把 size limit 调到 100 字节，避免实际写 5MB 文件拖慢测试。
+    monkeypatch 把 size limit 调到 100 字节，避免实际写 100MB 文件拖慢测试。
+    旧契约（kind="unknown" + skipped=True）已被替换：模型现在能拿到顶层 keys，
+    生成正确的 `data['records']` 取数代码而非瞎猜 `data.keys()[:3]`。
     """
-    monkeypatch.setattr(filesystem, "_READ_JSON_SIZE_LIMIT", 100)
+    monkeypatch.setattr(filesystem, "_READ_JSON_SIZE_LIMIT", 30)
     task = _make_task(tmp_path)
-    payload: dict[str, str] = {"k": "x" * 200}  # 序列化后 > 100 字节
+    payload: dict[str, Any] = {"table": "zip_code", "records": [{"id": 1}, {"id": 2}]}
     _write_json(task.context_dir / "big.json", payload)
     actual_size = (task.context_dir / "big.json").stat().st_size
-    assert actual_size > 100
+    assert actual_size > 30
 
     out = read_json_preview(task, "big.json")
 
-    assert out["kind"] == "unknown"
-    assert out["skipped"] is True
-    assert out["size"] == actual_size
-    assert "execute_python" in out["reason"]
+    assert out["kind"] == "object"
+    assert out["streamed"] is True
+    assert out["keys"] == ["table", "records"]
+    assert out["key_count"] == 2
+    # sample_value_kinds 应至少给出 table 的标量类型 + records 的 list 类型
+    assert out["sample_value_kinds"]["table"] == "str"
+    assert out["sample_value_kinds"]["records"] == "list"
+    assert out["truncated"] is True
+    # streamed 路径不再返回旧字段
+    assert "skipped" not in out
+
+
+def test_streaming_array_returns_length(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """顶层 array 走流式分支：length 准确、first_item_kind 准确、streamed=True。"""
+    monkeypatch.setattr(filesystem, "_READ_JSON_SIZE_LIMIT", 50)
+    task = _make_task(tmp_path)
+    rows = [{"id": i, "name": f"name_{i}"} for i in range(7)]
+    _write_json(task.context_dir / "rows.json", rows)
+    assert (task.context_dir / "rows.json").stat().st_size > 50
+
+    out = read_json_preview(task, "rows.json")
+
+    assert out["kind"] == "array"
+    assert out["length"] == 7
+    assert out["first_item_kind"] == "dict"
+    assert out["streamed"] is True
+    assert out["truncated"] is True
+
+
+def test_streaming_object_keys_match_full_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一份 JSON 走两条路径：keys / key_count 必须一致——锁住"两条路径同 schema 字段"契约。"""
+    task = _make_task(tmp_path)
+    payload: dict[str, Any] = {f"k{i}": i for i in range(10)}
+    _write_json(task.context_dir / "obj.json", payload)
+
+    # 路径 A：full-load
+    out_full = read_json_preview(task, "obj.json")
+
+    # 路径 B：streaming（用 monkeypatch 把上限调到 50 字节强制走该分支）
+    monkeypatch.setattr(filesystem, "_READ_JSON_SIZE_LIMIT", 50)
+    out_streamed = read_json_preview(task, "obj.json")
+
+    assert out_full["kind"] == out_streamed["kind"] == "object"
+    assert out_full["keys"] == out_streamed["keys"]
+    assert out_full["key_count"] == out_streamed["key_count"]
+    assert out_streamed["streamed"] is True
+    # full-load 路径不挂 streamed flag
+    assert "streamed" not in out_full
 
 
 def test_object_with_many_keys_caps_at_50(tmp_path: Path) -> None:

@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`ijson>=3.3.0` dependency** for streaming JSON schema extraction in
+  `read_json` / `inspect_files` on files exceeding the full-load cap.
 - **`run.blocklist` task skip list.** Tasks listed under `run.blocklist` in the
   YAML config are no longer executed: the runner short-circuits to a synthetic
   failure artifact (`succeeded=false`, `failure_reason="Task is in blocklist."`,
@@ -68,6 +70,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with a ~30-token `{from_csv: ...}` call and a millisecond CSV re-parse.
 
 ### Changed
+- **`read_json` / `inspect_files` size cap raised from 5MB to 100MB; >100MB
+  files now return a streamed schema instead of `kind:"unknown" skipped:true`.**
+  Empirical motivator: run `20260430-025` task_2 failed because the 5MB cap on
+  `zip_code.json` (7.4MB) returned no structure info, forcing the agent to
+  guess the top-level shape in `execute_python`. The wrong guess
+  (`for key in data.keys()[:3]: print(data[key])` against a `{table, records}`
+  object) printed all 40k records — 5.5MB of stdout that exceeded the 258K
+  token model context for every subsequent step until `max_steps`. New
+  behavior: ≤100MB takes the existing full-load + summarize path; >100MB uses
+  `ijson` to stream top-level kind/keys/length/first_item_kind. The streamed
+  result mounts `streamed=True` so the model knows `value_preview` is
+  unavailable while keys/length remain accurate. Output-side bounds
+  (`_summarize_value_for_preview`, `_array_head_with_caps`) already cap the
+  observation regardless of input size, so the input cap was duplicate
+  defense.
 - **`run_id` auto-generation switched from microsecond timestamps to a daily
   counter.** New format: `<UTC YYYYMMDD>-<NNN>` (e.g. `20260430-001`); the
   counter scans existing dirs under `output_dir` and resumes at `max + 1`,
@@ -94,6 +111,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   helper, so no wire-format change ships.
 
 ### Fixed
+- **`tools/python_exec.py` unbounded captured stream → context overflow.**
+  `_read_captured_stream` previously read the entire stdout/stderr file
+  verbatim; an agent's `print(huge_object)` could put a multi-MB observation
+  into the conversation history, after which every subsequent ReAct step's
+  prompt exceeded the model context limit and returned 400. New behavior:
+  each stream is capped at 64KB; oversized output is truncated to head 32KB
+  + tail 32KB joined by `\n... [TRUNCATED: N bytes elided] ...\n`. Per-stream
+  cap (stdout / stderr independent) preserves debug-friendly head/tail while
+  cutting the failure mode. Same task_2 motivator as the read_json change —
+  these two fixes together root-cause the cascade and prevent its recurrence
+  from any other tool path.
 - **`react.py` empty-tool retry off-by-one.** Guard now uses `>=` so
   `max_empty_tool_call_retries=N` halts on the Nth empty turn, matching the
   documented contract.

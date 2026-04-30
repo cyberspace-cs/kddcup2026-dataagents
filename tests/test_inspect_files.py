@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from data_agent_baseline.tools import filesystem
 from data_agent_baseline.tools.filesystem import inspect_context_files
 
 
@@ -166,3 +167,32 @@ def test_inspect_files_empty_context(tmp_path: Path) -> None:
     assert result["files"] == []
     assert result["unsupported_formats"] == []
     assert result["truncated"] is False
+
+
+def test_inspect_files_oversized_json_via_streaming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """超过 100MB 上限的 JSON：inspect_files 走 ijson 流式分支，不再返回 kind="unknown"。
+
+    回归 run 20260430-025 task_2：旧契约对 7.4MB zip_code.json 返回零结构信息，
+    模型在 execute_python 里瞎猜 `for k in data.keys()[:3]: print(data[k])` 印爆 stdout。
+    新契约下 schema.kind == "object"，keys 字段给出真实顶层 keys。
+    """
+    monkeypatch.setattr(filesystem, "_INSPECT_FILES_JSON_SIZE_LIMIT", 50)
+    task = _make_task(tmp_path)
+    (task.context_dir / "zip_code.json").write_text(
+        json.dumps({"table": "zip_code", "records": [{"id": 1}, {"id": 2}]})
+    )
+
+    result = inspect_context_files(task)
+    entry = next(e for e in result["files"] if e["path"] == "zip_code.json")
+
+    assert entry["format"] == "json"
+    assert entry["supported"] is True
+    schema = entry["schema"]
+    assert schema["kind"] == "object"
+    assert schema["streamed"] is True
+    assert schema["keys"] == ["table", "records"]
+    assert schema["key_count"] == 2
+    # 旧 truncated_at 字段已废弃
+    assert "truncated_at" not in schema

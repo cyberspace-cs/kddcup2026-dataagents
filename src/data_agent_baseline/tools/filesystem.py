@@ -16,8 +16,10 @@ from data_agent_baseline.benchmark.schema import PublicTask
 
 # inspect_files 一次性扫描的文件数上限：超过即截断，避免单次 observation 爆炸。
 _INSPECT_FILES_MAX_FILES = 100
-# 单文件 introspection 的字节上限（仅对 JSON 生效）：5MB 之上直接跳过 loads。
-_INSPECT_FILES_JSON_SIZE_LIMIT = 5 * 1024 * 1024
+# 单文件 JSON full-load 的字节上限：100MB 之内走 json.loads + _summarize_value_for_preview；
+# 超过 100MB 走 ijson 流式 schema 抽取（_streaming_json_schema），不再返回 kind:"unknown"。
+# 上限存在仅为给 full-load 路径划个内存预算：>100MB 文件常需流式处理才能避免 OOM。
+_INSPECT_FILES_JSON_SIZE_LIMIT = 100 * 1024 * 1024
 # inspect_files dtype 推断扫描行数；多了也无谓——只为给模型一个粗略提示。
 _INSPECT_FILES_DTYPE_SAMPLE = 5
 # read_csv 预览返回的 head / tail 行数（固定不让模型自调，避免被当作"取数据"工具）：
@@ -27,7 +29,7 @@ _INSPECT_FILES_DTYPE_SAMPLE = 5
 _READ_CSV_HEAD_ROWS = 20
 _READ_CSV_TAIL_ROWS = 5
 # read_json 预览的硬上限：
-# - 文件大小 5MB（与 _summarize_json 对齐；超出直接走 execute_python 流读）
+# - 文件大小 100MB（与 _summarize_json 对齐；超出走 ijson 流式 schema，不再 skip）
 # - object：列前 50 个 keys + 前 20 个 keys 的浅层 value preview
 # - 顶层 array：前 20 项 head，单项 ≤ 2KB（超大转 shape stub），累计 ≤ 6KB
 # - value_preview 中的嵌套 array：前 3 项 head（用更紧的 cap），累计 ≤ 4KB；
@@ -35,7 +37,7 @@ _READ_CSV_TAIL_ROWS = 5
 #   array head 6KB × 20 keys 会变 120KB，而 value_preview head 用 3-item/4KB
 #   能把同一脏 case 限制在 80KB 量级，仍保留每个 array 的"几条样本"信号
 # - 单字符串值上限 200 字符（截断后挂 value_truncated 标记）
-_READ_JSON_SIZE_LIMIT = 5 * 1024 * 1024
+_READ_JSON_SIZE_LIMIT = 100 * 1024 * 1024
 _READ_JSON_OBJECT_KEYS_CAP = 50
 _READ_JSON_OBJECT_VALUE_PREVIEW_CAP = 20
 _READ_JSON_ARRAY_HEAD_CAP = 20
@@ -312,6 +314,92 @@ def _array_head_with_caps(
     return head, truncation
 
 
+def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, Any]:
+    """ijson-based top-level shape extraction for files exceeding the load cap.
+
+    返回字段与 full-load 路径对齐，多挂 `streamed=True`：模型据此知道 value_preview
+    不可用，但 keys / length / first_item_kind 等关键信号仍然准确，能正确生成下游
+    `execute_python` 代码（不必再瞎猜顶层结构 → 详见 run 20260430-025 task_2 的级联失败）。
+
+    顶层分流：
+    - object → 用 `ijson.kvitems(f, "")` 增量产出 (key, value) 对；
+      仅前 _READ_JSON_OBJECT_KEYS_CAP 个 key 入列表，前 _READ_JSON_OBJECT_VALUE_PREVIEW_CAP
+      个 value 的类型记入 sample_value_kinds（与 _summarize_json 对齐）
+    - array → 用 `ijson.items(f, "item")` 数 length；首项类型给 first_item_kind
+    - scalar → ijson 检测到非 map/array 即用 json.loads 全文 load（极小，安全）
+
+    已知局限：
+    - `ijson.kvitems(f, "")` 对顶层 object 的每个 value 仍然完整物化——若顶层是
+      `{"data": <100GB array>}` 的结构，单 value 仍会 OOM。这是顶层结构限制，
+      不是 ijson 缺陷；real-world adversarial JSON 极少，本次 scope 不再叠防御。
+    - `ijson.IncompleteJSONError` 不在此处特判，直接向上 propagate，与 full-load
+      路径的 `json.JSONDecodeError` 走同一条 tool error 路径，让模型在下轮决定换工具。
+
+    `import ijson` 写在函数体内：yajl2_c 后端初始化非零成本，仅 oversized 路径触发
+    一次（文件 > 100MB），step 总耗时 ~5s 量级，50-100ms 启动开销可忽略。
+    `ijson` 不带 .pyi（C-extension），动态分发的产出类型对静态分析器不透明——
+    既已逐处加 type 标注，pyright 的 reportMissingTypeStubs / reportUnknownArgumentType
+    在此处属噪声，全函数 ignore 比逐行 ignore 更干净。
+    """
+    import ijson  # pyright: ignore[reportMissingTypeStubs]
+
+    with path.open("rb") as f:
+        first_event = next(iter(ijson.parse(f)), None)
+    if first_event is None:
+        return {
+            "path": relative_path,
+            "kind": "unknown",
+            "streamed": True,
+            "reason": "Empty file",
+        }
+    _, event, _ = first_event
+
+    if event == "start_map":
+        keys: list[str] = []
+        sample_value_kinds: dict[str, str] = {}
+        with path.open("rb") as f:
+            for key, value in ijson.kvitems(f, ""):
+                keys.append(key)
+                if len(sample_value_kinds) < _READ_JSON_OBJECT_VALUE_PREVIEW_CAP:
+                    sample_value_kinds[key] = type(value).__name__
+        return {
+            "path": relative_path,
+            "kind": "object",
+            "keys": keys[:_READ_JSON_OBJECT_KEYS_CAP],
+            "key_count": len(keys),
+            "sample_value_kinds": sample_value_kinds,
+            "keys_truncated": len(keys) > _READ_JSON_OBJECT_KEYS_CAP,
+            "streamed": True,
+            "truncated": True,
+        }
+
+    if event == "start_array":
+        length = 0
+        first_item_kind: str | None = None
+        with path.open("rb") as f:
+            for item in ijson.items(f, "item"):
+                if first_item_kind is None:
+                    first_item_kind = type(item).__name__
+                length += 1
+        return {
+            "path": relative_path,
+            "kind": "array",
+            "length": length,
+            "first_item_kind": first_item_kind,
+            "streamed": True,
+            "truncated": True,
+        }
+
+    # 标量（int/float/str/bool/null）：极小，直接 full-load 安全
+    payload = json.loads(path.read_text(errors="replace"))
+    return {
+        "path": relative_path,
+        "kind": "scalar",
+        "value_kind": type(payload).__name__,
+        "streamed": True,
+    }
+
+
 def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
     """JSON 的 inspect-style 预览：返回结构化 `{kind, length|key_count, head|keys+value_preview}`。
 
@@ -320,7 +408,8 @@ def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
       集合给 cardinality 而不展开）
     - array：前 20 项 head，单项 > 2KB 替换为 shape stub，累计 > 6KB 提前停止
     - scalar：直接返回原值，字符串超 200 字符截断
-    - 文件 > 5MB：跳过 loads，返回 `kind="unknown" + skipped=True`，提示走 execute_python
+    - 文件 > 100MB：走 ijson 流式 schema 抽取，返回与 full-load 同名字段（kind/keys/length 等），
+      多挂 `streamed=True` 信号（详见 `_streaming_json_schema`）
 
     与旧版 `preview` 字符串前缀截断的关键差异：array 的 length 与 object 的 key_count
     永远不会被截断丢失——这两个数字是模型决定下一步（继续看还是切 execute_python）的核心。
@@ -328,13 +417,7 @@ def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
     path = resolve_context_path(task, relative_path)
     size = path.stat().st_size
     if size > _READ_JSON_SIZE_LIMIT:
-        return {
-            "path": relative_path,
-            "kind": "unknown",
-            "size": size,
-            "skipped": True,
-            "reason": "File exceeds 5MB; use execute_python with json.load to stream.",
-        }
+        return _streaming_json_schema(path, relative_path)
     payload = json.loads(path.read_text())
 
     if isinstance(payload, dict):
@@ -627,16 +710,16 @@ def _summarize_csv(path: Path) -> dict[str, Any]:
 def _summarize_json(path: Path) -> dict[str, Any]:
     """提取 JSON top-level 形态（object/array/scalar）+ 浅层 schema。
 
-    巨型文件（> 5MB）直接跳过 loads，返回 truncated_at: "filesystem"——
-    模型可以通过 execute_python 流式处理。
+    巨型文件（> 100MB）走 ijson 流式 schema 抽取（不再返回 kind:"unknown"），
+    返回字段与 full-load 路径对齐：object 给 kind/keys/key_count/sample_value_kinds，
+    array 给 kind/length/first_item_kind；额外挂 streamed=True 让模型知道路径来源。
     """
     size = path.stat().st_size
     if size > _INSPECT_FILES_JSON_SIZE_LIMIT:
-        return {
-            "kind": "unknown",
-            "truncated_at": "filesystem",
-            "size": size,
-        }
+        # inspect_files 内的 entry 自带 path 字段，这里抽取 schema 不重复 path
+        result = _streaming_json_schema(path, None)
+        result.pop("path", None)
+        return result
     payload = json.loads(path.read_text(errors="replace"))
     if isinstance(payload, dict):
         keys: list[str] = list(payload.keys())

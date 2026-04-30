@@ -302,8 +302,9 @@ def create_default_tool_registry() -> ToolRegistry:
                 "first 20 keys), or `scalar` (the value). This is a SAMPLE "
                 "preview, not full data access. For nested field extraction, "
                 "filtering, cross-file joins, or deep traversal, use execute_python "
-                "instead. Files larger than 5MB are skipped; stream them via "
-                "execute_python with json.load."
+                "instead. Files larger than 100MB return a streamed schema "
+                "(`kind` + `keys` + `sample_value_kinds` for object; `length` + "
+                "`first_item_kind` for array) without full load."
             ),
             input_schema=ReadJsonInput.example_value(),
             json_schema=READ_JSON_SCHEMA,
@@ -363,7 +364,7 @@ def create_default_tool_registry() -> ToolRegistry:
                 # 吃 ImportError 再回落到 sqlite3.connect。SQLAlchemy 不在 runtime image 内，
                 # URI 形式永远不可达——`do NOT` 框定行为反向，消除"先尝试再 fallback"的浪费步。
                 "For `.db` / `.sqlite` files, use `sqlite3.connect(path)` + "
-                '`pd.read_sql_query(query, conn)`; do NOT try the pandas URI form '
+                "`pd.read_sql_query(query, conn)`; do NOT try the pandas URI form "
                 '(`"sqlite:///..."`) — SQLAlchemy is not installed and it fails '
                 "with `ImportError`."
             ),
