@@ -17,6 +17,7 @@
     "root_path": "/tmp/min-dataset"
   },
   "run": {
+    "blocklist": [],
     "max_workers": 4,
     "output_dir": "/tmp/min-runs",
     "run_id": null,

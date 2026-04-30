@@ -263,6 +263,7 @@ class RunConfigModel(_StrictModel):
     run_id: str | None = None
     max_workers: StrictInt = 4
     task_timeout_seconds: StrictInt = 600
+    blocklist: tuple[str, ...] = Field(default_factory=tuple)
 
     @field_validator("output_dir", mode="before")
     @classmethod
@@ -277,6 +278,43 @@ class RunConfigModel(_StrictModel):
             return None
         normalized = str(v).strip()
         return normalized or None
+
+    @field_validator("blocklist", mode="before")
+    @classmethod
+    def _check_blocklist(cls, v: Any) -> tuple[str, ...]:
+        # 与 cli.py `_coerce_task_number` 对齐：接受 int / "5" / "task_5"，全部归一化到 "task_<n>"。
+        # 拒绝非 list、负数、空串、未知前缀，避免静默丢弃运维误配。
+        if v is None:
+            return ()
+        if not isinstance(v, list):
+            raise ValueError("run.blocklist must be a list of task ids.")
+        v_list = cast(list[Any], v)
+        normalized: list[str] = []
+        for idx, item in enumerate(v_list):
+            if isinstance(item, bool) or not isinstance(item, (int, str)):
+                # bool 是 int 子类，单独排除避免 `- true` 被当成 task_1
+                raise ValueError(
+                    f"run.blocklist[{idx}] must be an int or string; got {type(item).__name__}."
+                )
+            if isinstance(item, int):
+                number = item
+            else:
+                cleaned = item.strip()
+                if not cleaned:
+                    raise ValueError(f"run.blocklist[{idx}] must be a non-empty string.")
+                token = cleaned.removeprefix("task_") if cleaned.startswith("task_") else cleaned
+                try:
+                    number = int(token)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"run.blocklist[{idx}] must be an int or 'task_<n>'; got {item!r}."
+                    ) from exc
+            if number < 1:
+                raise ValueError(f"run.blocklist[{idx}] task number must be >= 1; got {number}.")
+            normalized.append(f"task_{number}")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("run.blocklist contains duplicate entries.")
+        return tuple(normalized)
 
 
 class AppConfigModel(_StrictModel):

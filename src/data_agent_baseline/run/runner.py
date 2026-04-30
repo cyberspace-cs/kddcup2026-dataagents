@@ -30,6 +30,7 @@ from data_agent_baseline.config import AppConfig
 from data_agent_baseline.run.app import build_application
 from data_agent_baseline.run.runner_artifacts import (
     TaskRunArtifacts,
+    blocklist_payload,
     create_run_id,
     create_run_output_dir,
     load_partial_trace,
@@ -89,7 +90,13 @@ def run_single_task(
     PR-2：CLI `dabench run-task <id>` 不经 run_benchmark，没人替它按 task_index 固定 Key。
     这里若检测到 "配了 api_keys 但 rate_limit.state_dir 仍是 None"（= 未被上游 pin 过），
     就按 `api_keys[0]` 决定性选 Key。上游 benchmark 路径已经做过 pin 的 config 不受影响。
+
+    blocklist：命中名单时直接产出失败 artifact，不分配 Key 也不起子进程；
+    `dabench run-task <id>` 单点调用同样会短路，避免名单内任务在调试中被误跑。
     """
+    if task_id in config.run.blocklist:
+        return write_task_outputs(task_id, run_output_dir, blocklist_payload(task_id))
+
     if (
         config.agent.api_keys
         and config.agent.rate_limit is not None

@@ -217,6 +217,19 @@ def _failure_run_result_payload(task_id: str, failure_reason: str) -> dict[str, 
     }
 
 
+# 跳过名单 (run.blocklist) 命中时塞给 trace.json 的 failure_reason；UI / 报表可按字面量过滤。
+BLOCKLIST_FAILURE_REASON = "Task is in blocklist."
+
+
+def blocklist_payload(task_id: str) -> dict[str, Any]:
+    """构造 "任务被名单跳过" 的占位结果，供 runner 短路用。
+
+    与超时/崩溃 payload 同形，只是 failure_reason 写死为 BLOCKLIST_FAILURE_REASON，
+    让上层落盘 + summary 统计逻辑无须分支即可处理。
+    """
+    return _failure_run_result_payload(task_id, BLOCKLIST_FAILURE_REASON)
+
+
 def extract_system_prompt(steps: list[Any]) -> str | None:
     """从 trace.json 的 steps 中拣出 system prompt（仅看第一步的 prompt_messages）。
 

@@ -29,6 +29,7 @@
     "root_path": "/tmp/dataset"
   },
   "run": {
+    "blocklist": [],
     "max_workers": 4,
     "output_dir": "/tmp/runs",
     "run_id": "pinned-run-id",

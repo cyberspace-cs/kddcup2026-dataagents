@@ -17,6 +17,7 @@
     "root_path": "<PROJECT_ROOT>/data/public/input"
   },
   "run": {
+    "blocklist": [],
     "max_workers": 2,
     "output_dir": "<PROJECT_ROOT>/artifacts/runs",
     "run_id": null,

@@ -38,3 +38,10 @@ run:
   run_id: example_run_id                   # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`，例如 20260430-001
   max_workers: 8                           # int >= 1
   task_timeout_seconds: 600                # int；<= 0 关闭单任务超时
+
+  # 跳过名单：列出的任务不会被实际执行，runner 直接产出失败 artifact
+  # （succeeded=False, failure_reason="Task is in blocklist."）。条目可写成
+  # 整数 (5) 或字符串 ("task_5" / "5")，runner 内部统一规整为 task_<n>。
+  blocklist:
+    - task_5  # 问题歧义
+    - task_50 # 文档联查，过于复杂

@@ -134,6 +134,9 @@ class RunConfig:
     run_id: str | None = None  # 显式指定的 run 子目录名；None 时按 UTC 时间戳生成
     max_workers: int = 4  # 并行线程数（ThreadPoolExecutor 大小）
     task_timeout_seconds: int = 600  # 单任务硬超时，超时会 kill 子进程
+    # 跳过名单：列出的 task_<n> 不会被实际执行，runner 直接产出失败 artifact（succeeded=False）。
+    # 用途：临时屏蔽已知会卡住超时桶或正在调试的任务，避免污染整次 run 的 wall-clock 与限速预算。
+    blocklist: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,5 +208,6 @@ def load_app_config(config_path: Path) -> AppConfig:
             run_id=validated.run.run_id,
             max_workers=validated.run.max_workers,
             task_timeout_seconds=validated.run.task_timeout_seconds,
+            blocklist=validated.run.blocklist,
         ),
     )

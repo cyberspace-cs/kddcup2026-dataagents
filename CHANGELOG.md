@@ -7,6 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`run.blocklist` task skip list.** Tasks listed under `run.blocklist` in the
+  YAML config are no longer executed: the runner short-circuits to a synthetic
+  failure artifact (`succeeded=false`, `failure_reason="Task is in blocklist."`,
+  no `prediction.csv`) before any rate-limit pin or subprocess spawn. Entries
+  accept either integers (`- 5`) or `task_<n>` strings (`- task_19` / `- "5"`),
+  normalized to canonical `task_<n>` form; duplicates and non-positive numbers
+  are rejected. Applies to both `dabench run-task <id>` (single task) and
+  `dabench run-benchmark` (batch); blocklisted tasks still appear in
+  `summary.json` with the synthetic failure reason so dashboards can grep them.
 - **PR-1 baseline.** ReAct loop with text-fenced JSON action protocol; eight default
   tools (`inspect_files`, `read_csv`, `read_json`, `read_doc`, `inspect_sqlite_schema`,
   `execute_context_sql`, `execute_python`, `answer`); subprocess timeout isolation.
