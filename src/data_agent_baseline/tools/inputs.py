@@ -24,6 +24,16 @@ from data_agent_baseline.tools.schema_normalize import normalize_for_vllm
 EXECUTE_PYTHON_TIMEOUT_SECONDS = 30
 
 
+# `answer` inline 路径的硬闸阈值。超过任一阈值即拒绝 inline 提交，强制 `from_csv`。
+# 动机：模型把上百行表用 `rows=[...]` 自抄进 tool_call JSON 时，长结构化生成会出现
+# attention drift——run 20260430-015 task_8 即是 140 行被抄成 143 行（多 3 行幻觉 +
+# 57 行 amount 串味）。execute_python 已写正确 CSV 时仍走 inline 是这条规则的目标。
+# 数值与 prompt `_DATA_OUTPUT_RULES` 的 "30+ rows OR 200+ cells" 文案保持一致，
+# 后续两边一起调（grep "30+ rows" 即可定位）。
+INLINE_ANSWER_ROW_LIMIT = 30
+INLINE_ANSWER_CELL_LIMIT = 200
+
+
 # 所有工具的 `path` 字段共用同一条路径约定：
 # - 必须相对于任务的 context 目录
 # - **不要** 带 `context/` 前缀，哪怕 system prompt 里提到过 `context/`
@@ -248,6 +258,19 @@ class AnswerInput(BaseModel):
             return self
         if not self.columns:
             raise ValueError("columns must be non-empty when from_csv is not set")
+        # Inline 体量硬闸：超阈值时拒绝并提示走 from_csv。soft prompt rule 不够时由
+        # 此兜底——参见 INLINE_ANSWER_ROW_LIMIT 注释中的 task_8 幻觉案例。
+        n_rows = len(self.rows)
+        n_cells = n_rows * len(self.columns)
+        if n_rows >= INLINE_ANSWER_ROW_LIMIT or n_cells >= INLINE_ANSWER_CELL_LIMIT:
+            raise ValueError(
+                f"inline rows payload exceeds artifact-handoff threshold "
+                f"(got {n_rows} rows, {n_cells} cells; threshold = "
+                f"{INLINE_ANSWER_ROW_LIMIT} rows or {INLINE_ANSWER_CELL_LIMIT} cells); "
+                f"write the table to "
+                f"os.path.join(os.environ['DABENCH_ANSWER_DIR'], 'answer.csv') from "
+                f"execute_python and resubmit with from_csv (no columns/rows)"
+            )
         width = len(self.columns)
         for index, row in enumerate(self.rows):
             if len(row) != width:

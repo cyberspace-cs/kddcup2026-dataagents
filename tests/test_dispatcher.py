@@ -189,6 +189,66 @@ def test_dispatch_answer_xor_violation_is_rejected(task: PublicTask) -> None:
         dispatch_tool_call(task, call, registry)
 
 
+def test_dispatch_answer_inline_row_threshold_is_rejected(task: PublicTask) -> None:
+    """30 行 inline rows → 触发硬闸；模型必须改走 from_csv。
+
+    回归 run 20260430-015 task_8：execute_python 已写出正确的 140 行 CSV，但模型
+    在 answer 工具调用里把 rows 自抄了一遍，长结构化生成出现 attention drift，
+    多吐 3 行幻觉 + 57 行 amount 串味。INLINE_ANSWER_ROW_LIMIT 切断这条退路。
+    """
+    registry = create_default_tool_registry()
+    call = _call("answer", columns=["x"], rows=[[i] for i in range(30)])
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^answer: inline rows payload exceeds artifact-handoff threshold "
+            r"\(got 30 rows, 30 cells; threshold = 30 rows or 200 cells\)"
+        ),
+    ):
+        dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_answer_inline_cell_threshold_is_rejected(task: PublicTask) -> None:
+    """29 行 × 7 列 = 203 cells → 即使行数没到 30，单元格量超阈值同样硬闸。
+
+    覆盖宽表场景（如 task_4 风格的 schema dump）：少行多列同样会触发幻觉。
+    """
+    registry = create_default_tool_registry()
+    cols = [f"c{i}" for i in range(7)]
+    rows = [[i] * 7 for i in range(29)]
+    call = _call("answer", columns=cols, rows=rows)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^answer: inline rows payload exceeds artifact-handoff threshold "
+            r"\(got 29 rows, 203 cells; threshold = 30 rows or 200 cells\)"
+        ),
+    ):
+        dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_answer_inline_just_below_threshold_succeeds(task: PublicTask) -> None:
+    """29 行 × 6 列 = 174 cells → 双阈值都没碰，inline 仍然终止成功。
+
+    锁住"硬闸只对超量场景生效"：常规小答案不受影响。
+    """
+    registry = create_default_tool_registry()
+    cols = [f"c{i}" for i in range(6)]
+    rows = [[i] * 6 for i in range(29)]
+    call = _call("answer", columns=cols, rows=rows)
+
+    result, should_terminate = dispatch_tool_call(task, call, registry)
+
+    assert result.ok is True
+    assert should_terminate is True
+    assert result.answer is not None
+    assert len(result.answer.rows) == 29
+    assert result.content["row_count"] == 29
+    assert result.content["column_count"] == 6
+
+
 def test_dispatch_answer_inline_path_unchanged_after_from_csv_addition(
     task: PublicTask,
 ) -> None:
