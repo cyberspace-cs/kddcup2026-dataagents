@@ -26,6 +26,16 @@ from pathlib import Path
 from queue import Empty
 from typing import Any
 
+# 单股 stdout/stderr 的硬上限（字节）。64KB ≈ 16K tokens（按 cl100k 经验 ~4 字节/token），
+# 远低于典型 context 预算（≥128K），既给出足够的调试信息又防止单次 observation 把
+# 模型 prompt 撑过上限——失败案例：run 20260430-025 task_2 一次 `print(records)` 输出
+# 5.5MB stdout 后续 step 全部 400 InvalidParameter 至 max_steps。
+_PYTHON_EXEC_STREAM_CAP_BYTES = 64 * 1024
+# 截断时保留首部字节数（看到 traceback / 第一行 print 等开头信号）
+_PYTHON_EXEC_STREAM_HEAD_BYTES = 32 * 1024
+# 截断时保留尾部字节数（看到最终结果 / 最后一条 error 等结尾信号）
+_PYTHON_EXEC_STREAM_TAIL_BYTES = 32 * 1024
+
 
 @contextlib.contextmanager
 def _capture_process_streams(stdout_path: Path, stderr_path: Path):
@@ -99,11 +109,33 @@ def _capture_process_streams(stdout_path: Path, stderr_path: Path):
 
 
 def _read_captured_stream(path: Path) -> str:
-    """读取被捕获的 stdout/stderr 文件内容。
+    """读取被捕获的 stdout/stderr 文件内容；超过 _PYTHON_EXEC_STREAM_CAP_BYTES 走首尾保留截断。
 
-    errors="replace" 防止非 UTF-8 字节（如某些 C 扩展的二进制日志）导致崩溃。
+    `errors="replace"` 防止非 UTF-8 字节（如某些 C 扩展的二进制日志）导致崩溃。
+    截断策略：保留头 32KB + 尾 32KB + 中间一行 marker `[TRUNCATED: N bytes elided]`，
+    UTF-8 多字节字符在 cut-point 被切断时由 `errors="replace"` 用 U+FFFD 兜底——可读性
+    不打折，对模型推理无影响。
+
+    动机：避免 agent 一次 `print(huge_object)` 让 observation 撑过模型 context（详见
+    run 20260430-025 task_2 的级联失败：5.5MB stdout 进入对话历史后所有后续 step 都
+    400 InvalidParameter）。stdout / stderr 各自独立调用本函数，互相不挤占 64KB 预算。
+
+    用 `path.stat().st_size` 提前判定尺寸，避免把 GB 级文件读进内存再截断。
+    子进程已 join 退出后才被调用，stdout/stderr 临时文件无并发写者，stat 与 open
+    之间无尺寸跳变。
     """
-    return path.read_text(encoding="utf-8", errors="replace")
+    size = path.stat().st_size
+    if size <= _PYTHON_EXEC_STREAM_CAP_BYTES:
+        return path.read_text(encoding="utf-8", errors="replace")
+
+    elided = size - (_PYTHON_EXEC_STREAM_HEAD_BYTES + _PYTHON_EXEC_STREAM_TAIL_BYTES)
+    with path.open("rb") as fp:
+        head_bytes = fp.read(_PYTHON_EXEC_STREAM_HEAD_BYTES)
+        fp.seek(size - _PYTHON_EXEC_STREAM_TAIL_BYTES)
+        tail_bytes = fp.read(_PYTHON_EXEC_STREAM_TAIL_BYTES)
+    head = head_bytes.decode("utf-8", errors="replace")
+    tail = tail_bytes.decode("utf-8", errors="replace")
+    return f"{head}\n... [TRUNCATED: {elided} bytes elided] ...\n{tail}"
 
 
 def _run_python_code(
