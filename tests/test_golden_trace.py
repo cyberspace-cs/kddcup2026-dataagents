@@ -74,7 +74,12 @@ def test_trace_and_prediction_byte_stable(tmp_path: Path) -> None:
     dataset_root = tmp_path / "input"
     dataset_root.mkdir()
     shutil.copytree(GOLDEN_DIR / "task_fixture", dataset_root / "task_fixture")
-    context_dir_str = str(dataset_root / "task_fixture" / "context")
+    # `.resolve()` is required on macOS: `tmp_path` lives under `/var/folders/...`
+    # which is a symlink to `/private/var/folders/...`; the inspect_files handler
+    # canonicalizes via `Path.resolve()` (filesystem.py), so the trace records
+    # the `/private/...` form. Without resolving here, the substring replace
+    # only matches the inner `/var/...` segment and leaves a stray `/private`.
+    context_dir_str = str((dataset_root / "task_fixture" / "context").resolve())
 
     run_output_dir = tmp_path / "runs" / "golden-run"
     run_output_dir.mkdir(parents=True)
