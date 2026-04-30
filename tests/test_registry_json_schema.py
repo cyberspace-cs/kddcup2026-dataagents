@@ -99,8 +99,9 @@ def test_execute_python_description_recommends_pandas(registry) -> None:
     """
     description = registry.definitions["execute_python"].description.lower()
 
-    # pandas 推荐 + 反对默认 csv stdlib
-    assert "prefer `pandas` over the `csv` stdlib" in description
+    # pandas 强制写法（与 _DATA_OUTPUT_RULES 的 "Use pandas" 同步收紧），
+    # 不再使用"prefer over csv stdlib"的相对措辞
+    assert "use `pandas`" in description
     # 关键 idiom：projection
     assert "df[['target_col']]" in description
     # 类型保留与 verification 的 ergonomic 卖点

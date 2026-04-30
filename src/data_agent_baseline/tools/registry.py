@@ -343,12 +343,12 @@ def create_default_tool_registry() -> ToolRegistry:
                 # stdlib 时（trace 见 task_8 in run 20260429T210729531308Z）容易把"列出全 10 列源 schema"
                 # 当作路径最阻力小的写法，从而漏掉 WH-target column projection
                 "For tabular work (filtering, aggregation, projection, cross-file joins), "
-                "prefer `pandas` over the `csv` stdlib: `df[df['col'] == ...]` and "
-                "`df[['target_col']]` make WH-target column selection idiomatic, types "
-                "are preserved automatically (no manual `int()`/`float()` casts), and "
-                "`df.head()` / `df.dtypes` print the verification snapshot in one line. "
-                "Available libs include pandas, numpy, pyarrow, polars, openpyxl. The "
-                "`csv` module is fine only for trivial reads (a handful of rows)."
+                "use `pandas`: `df[df['col'] == ...]` and `df[['target_col']]` make "
+                "WH-target column selection idiomatic, types are preserved automatically "
+                "(no manual `int()`/`float()` casts), and `df.head()` / `df.dtypes` "
+                "print the verification snapshot in one line. Available libs include "
+                "pandas, numpy, pyarrow, polars, openpyxl. The `csv` module is fine only "
+                "for trivial reads (a handful of rows)."
             ),
             input_schema=ExecutePythonInput.example_value(),
             json_schema=EXECUTE_PYTHON_SCHEMA,

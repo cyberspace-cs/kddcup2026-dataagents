@@ -240,6 +240,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `_DATA_OUTPUT_RULES` instance (~26% of the artifact bullet) and one
   known failure path closed at the rule level rather than relying on
   three NEVER prohibitions to catch it.
+- **`execute_python` tool description now matches the prompt's pandas
+  mandate.** The previous "prefer `pandas` over the `csv` stdlib"
+  comparative wording is replaced with a direct "use `pandas`" so the
+  tool description, system prompt, and `_DATA_OUTPUT_RULES` all speak
+  with the same voice. Ergonomic hints (auto type preservation, the
+  `df.head()` / `df.dtypes` one-line verification snapshot) and the
+  available-libs list are kept — they are unique to this surface and
+  complement the prompt without duplicating it. The "csv module is
+  fine only for trivial reads" concession is preserved: it scopes to
+  input reads, not the artifact-write path that the prompt bans.
 
 ### Breaking (internal API only)
 - `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` moved from
