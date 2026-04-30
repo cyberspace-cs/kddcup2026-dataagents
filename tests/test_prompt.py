@@ -274,10 +274,12 @@ def test_system_prompts_force_wh_target_column_projection() -> None:
     回归 run 20260429T210729531308Z task_8：from_csv 性能优化生效（87s→24s），
     但模型用 `csv.DictWriter` 手动列出 trans.csv 全部 10 列写进 artifact，
     prediction.csv 多出 9 列（其中 3 列全为空：k_symbol/bank/account）。
-    上一版 prompt 只禁了 `df.to_csv(<whole>)`，没覆盖 csv.DictWriter / 手写 rows
-    路径；新规则改为：(1)"先按 WH-target 决定列集，库无关"；(2) 把 pandas
-    放在最前作 idiomatic 范式（`df[[...]].to_csv(...)`），让 column projection
-    成为 path of least resistance；(3) 三种 API 都被点名禁令。
+    上一版 prompt 同时给 pandas / csv.DictWriter / 手写 dict 三套 API 写指引，
+    不仅占 token，csv/手写两条路也是 task_8 那种"枚举源列"故障的温床。新规则改为：
+    (1)"先按 WH-target 决定列集，库无关"；(2) **强制 pandas only**，三段式
+    （`filtered = ...` → `answer_df = filtered[[...]]` → `answer_df.to_csv(...)`），
+    让列投影独占一条赋值语句，与模型自然书写习惯对齐；(3) `csv.DictWriter` 与
+    手写 dict rows 直接被禁令封禁，prompt 里不再给它们的"如何用"指引。
     """
     text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     native_prompt = build_native_system_prompt()
@@ -287,16 +289,16 @@ def test_system_prompts_force_wh_target_column_projection() -> None:
         # 核心契约：列集来自 WH-target，不来自源 schema
         assert "decide the column set first from the question's wh-target alone" in lower
         assert "not from the source schema" in lower
-        # pandas idiomatic 范式（projection 直接出现在示例里）
-        assert "the idiomatic write is pandas" in lower
-        assert "df[df['col'] == ...][['target_col_a', 'target_col_b']]" in prompt
-        # 三种 API 都被点名（pandas / csv.DictWriter / hand-built）
-        assert "csv.dictwriter" in lower
-        assert "hand-build rows" in lower
-        # 三条 NEVER 禁令（大写 NEVER 在 prompt 里是有意为之的强调）
+        # pandas only：三段式中间变量（贴合模型自然书写习惯，
+        # 让 `answer_df = filtered[[...]]` 这一行独占列投影的视觉位置）
+        assert "use pandas" in lower
+        assert "filtered = df[df['col'] == ...]" in prompt
+        assert "answer_df = filtered[['target_col_a', 'target_col_b']]" in prompt
+        assert "answer_df.to_csv(out_path, index=False)" in prompt
+        # csv.DictWriter / 手写 dict 必须被显式禁令封禁（不只是不推荐，是"do NOT use"）
+        assert "do not use `csv.dictwriter` or hand-build dict rows" in lower
+        # 唯一保留的 NEVER：pandas 整表写出（这是 pandas 路径自身的失败模式）
         assert "NEVER `df.to_csv(...)` on the whole frame" in prompt
-        assert "NEVER pass the source row's full `.keys()`" in prompt
-        assert "NEVER enumerate every source column in your hand-built dict" in prompt
 
 
 def test_system_prompts_mandate_two_verification_self_checks() -> None:

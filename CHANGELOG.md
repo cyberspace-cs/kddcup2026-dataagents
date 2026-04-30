@@ -225,6 +225,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bullet in `_DATA_OUTPUT_RULES` was reordered to put pandas first as
   the idiomatic write so column projection becomes the path of least
   resistance.
+- **System prompt now mandates pandas-only for the artifact-write idiom.**
+  The `_DATA_OUTPUT_RULES` artifact bullet is rewritten as a single
+  three-statement pandas form: `filtered = df[mask]` → `answer_df =
+  filtered[['target_col_a', 'target_col_b']]` → `answer_df.to_csv(out_path,
+  index=False)`. The middle assignment is the only place WH-target
+  columns are named, and `answer_df` as a variable name signals "this
+  IS the grader's view." `csv.DictWriter` and hand-built dict rows are
+  now banned outright — both encourage enumerating every source column
+  (the task_8 failure class from run `20260429T210729531308Z`, where 9
+  unrequested columns leaked into `prediction.csv`). Pandas is already
+  a top-level dependency and always available in `execute_python`, so
+  the mandate has no runtime cost. Net effect: ~50 tokens saved per
+  `_DATA_OUTPUT_RULES` instance (~26% of the artifact bullet) and one
+  known failure path closed at the rule level rather than relying on
+  three NEVER prohibitions to catch it.
 
 ### Breaking (internal API only)
 - `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` moved from
