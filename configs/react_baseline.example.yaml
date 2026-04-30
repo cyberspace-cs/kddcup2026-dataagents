@@ -47,4 +47,5 @@ run:
     - task_13 # 问题单数，结果复数 gold 错误：raceId=903 的 number 列不含 5，正解应为 {3, 1}
     - task_14 # 问题歧义："track number" 未在 knowledge.md 显式映射到列；gold 用 driverStandings.position，agent 合理读成 races.round
     - task_15 # 问题歧义
+    - task_17 # 问题歧义："type of expenses" 双绑定 (event.type vs expense_description)；gold 按 event.type 聚合(1 行 Meeting)，agent 合理读成 expense_description(3 行)；prompt 改写两轮均无效（runs 20260430-017/018 模型反而引规则名为错误答案背书）
     - task_50 # 文档联查，过于复杂
