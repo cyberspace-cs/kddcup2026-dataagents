@@ -84,6 +84,40 @@ def test_native_system_prompt_includes_tool_decision_tree() -> None:
         assert keyword in prompt
 
 
+def test_native_system_prompt_front_loads_knowledge_md() -> None:
+    """`knowledge.md` 必须在 inspect_files 之后立即读取。
+
+    回归 run 20260430-004 task_8：模型在 step 11（已经算出答案后）才读 knowledge.md，
+    白白把这次 read_doc 的 token 加进了 step 12/13 的 prompt 上下文，让两次 LLM 往返
+    分别花了 8.7 s / 6.6 s。新规则把"下一轮就读"焊死在 inspect_files bullet 里。
+    """
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "knowledge.md" in prompt
+    assert "very next turn" in lower
+    assert "code↔label mappings" in prompt or "code-label mappings" in lower
+    # 反例措辞：不要把 knowledge.md 拖到分析之后再读
+    assert "after analysis wastes turns" in lower
+
+
+def test_native_system_prompt_warns_execute_python_is_stateless() -> None:
+    """`execute_python` 子进程之间不共享状态——必须把读文件和计算合并到一次调用。
+
+    回归同一个 trace：模型对 59 MB / 1M 行的 trans.csv 做了 5 次 `pd.read_csv`，
+    在 5 个独立 execute_python step 里反复 I/O。新规则在 execute_python bullet 里
+    显式声明 fresh subprocess + 合并 read/filter/projection/verification。
+    """
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    # 子进程隔离的硬声明
+    assert "fresh subprocess" in lower
+    assert "not carried over" in lower
+    # 行动指令：把读 + 过滤 + 投影 + 验证合并到一次调用
+    assert "combine read + filter + projection + verification into one call" in lower
+
+
 def test_native_system_prompt_custom_override_is_preserved() -> None:
     assert build_native_system_prompt("custom native prompt") == "custom native prompt"
 

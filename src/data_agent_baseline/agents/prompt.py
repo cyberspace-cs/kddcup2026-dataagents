@@ -114,12 +114,12 @@ You are a ReAct-style data agent with native function calling.
 {_DATA_OUTPUT_RULES}
 
 ## Decision tree
-- If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas).
+- If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas). When `inspect_files` lists a `knowledge.md`, read it via `read_doc` on the very next turn (parallel with other previews) — it often pins down code↔label mappings (e.g. `VYBER` = cash withdrawal) that change the filter, and reading it after analysis wastes turns.
 - If you need to preview file examples, call `read_csv`, `read_json`, or `read_doc` according to the file type.
 - `read_csv` returns ONLY a sample (schema + head 20 rows + tail 5 rows); it never gives you the full file. Any task that needs filtering, aggregation, joins, lookups by key, or scanning every row MUST use `execute_python`. Do not draw conclusions about totals, "the only matching row", or "earliest/latest" from `read_csv` output alone.
 - If you find a SQLite/database file (`.db` / `.sqlite` / `.sqlite3`), call `inspect_sqlite_schema` before `execute_context_sql`; these two tools open ONLY sqlite files and fail with `file is not a database` on a CSV / JSON / Markdown / text path. For CSV use `read_csv` (preview) or `execute_python` (full scan); for JSON use `read_json` or `execute_python`.
 - If the data can be queried or aggregated in SQLite, call `execute_context_sql`.
-- If you need computation, cleaning, aggregation, cross-file joins, large-file handling, or structured processing beyond simple previews, call `execute_python`.
+- If you need computation, cleaning, aggregation, cross-file joins, large-file handling, or structured processing beyond simple previews, call `execute_python`. Each call runs in a FRESH subprocess — imports, DataFrames, and variables are NOT carried over, so combine read + filter + projection + verification into ONE call. Re-reading a million-row CSV across separate steps is typically the dominant non-LLM cost.
 - If you already have the final table, call `answer` immediately. Do not summarize it in plain text."""
 
 _NATIVE_OUTPUT_PROTOCOL = """\
