@@ -132,6 +132,29 @@ def test_native_system_prompt_warns_execute_python_is_stateless() -> None:
     assert "combine read + filter + projection + verification into one call" in lower
 
 
+def test_native_system_prompt_enforces_format_tolerance() -> None:
+    """题/数格式不一致时按最粗共有形截断/归一匹配。
+
+    回归 task_13 早期失效模式（run 20260430-008）：模型把 `0:01:54` 与数据
+    `1:54.455` 死磕字面相等，找不到匹配后又把"closest numeric match"
+    当兜底，错选 number=44。
+
+    保留 format tolerance 一条；曾经一并写过的 "singular tolerance"
+    实测（run 008/010/011/012 共四轮）无效——模型每次都能围绕"the X
+    单数 → 挑较好的一个"合理化绕过任何禁令措辞，所以删除以减少 prompt
+    噪声。Singular 引发的多行答案目前作为已知 model-capability 边界。
+    """
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    # 格式不一致时归一/截断到共有形
+    assert "format tolerance" in lower
+    assert "normalize or truncate" in lower
+    assert "coarsest shared form" in lower
+    # 不允许"closest numeric match"作为字面不匹配的兜底
+    assert 'do not fall back to "closest numeric match"' in lower
+
+
 def test_native_system_prompt_custom_override_is_preserved() -> None:
     assert build_native_system_prompt("custom native prompt") == "custom native prompt"
 

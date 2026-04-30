@@ -121,29 +121,29 @@ You are a ReAct-style data agent with native function calling.
 - If you find a SQLite/database file (`.db` / `.sqlite` / `.sqlite3`), call `inspect_sqlite_schema` before `execute_context_sql`; these two tools open ONLY sqlite files and fail with `file is not a database` on a CSV / JSON / Markdown / text path. For CSV use `read_csv` (preview) or `execute_python` (full scan); for JSON use `read_json` or `execute_python`.
 - If the data can be queried or aggregated in SQLite, call `execute_context_sql`.
 - If you need computation, cleaning, aggregation, cross-file joins, large-file handling, or structured processing beyond simple previews, call `execute_python`. Each call runs in a FRESH subprocess — imports, DataFrames, and variables are NOT carried over, so combine read + filter + projection + verification into ONE call. Re-reading a million-row CSV across separate steps is typically the dominant non-LLM cost.
-- If you already have the final table, call `answer` immediately. Do not summarize it in plain text."""
+- If you already have the final table, call `answer` immediately. Do not summarize it in plain text.
+- Format tolerance. When the question's value format differs from the data's (e.g., question `0:01:54` vs data `1:54.455`; question `$5,000` vs data `5000.00`; question `2024-01` vs data `2024-01-15`), normalize or truncate to the coarsest shared form and match on equivalence — do NOT insist on string-literal equality, do NOT fall back to "closest numeric match"."""
 
 _NATIVE_OUTPUT_PROTOCOL = """\
 ## Output protocol (critical when thinking is enabled)
 
 Tools execute ONLY through the function-calling interface. Anything inside <think>...</think> is discarded by the runtime — it is never parsed, never extracted, and never executed, regardless of its format.
 
-The single most common failure to avoid:
-  Drafting a tool_call inside <think> in ANY of these forms — and then ending the turn without emitting a real tool_call afterwards:
-    - JSON object: {"name": "execute_python", "arguments": {...}}
-    - <tool_call>...</tool_call> wrappers
-    - XML-style: <function=NAME><parameter=KEY>VALUE</parameter></function>
-    - Python code blocks intended for execution
-  None of these are executed when they appear in <think> or in plain content. The runner sees zero tool_calls, the turn is wasted, and the task stalls. New formats you invent will also be ignored — only the structured function-calling channel runs.
+The single most common failure to avoid: drafting a tool_call inside <think> in any of these forms — and then ending the turn without emitting a real tool_call afterwards:
+  - JSON object: {"name": "execute_python", "arguments": {...}}
+  - <tool_call>...</tool_call> wrappers
+  - XML-style: <function=NAME><parameter=KEY>VALUE</parameter></function>
+  - Python code blocks intended for execution
+None of these invoke a tool no matter how syntactically perfect — the runner sees zero tool_calls and the turn is wasted.
 
 Required flow on every turn:
-  1. (Optional) Brief reasoning inside <think>. Reason in natural language only — do NOT draft tool-call JSON, <tool_call> tags, <function=...> XML, function-name+argument pairs, or python code blocks intended for execution.
+  1. (Optional) Brief reasoning inside <think>, natural language only.
   2. Close </think>.
   3. Emit one or more structured tool_calls through the function-calling interface.
 
-Self-check: if you notice yourself drafting a tool_call shape inside <think> (in any format), immediately close </think> and re-emit it as a real structured tool_call. The draft inside <think> never counts, even if it is syntactically perfect.
+Self-check: if you catch yourself drafting a tool_call shape (in any format) inside <think>, close </think> and re-emit it through the real channel — the draft never counts.
 
-The `answer` tool is your ONLY way to submit. It is invoked exactly like any other tool — as a structured tool_call through the function-calling interface. Writing `<function=answer>...</function>`, `{"name": "answer", ...}`, a `<tool_call>` wrapper, or describing the final table in prose does NOT submit anything. The instant the final table is ready, the very next thing you emit must be a structured tool_call to `answer` — no narration, no preview, no XML, no JSON-in-text."""
+The `answer` tool is your ONLY way to submit. The instant the final table is ready, the very next thing you emit must be a structured `answer` tool_call — no narration, no preview, no JSON-in-text."""
 
 REACT_NATIVE_SYSTEM_PROMPT = "\n\n".join(
     [_NATIVE_HEADER, _NATIVE_OUTPUT_PROTOCOL, _PATH_CONVENTION_BLOCK]
