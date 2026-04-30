@@ -89,7 +89,13 @@ def test_native_system_prompt_front_loads_knowledge_md() -> None:
 
     回归 run 20260430-004 task_8：模型在 step 11（已经算出答案后）才读 knowledge.md，
     白白把这次 read_doc 的 token 加进了 step 12/13 的 prompt 上下文，让两次 LLM 往返
-    分别花了 8.7 s / 6.6 s。新规则把"下一轮就读"焊死在 inspect_files bullet 里。
+    分别花了 8.7 s / 6.6 s。
+
+    `c50ccf0` 把规则塞进 `inspect_files` bullet 句尾后，run 20260430-007 仍有 3/5
+    任务完全跳过 knowledge.md（task_13 用 12 步在 `execute_python` 里硬猜
+    `0:01:54` 是 `MM:SS` 还是 `HH:MM:SS`，knowledge.md 第 11 行就写了答案）。
+    现把规则提升为独立 Decision-tree bullet，加 MUST 语言 + 显式禁令
+    "do NOT skip to execute_python first"，并扩充例子覆盖 unit/formula 类约定。
     """
     prompt = build_native_system_prompt()
     lower = prompt.lower()
@@ -99,6 +105,14 @@ def test_native_system_prompt_front_loads_knowledge_md() -> None:
     assert "code↔label mappings" in prompt or "code-label mappings" in lower
     # 反例措辞：不要把 knowledge.md 拖到分析之后再读
     assert "after analysis wastes turns" in lower
+    # 强制级动作：MUST + read_doc
+    assert "must call `read_doc`" in lower
+    # 显式禁令：不能直接跳到 execute_python
+    assert "do not skip to `execute_python` first" in lower
+    # 扩充举例覆盖 unit-convention（task_13 的 MM:SS.mmm 格式）与 formula
+    # 定义两类——只有 code-label 一个例子时模型容易把规则当作"窄场景适用"忽略
+    assert "MM:SS.mmm" in prompt
+    assert "formula definitions" in lower
 
 
 def test_native_system_prompt_warns_execute_python_is_stateless() -> None:
