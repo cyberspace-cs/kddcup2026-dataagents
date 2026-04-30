@@ -48,4 +48,6 @@ run:
     - task_14 # 问题歧义："track number" 未在 knowledge.md 显式映射到列；gold 用 driverStandings.position，agent 合理读成 races.round
     - task_15 # 问题歧义
     - task_17 # 问题歧义："type of expenses" 双绑定 (event.type vs expense_description)；gold 按 event.type 聚合(1 行 Meeting)，agent 合理读成 expense_description(3 行)；prompt 改写两轮均无效（runs 20260430-017/018 模型反而引规则名为错误答案背书）
+    - task_18 # 公式冲突：knowledge.md 写"Avg Monthly = Total Annual / 12"(=82027220.30)，gold 用 BIRD SQL "AVG(Consumption)/12"(=459.96)；yearmonth.Consumption 已是月度粒度，gold 的 AVG/12 物理含义不清
+    - task_19 # 数据失配：gold {CZE, SVK} 来自完整 BIRD transactions 表；context 仅投 transactions_1k.db（2012-08 四天 1000 行采样），无 2013-06 记录，不可解
     - task_50 # 文档联查，过于复杂
