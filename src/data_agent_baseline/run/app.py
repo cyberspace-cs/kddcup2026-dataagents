@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from data_agent_baseline.agents.model import (
     ModelAdapter,
@@ -26,8 +27,61 @@ from data_agent_baseline.agents.rate_limit import RateLimitedAdapter
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.agents.recorder import StepCallback
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
-from data_agent_baseline.config import AppConfig
+from data_agent_baseline.config import AgentConfig, AppConfig
 from data_agent_baseline.tools.registry import ToolRegistry, create_default_tool_registry
+
+# Qwen3 model card Best Practices 推荐的两套采样组合：
+# - thinking 模式：温度低、top_p 高、不抑制 presence
+# - non-thinking 模式：温度更高、top_p 收紧、用 presence_penalty 抑制复读
+# `seed` 在两套里都不下发（保留服务端默认行为）。
+_THINKING_DEFAULTS: dict[str, float | int] = {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+}
+_NON_THINKING_DEFAULTS: dict[str, float | int] = {
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+}
+_SAMPLING_FIELDS: tuple[str, ...] = (
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "presence_penalty",
+    "seed",
+)
+
+
+def _resolve_sampling_defaults(agent_config: AgentConfig) -> dict[str, Any]:
+    """按 `enable_thinking` 给未显式设置的采样字段填 Qwen3 官方推荐兜底。
+
+    规则：
+    - `enable_thinking=True`  且字段为 None → 从 _THINKING_DEFAULTS 取
+    - `enable_thinking=False` 且字段为 None → 从 _NON_THINKING_DEFAULTS 取
+    - `enable_thinking=None`                → 不填，全部 None 透传（不下发）；
+      与 `enable_thinking=None → 不下发 extra_body` 的语义对偶
+    - 用户显式值（非 None）原样保留，不会被默认值覆盖
+
+    `seed` 不在任一套兜底里——两个 mode 都让其保持用户原始意图（None=不下发）。
+
+    返回值是 ``{field: resolved_value_or_None}``，调用方逐字段下发到 Adapter。
+    """
+    resolved: dict[str, Any] = {field: getattr(agent_config, field) for field in _SAMPLING_FIELDS}
+
+    if agent_config.enable_thinking is None:
+        return resolved
+
+    defaults = _THINKING_DEFAULTS if agent_config.enable_thinking else _NON_THINKING_DEFAULTS
+    for field, default_value in defaults.items():
+        if resolved[field] is None:
+            resolved[field] = default_value
+    return resolved
 
 
 def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) -> ModelAdapter:
@@ -40,8 +94,14 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
     当 `config.agent.rate_limit` 非 None 且 `api_key` 非空时，外面再套一层
     `RateLimitedAdapter`（PR-2）。线上 vLLM 路径留空 rate_limit 即跳过。
 
+    `_resolve_sampling_defaults` 在此处而非 `AgentConfig` 内调用：保持 AgentConfig
+    存 "用户原始意图"，Adapter 拿到 "实际下发值"，与 `enable_thinking is None →
+    不下发` 的语义对偶。
+
     独立成函数主要是为了测试：可以 monkeypatch 掉这里注入 ScriptedModelAdapter。
     """
+    sampling = _resolve_sampling_defaults(config.agent)
+
     inner: NativeToolsOpenAIAdapter | OpenAIModelAdapter
     if config.agent.tool_protocol == "native":
         if tools is None:
@@ -51,20 +111,20 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
             model=config.agent.model,
             api_base=config.agent.api_base,
             api_key=config.agent.api_key,
-            temperature=config.agent.temperature,
             tools=tools,
             allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
             max_tokens=config.agent.max_tokens,
             enable_thinking=config.agent.enable_thinking,
+            **sampling,
         )
     else:
         inner = OpenAIModelAdapter(
             model=config.agent.model,
             api_base=config.agent.api_base,
             api_key=config.agent.api_key,
-            temperature=config.agent.temperature,
             max_tokens=config.agent.max_tokens,
             enable_thinking=config.agent.enable_thinking,
+            **sampling,
         )
 
     # PR-2：有 rate_limit 就包一层限速壳；没有就返回裸 adapter（线上路径不变）
@@ -151,3 +211,5 @@ __all__ = [
     "build_application",
     "build_model_adapter",
 ]
+
+# `_resolve_sampling_defaults` 故意不进 __all__：保持私有 API，但允许测试 import。

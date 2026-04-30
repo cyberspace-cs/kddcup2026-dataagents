@@ -1,0 +1,31 @@
+{
+  "agent": {
+    "allow_parallel_tool_calls": true,
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "sk-sampling",
+    "api_keys": [],
+    "enable_thinking": true,
+    "max_empty_tool_call_retries": 8,
+    "max_steps": 16,
+    "max_tokens": 16384,
+    "min_p": 0.0,
+    "model": "gpt-4.1-mini",
+    "presence_penalty": 0.0,
+    "rate_limit": null,
+    "seed": 42,
+    "temperature": 0.6,
+    "tool_protocol": "native",
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "dataset": {
+    "root_path": "/tmp/sampling-dataset"
+  },
+  "run": {
+    "blocklist": [],
+    "max_workers": 4,
+    "output_dir": "/tmp/sampling-runs",
+    "run_id": null,
+    "task_timeout_seconds": 600
+  }
+}

@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Mode-aware Qwen3 sampling defaults.** `agent.{top_p, top_k, min_p,
+  presence_penalty, seed}` are now configurable; when left unset, defaults
+  follow the Qwen3 model card recommendation for the selected
+  `enable_thinking` mode (thinking: `0.6 / 0.95 / 20 / 0 / 0`; non-thinking:
+  `0.7 / 0.8 / 20 / 0 / 1.5`). `temperature` default changed from `0.0` to
+  mode-aware resolution; explicit `temperature: 0.0` is preserved but emits a
+  `UserWarning` under `enable_thinking: true` (Qwen3 explicitly discourages
+  greedy decoding in thinking mode — performance degradation and endless
+  repetitions). `top_p` / `presence_penalty` / `seed` ride the chat completions
+  top-level fields; `top_k` / `min_p` ride `extra_body` and are merged with
+  `enable_thinking` rather than overwriting it.
 - **`ijson>=3.3.0` dependency** for streaming JSON schema extraction in
   `read_json` / `inspect_files` on files exceeding the full-load cap.
 - **`run.blocklist` task skip list.** Tasks listed under `run.blocklist` in the

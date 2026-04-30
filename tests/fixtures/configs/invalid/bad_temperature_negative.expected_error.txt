@@ -1,0 +1,1 @@
+agent.temperature must be in the interval [0.0, 2.0].

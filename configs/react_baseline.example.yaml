@@ -6,11 +6,23 @@ agent:
   api_base: YOUR_API_BASE_URL              # str（OpenAI 兼容 chat.completions 端点）
   api_key: YOUR_API_KEY                    # str；若启用 api_keys 池则忽略此字段
   max_steps: 16                            # int >= 1（YAML 标量；带引号的 "16" 会被拒收）
-  temperature: 0.0                         # float
   tool_protocol: native                    # Literal["native", "text"]
   allow_parallel_tool_calls: true          # bool；个别后端不支持 parallel_tool_calls 时设 false
   max_tokens: 16384                        # int >= 0；0=不下发上限走服务端默认
   enable_thinking: true                    # bool | null；null = 不下发 extra_body
+
+  # ---- Qwen3 官方推荐采样参数（mode-aware 兜底）----
+  # 全部为 null 时，按 enable_thinking 自动选 Qwen3 model card 推荐组合：
+  # - thinking=True:  temperature=0.6 / top_p=0.95 / top_k=20 / min_p=0 / presence_penalty=0
+  # - thinking=False: temperature=0.7 / top_p=0.80 / top_k=20 / min_p=0 / presence_penalty=1.5
+  # - thinking=null:  全部不下发（保留服务端默认）
+  # 显式值优先；用户写 0.0 仍允许（greedy decoding），thinking 模式下加载会触发 warning。
+  temperature: 0.6                         # float in [0, 2] | null
+  top_p: 0.95                              # float in (0, 1] | null
+  top_k: 20                                # int >= 1 | null（经 extra_body 透传）
+  min_p: 0.0                               # float in [0, 1] | null（经 extra_body 透传）
+  presence_penalty: 0.0                    # float in [-2, 2] | null
+  seed: null                               # int | null；同 seed 下输出基本可复现
 
   # 降级路径：端点不支持 tools= 时改为文本 JSON fence ReAct
   # tool_protocol: text

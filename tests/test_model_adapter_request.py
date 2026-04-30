@@ -186,6 +186,95 @@ def test_openai_adapter_omits_extra_body_when_enable_thinking_none(
     assert "extra_body" not in kwargs
 
 
+def test_openai_adapter_omits_temperature_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(model="m", api_base="http://x", api_key="k", temperature=None)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert "temperature" not in kwargs
+
+
+def test_openai_adapter_sends_top_p_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="m", api_base="http://x", api_key="k", temperature=0.6, top_p=0.95
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["top_p"] == 0.95
+
+
+def test_openai_adapter_omits_top_p_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(model="m", api_base="http://x", api_key="k", temperature=0.6)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert "top_p" not in kwargs
+
+
+def test_openai_adapter_sends_seed_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="m", api_base="http://x", api_key="k", temperature=0.6, seed=42
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["seed"] == 42
+
+
+def test_openai_adapter_sends_presence_penalty_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="m", api_base="http://x", api_key="k", temperature=0.7, presence_penalty=1.5
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["presence_penalty"] == 1.5
+
+
+def test_openai_adapter_extra_body_merges_top_k_and_enable_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """关键回归测试：top_k / min_p 必须与 enable_thinking 在 extra_body 里共存而非覆盖。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="m",
+        api_base="http://x",
+        api_key="k",
+        temperature=0.6,
+        enable_thinking=True,
+        top_k=20,
+        min_p=0.0,
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"enable_thinking": True, "top_k": 20, "min_p": 0.0}
+
+
+def test_openai_adapter_extra_body_contains_only_top_k_when_thinking_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="m",
+        api_base="http://x",
+        api_key="k",
+        temperature=0.6,
+        enable_thinking=None,
+        top_k=20,
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"top_k": 20}
+
+
 def test_openai_adapter_captures_reasoning_and_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     response = _make_response(
         content="final answer",
@@ -259,3 +348,71 @@ def test_native_adapter_captures_reasoning_and_usage(monkeypatch: pytest.MonkeyP
     assert result.reasoning_content == "I should call inspect_files"
     assert result.usage == TokenUsage(500, 80, 580, 200, 60)
     assert result.latency_ms >= 0
+
+
+def test_native_adapter_omits_temperature_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    adapter = _native_adapter(temperature=None)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert "temperature" not in kwargs
+
+
+def test_native_adapter_sends_top_p_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    adapter = _native_adapter(temperature=0.6, top_p=0.95)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["top_p"] == 0.95
+
+
+def test_native_adapter_omits_top_p_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    adapter = _native_adapter(temperature=0.6)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert "top_p" not in kwargs
+
+
+def test_native_adapter_sends_seed_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    adapter = _native_adapter(seed=7)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["seed"] == 7
+
+
+def test_native_adapter_sends_presence_penalty_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    adapter = _native_adapter(presence_penalty=1.5)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["presence_penalty"] == 1.5
+
+
+def test_native_adapter_extra_body_merges_top_k_and_enable_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """关键回归测试：top_k / min_p 必须与 enable_thinking 在 extra_body 里共存而非覆盖。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    adapter = _native_adapter(enable_thinking=True, top_k=20, min_p=0.0)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"enable_thinking": True, "top_k": 20, "min_p": 0.0}
+
+
+def test_native_adapter_extra_body_contains_only_top_k_when_thinking_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    adapter = _native_adapter(enable_thinking=None, top_k=20)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"top_k": 20}

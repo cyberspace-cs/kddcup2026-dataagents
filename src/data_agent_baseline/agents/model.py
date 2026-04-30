@@ -240,16 +240,29 @@ class OpenAIModelAdapter:
         model: str,
         api_base: str,
         api_key: str,
-        temperature: float,
+        temperature: float | None = None,
         max_tokens: int = 0,
         enable_thinking: bool | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        presence_penalty: float | None = None,
+        seed: int | None = None,
     ) -> None:
         self.model = model
         # 去掉尾部斜杠：OpenAI SDK 会自行拼 `/chat/completions`，重复的 `/` 在部分
         # 反向代理下会被当成不同的 URL 命中 404
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
+        # 采样字段统一以 None = "不下发" 为约定；is not None 时按位置（顶层 vs extra_body）
+        # 透传。temperature / top_p / presence_penalty / seed 走顶层（DashScope 文档支持），
+        # top_k / min_p 走 extra_body 并与 enable_thinking 合并而非覆盖。
         self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.min_p = min_p
+        self.presence_penalty = presence_penalty
+        self.seed = seed
         # 0 = 不下发 max_tokens（服务端默认）；>0 = 显式上限
         self.max_tokens = max_tokens
         # None = 不下发 enable_thinking（服务端默认）；True/False = 经 extra_body 透传
@@ -270,14 +283,29 @@ class OpenAIModelAdapter:
             "model": self.model,
             # 把 ModelMessage 转成 SDK 期望的 dict 形式
             "messages": [_message_to_payload(message) for message in messages],
-            "temperature": self.temperature,
         }
+        if self.temperature is not None:
+            request_kwargs["temperature"] = self.temperature
+        if self.top_p is not None:
+            request_kwargs["top_p"] = self.top_p
+        if self.presence_penalty is not None:
+            request_kwargs["presence_penalty"] = self.presence_penalty
+        if self.seed is not None:
+            request_kwargs["seed"] = self.seed
         if self.max_tokens > 0:
             # 下发显式上限；Qwen3 下封顶的是 **总输出**（含 reasoning tokens）
             request_kwargs["max_tokens"] = self.max_tokens
+        # extra_body 累积构建：top_k / min_p 与 enable_thinking 合并下发，避免后来者覆盖前者
+        extra_body: dict[str, Any] = {}
         if self.enable_thinking is not None:
             # Qwen3 特有字段；经 extra_body 透传进请求体（OpenAI SDK 原生字段表没有）
-            request_kwargs["extra_body"] = {"enable_thinking": self.enable_thinking}
+            extra_body["enable_thinking"] = self.enable_thinking
+        if self.top_k is not None:
+            extra_body["top_k"] = self.top_k
+        if self.min_p is not None:
+            extra_body["min_p"] = self.min_p
+        if extra_body:
+            request_kwargs["extra_body"] = extra_body
 
         started = perf_counter()
         try:
@@ -324,16 +352,29 @@ class NativeToolsOpenAIAdapter:
         model: str,
         api_base: str,
         api_key: str,
-        temperature: float,
+        temperature: float | None = None,
         tools: ToolRegistry,
         allow_parallel_tool_calls: bool = True,
         max_tokens: int = 0,
         enable_thinking: bool | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        presence_penalty: float | None = None,
+        seed: int | None = None,
     ) -> None:
         self.model = model
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
+        # 采样字段：与 OpenAIModelAdapter 对齐，None = 不下发；
+        # top_p / presence_penalty / seed 走顶层；top_k / min_p 走 extra_body 与
+        # enable_thinking 合并；详见 OpenAIModelAdapter 的注释。
         self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.min_p = min_p
+        self.presence_penalty = presence_penalty
+        self.seed = seed
         self.tools = tools
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
         self.max_tokens = max_tokens
@@ -356,10 +397,17 @@ class NativeToolsOpenAIAdapter:
         request_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": [_message_to_payload(message) for message in messages],
-            "temperature": self.temperature,
             "tools": self._openai_tools,
             "tool_choice": "auto",
         }
+        if self.temperature is not None:
+            request_kwargs["temperature"] = self.temperature
+        if self.top_p is not None:
+            request_kwargs["top_p"] = self.top_p
+        if self.presence_penalty is not None:
+            request_kwargs["presence_penalty"] = self.presence_penalty
+        if self.seed is not None:
+            request_kwargs["seed"] = self.seed
         if self.allow_parallel_tool_calls:
             # 并非所有 OpenAI-兼容后端都接受此字段，但 vLLM/OpenAI 官方都支持；
             # 配置项允许部署时关掉以兼容个别实现
@@ -367,9 +415,17 @@ class NativeToolsOpenAIAdapter:
         if self.max_tokens > 0:
             # 下发显式上限；Qwen3 下封顶的是 **总输出**（含 reasoning tokens）
             request_kwargs["max_tokens"] = self.max_tokens
+        # extra_body 累积构建：top_k / min_p 与 enable_thinking 合并下发，避免后来者覆盖前者
+        extra_body: dict[str, Any] = {}
         if self.enable_thinking is not None:
             # Qwen3 特有字段；经 extra_body 透传进请求体（OpenAI SDK 原生字段表没有）
-            request_kwargs["extra_body"] = {"enable_thinking": self.enable_thinking}
+            extra_body["enable_thinking"] = self.enable_thinking
+        if self.top_k is not None:
+            extra_body["top_k"] = self.top_k
+        if self.min_p is not None:
+            extra_body["min_p"] = self.min_p
+        if extra_body:
+            request_kwargs["extra_body"] = extra_body
 
         started = perf_counter()
         try:

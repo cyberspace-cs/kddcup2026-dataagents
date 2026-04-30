@@ -1,0 +1,3 @@
+agent:
+  api_key: sk
+  presence_penalty: 2.5

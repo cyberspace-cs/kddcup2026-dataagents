@@ -8,10 +8,15 @@
     "max_empty_tool_call_retries": 8,
     "max_steps": 16,
     "max_tokens": 16384,
+    "min_p": null,
     "model": "gpt-4.1-mini",
+    "presence_penalty": null,
     "rate_limit": null,
-    "temperature": 0.0,
-    "tool_protocol": "native"
+    "seed": null,
+    "temperature": null,
+    "tool_protocol": "native",
+    "top_k": null,
+    "top_p": null
   },
   "dataset": {
     "root_path": "/tmp/min-dataset"

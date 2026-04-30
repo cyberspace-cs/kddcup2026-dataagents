@@ -103,6 +103,16 @@ class AgentConfig:
     - True:  显式开；与线上行为对齐
     - False: 显式关；本地省 token 时可选，但线上不可用→慎用
 
+    采样字段（temperature / top_p / top_k / min_p / presence_penalty / seed）保存
+    "用户原始意图"：None = 未显式设置，由 `run/app.py:_resolve_sampling_defaults` 按
+    `enable_thinking` 选 Qwen3 官方推荐组合：
+    - thinking=True:  temperature=0.6 / top_p=0.95 / top_k=20 / min_p=0 / presence_penalty=0
+    - thinking=False: temperature=0.7 / top_p=0.80 / top_k=20 / min_p=0 / presence_penalty=1.5
+    - thinking=None:  全部不下发（与 enable_thinking=None 的语义对偶）
+    用户显式设置某字段时，该字段无论 mode 都原样下发，不会被默认值覆盖。
+    Qwen3 官方在 thinking 模式下显式反推荐 greedy decoding（temperature=0.0）；
+    用户硬写 0.0 仍允许，但加载时会触发 UserWarning。
+
     api_keys / rate_limit 是 PR-2 新增的 "本地 Key 池 + 限速" 入口：
     - 两者都为空/None（默认）: 走单 Key 直连路径，与 PR-1 行为一致
     - 两者均配置:             runner 按 task_index 轮询 api_keys，并用 RateLimitedAdapter 包壳
@@ -113,7 +123,13 @@ class AgentConfig:
     api_base: str = "https://api.openai.com/v1"  # 兼容 OpenAI 协议的推理服务根地址
     api_key: str = ""  # 认证 Key；空串会在实际调用时抛 RuntimeError
     max_steps: int = 16  # 单任务 ReAct 循环上限，防止无限思考
-    temperature: float = 0.0  # 采样温度；0 保证可复现
+    # 采样字段：None = 未显式设置 → 由 _resolve_sampling_defaults 按 mode 兜底
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    presence_penalty: float | None = None
+    seed: int | None = None
     tool_protocol: ToolProtocolLiteral = "native"  # 端到端字面量；runner 直接转交 ReActAgent
     # 原生协议下，是否允许模型一轮返回多个 tool_calls；个别 OpenAI-兼容后端不支持该字段，可关闭
     allow_parallel_tool_calls: bool = True
@@ -191,6 +207,11 @@ def load_app_config(config_path: Path) -> AppConfig:
         api_key=validated.agent.api_key,
         max_steps=validated.agent.max_steps,
         temperature=validated.agent.temperature,
+        top_p=validated.agent.top_p,
+        top_k=validated.agent.top_k,
+        min_p=validated.agent.min_p,
+        presence_penalty=validated.agent.presence_penalty,
+        seed=validated.agent.seed,
         tool_protocol=validated.agent.tool_protocol,
         allow_parallel_tool_calls=validated.agent.allow_parallel_tool_calls,
         max_tokens=validated.agent.max_tokens,

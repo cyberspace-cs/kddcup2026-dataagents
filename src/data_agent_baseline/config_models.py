@@ -18,7 +18,8 @@
 
 校验器声明顺序 = 错误暴露顺序，必须与旧实现保持一致，保证 fixture 报文不漂移：
 
-    tool_protocol → enable_thinking → max_empty_tool_call_retries
+    tool_protocol → temperature → top_p → top_k → min_p → presence_penalty
+        → enable_thinking → max_empty_tool_call_retries
         → api_keys → rate_limit{rpm → tpm → safety → reserve > 0
         → reserve_vs_max_tokens → max_retries → backoff_init → backoff_max}
         → key/limit pairing
@@ -26,6 +27,7 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any, cast
 
@@ -164,13 +166,23 @@ class RateLimitConfigModel(_StrictModel):
 
 
 class AgentConfigModel(_StrictModel):
-    # 字段顺序 = 错误暴露顺序：tool_protocol → enable_thinking → max_empty_tool_call_retries
-    # → api_keys → rate_limit。详见模块顶部 docstring。
+    # 字段顺序 = 错误暴露顺序：tool_protocol → temperature → top_p → top_k → min_p
+    # → presence_penalty → enable_thinking → max_empty_tool_call_retries → api_keys
+    # → rate_limit。详见模块顶部 docstring。
     model: str = "gpt-4.1-mini"
     api_base: str = "https://api.openai.com/v1"
     api_key: str = ""
     max_steps: StrictInt = 16
-    temperature: float = 0.0
+    # temperature/top_p/...：默认 None = 不显式下发，由 run/app.py 的
+    # `_resolve_sampling_defaults` 按 enable_thinking 选 Qwen3 官方推荐组合。
+    # 旧默认 0.0 被废弃；显式写 0.0 仍然合法（greedy decoding），thinking 模式下
+    # 会触发 warning 但不阻断启动。
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: StrictInt | None = None
+    min_p: float | None = None
+    presence_penalty: float | None = None
+    seed: StrictInt | None = None
     tool_protocol: ToolProtocolLiteral = "native"
     allow_parallel_tool_calls: StrictBool = True
     max_tokens: StrictInt = 16384
@@ -194,6 +206,53 @@ class AgentConfigModel(_StrictModel):
                 f"agent.tool_protocol must be either 'native' or 'text'; got {normalized!r}."
             )
         return normalized
+
+    @field_validator("temperature")
+    @classmethod
+    def _check_temperature(cls, v: float | None) -> float | None:
+        # DashScope 文档区间 [0, 2)；保留 0.0 给 "用户硬要 greedy" 的场景，
+        # 配合 model_validator 的 warning 但不在此处拦截。
+        if v is None:
+            return v
+        if not (0.0 <= v <= 2.0):
+            raise ValueError("agent.temperature must be in the interval [0.0, 2.0].")
+        return v
+
+    @field_validator("top_p")
+    @classmethod
+    def _check_top_p(cls, v: float | None) -> float | None:
+        if v is None:
+            return v
+        if not (0.0 < v <= 1.0):
+            raise ValueError("agent.top_p must be in the interval (0.0, 1.0].")
+        return v
+
+    @field_validator("top_k")
+    @classmethod
+    def _check_top_k(cls, v: int | None) -> int | None:
+        if v is None:
+            return v
+        if v < 1:
+            raise ValueError("agent.top_k must be >= 1.")
+        return v
+
+    @field_validator("min_p")
+    @classmethod
+    def _check_min_p(cls, v: float | None) -> float | None:
+        if v is None:
+            return v
+        if not (0.0 <= v <= 1.0):
+            raise ValueError("agent.min_p must be in the interval [0.0, 1.0].")
+        return v
+
+    @field_validator("presence_penalty")
+    @classmethod
+    def _check_presence_penalty(cls, v: float | None) -> float | None:
+        if v is None:
+            return v
+        if not (-2.0 <= v <= 2.0):
+            raise ValueError("agent.presence_penalty must be in the interval [-2.0, 2.0].")
+        return v
 
     @field_validator("enable_thinking", mode="before")
     @classmethod
@@ -245,6 +304,23 @@ class AgentConfigModel(_StrictModel):
         return RateLimitConfigModel.model_validate(
             v, context={_CONTEXT_KEY_MAX_TOKENS: max_tokens_value}
         )
+
+    @model_validator(mode="after")
+    def _warn_thinking_with_greedy(self) -> AgentConfigModel:
+        # Qwen3 model card Best Practices: thinking 模式下 DO NOT use greedy decoding，
+        # 否则会触发 "performance degradation and endless repetitions"。允许用户故意为之，
+        # 但用 warning 提示官方反推荐，避免静默踩坑。
+        if self.enable_thinking is True and self.temperature == 0.0:
+            warnings.warn(
+                "agent.temperature=0.0 with enable_thinking=true uses greedy decoding, "
+                "which the Qwen3 model card explicitly discourages "
+                "(performance degradation and endless repetitions). "
+                "Consider temperature=0.6 (Qwen3 thinking-mode recommendation) "
+                "or unset temperature to use the mode-aware default.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_pairing(self) -> AgentConfigModel:

@@ -11,7 +11,9 @@
     "max_empty_tool_call_retries": 8,
     "max_steps": 24,
     "max_tokens": 32768,
+    "min_p": null,
     "model": "qwen3-coder",
+    "presence_penalty": null,
     "rate_limit": {
       "backoff_initial_seconds": 1.0,
       "backoff_max_seconds": 30.0,
@@ -22,8 +24,11 @@
       "state_dir": "/tmp/ratelimit/run-x",
       "tpm_per_key": 1000000
     },
-    "temperature": 0.0,
-    "tool_protocol": "native"
+    "seed": null,
+    "temperature": 0.6,
+    "tool_protocol": "native",
+    "top_k": null,
+    "top_p": null
   },
   "dataset": {
     "root_path": "/tmp/dataset"

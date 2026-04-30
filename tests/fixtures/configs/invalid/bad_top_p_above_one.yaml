@@ -1,0 +1,3 @@
+agent:
+  api_key: sk
+  top_p: 1.1
