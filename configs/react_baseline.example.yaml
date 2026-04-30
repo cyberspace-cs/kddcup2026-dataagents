@@ -44,4 +44,6 @@ run:
   # 整数 (5) 或字符串 ("task_5" / "5")，runner 内部统一规整为 task_<n>。
   blocklist:
     - task_5  # 问题歧义
+    - task_13 # 问题单数，结果复数 gold 错误：raceId=903 的 number 列不含 5，正解应为 {3, 1}
+    - task_15 # 问题歧义
     - task_50 # 文档联查，过于复杂
