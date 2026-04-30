@@ -37,7 +37,6 @@ from data_agent_baseline.run.runner_artifacts import (
     merge_partial_with_failure,
     pin_key_on_config,
     resolve_ratelimit_state_dir,
-    resolve_run_id,
     write_summary_json,
     write_task_outputs,
 )
@@ -96,7 +95,11 @@ def run_single_task(
         and config.agent.rate_limit is not None
         and config.agent.rate_limit.state_dir is None
     ):
-        effective_run_id = resolve_run_id(config.run.run_id)
+        # run_output_dir 已由 caller（CLI run-task / run_benchmark）通过
+        # create_run_output_dir 建好，dir name 即权威 run_id；旧实现这里调
+        # resolve_run_id(config.run.run_id) 会再生成一个新 id（与 output dir 不一致），
+        # 进而导致 ratelimit 状态被独立目录持有——这里直接读 dir name 修复之。
+        effective_run_id = run_output_dir.name
         config = pin_key_on_config(config, task_index=0, effective_run_id=effective_run_id)
 
     started_at = perf_counter()
@@ -140,7 +143,8 @@ def run_benchmark(
     顺序固定：先 range 过滤，再用 limit 截断。例如 `task_range=(5, 20), limit=3`
     跑 task_5/6/7。`progress_callback` 在每个任务完成时触发，主要供 CLI 渲染进度条。
     """
-    # 先建目录再做其他事：run_id 冲突要立刻暴露
+    # 先建目录再做其他事：显式 run_id 撞名立即暴露；自动 run_id 由
+    # create_run_output_dir 内部 mkdir 重试解决并发冲突。
     effective_run_id, run_output_dir = create_run_output_dir(
         config.run.output_dir, run_id=config.run.run_id
     )

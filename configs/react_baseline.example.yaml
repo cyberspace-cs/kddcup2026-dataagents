@@ -35,6 +35,6 @@ agent:
 
 run:
   output_dir: artifacts/runs               # 相对路径以 PROJECT_ROOT 为基锚定
-  run_id: example_run_id                   # str | null；null = 自动 UTC 微秒时间戳
+  run_id: example_run_id                   # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`，例如 20260430-001
   max_workers: 8                           # int >= 1
   task_timeout_seconds: 600                # int；<= 0 关闭单任务超时

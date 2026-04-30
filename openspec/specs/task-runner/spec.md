@@ -3,17 +3,25 @@
 ## Purpose
 TBD - created by archiving change refactor-architecture-and-prune. Update Purpose after archive.
 ## Requirements
-### Requirement: Microsecond-precision run-id with single-segment directory name
+### Requirement: Daily-counter run-id with single-segment directory name
 
-Auto-generated `run_id` values SHALL use UTC microsecond precision in the format `%Y%m%dT%H%M%S%fZ`. The result MUST be a single-segment directory name (no `/`, no `..`). When a `run_id` is supplied explicitly, it MUST be validated as a single-segment directory name.
+Auto-generated `run_id` values SHALL follow the format `<UTC YYYYMMDD>-<NNN>` (e.g. `20260430-001`), where `NNN` is a zero-padded three-digit counter that resumes from `max_existing_today + 1` based on a directory scan of the run output root. The result MUST be a single-segment directory name (no `/`, no `..`). When a `run_id` is supplied explicitly, it MUST be validated as a single-segment directory name. When the daily counter would exceed 999, generation SHALL raise `RuntimeError` instead of silently widening the counter.
 
-#### Scenario: Two adjacent run-ids are distinct
-- **WHEN** `auto_run_id()` is invoked twice within the same millisecond on the same process
-- **THEN** the two returned strings are not equal
+#### Scenario: Sequential run-ids increment within the same UTC day
+- **WHEN** `create_run_output_dir(output_root)` is invoked five times on the same UTC day with no explicit `run_id`
+- **THEN** the produced run-ids are `<today>-001`, `<today>-002`, ..., `<today>-005`
+
+#### Scenario: Concurrent collision is resolved by retry
+- **WHEN** two callers compute the same candidate run-id and one wins the `mkdir(exist_ok=False)` race
+- **THEN** the loser rescans, picks the next counter, and the two final run-ids differ
 
 #### Scenario: Explicit run-id with path separator is rejected
 - **WHEN** `resolve_run_id("foo/bar")` is called
 - **THEN** it raises `ValueError`
+
+#### Scenario: Counter exhaustion raises rather than overflows
+- **WHEN** `<today>-999` already exists in the output root and `create_run_id` is called again on the same UTC day
+- **THEN** it raises `RuntimeError` instructing the operator to set `run.run_id` explicitly or rotate `output_dir`
 
 ### Requirement: Per-task subprocess isolation with timeout
 

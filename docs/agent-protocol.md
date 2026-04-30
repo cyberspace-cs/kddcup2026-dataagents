@@ -104,7 +104,7 @@ Error steps have `action == "__error__"` and a populated `error_payload`:
 
 ```json
 {
-  "run_id": "20260424T123456789012Z",
+  "run_id": "20260430-001",
   "task_count": 5,
   "succeeded_task_count": 4,
   "max_workers": 4,

@@ -59,6 +59,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with a ~30-token `{from_csv: ...}` call and a millisecond CSV re-parse.
 
 ### Changed
+- **`run_id` auto-generation switched from microsecond timestamps to a daily
+  counter.** New format: `<UTC YYYYMMDD>-<NNN>` (e.g. `20260430-001`); the
+  counter scans existing dirs under `output_dir` and resumes at `max + 1`,
+  zero-padded to 3 digits. Concurrent collisions are handled via
+  `mkdir(exist_ok=False)` retry inside `create_run_output_dir`. Single-day cap
+  is 999; exceeding it raises `RuntimeError`. Old microsecond-format directories
+  (e.g. `20260424T123456789012Z`) are preserved untouched and ignored by the
+  scan (no `-` separator → never matches the new prefix).
+- **`run_single_task` now derives `effective_run_id` from `run_output_dir.name`
+  instead of regenerating via `resolve_run_id(config.run.run_id)`.** Previously
+  the CLI `run-task` path could end up with a `ratelimit/<id>/` directory whose
+  id did not match the `runs/<id>/` it belonged to; rate-limit state is now
+  pinned to the same id as the run output directory.
 - **Configuration loader migrated to Pydantic v2.** `load_app_config` now validates
   the YAML through `AppConfigModel`, then materializes the existing frozen dataclasses.
   Public surface (`AppConfig` return type, `ValueError` messages) is byte-compatible.

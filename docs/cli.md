@@ -85,7 +85,7 @@ agent:
 
 run:
   output_dir: artifacts/runs
-  run_id:                                 # null = auto microsecond UTC timestamp
+  run_id:                                 # null = auto `<UTC YYYYMMDD>-<NNN>`, e.g. 20260430-001
   max_workers: 8
   task_timeout_seconds: 600               # 0 or negative = disable
 ```

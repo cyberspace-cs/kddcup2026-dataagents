@@ -57,21 +57,60 @@ class TaskRunArtifacts:
         }
 
 
-def create_run_id() -> str:
-    """生成默认 run_id：UTC 微秒级时间戳如 `20260420T123045123456Z`。
+_RUN_ID_COUNTER_WIDTH = 3
+_RUN_ID_COUNTER_MAX = 10**_RUN_ID_COUNTER_WIDTH - 1  # 999
+_RUN_ID_ALLOC_RETRIES = 50
 
-    UTC 保证跨时区不冲突；微秒精度避免连发 run 命中同一秒造成目录冲突。
+
+def _today_utc_prefix() -> str:
+    """当前 UTC 日期的目录名前缀，如 `20260430-`。"""
+    return datetime.now(timezone.utc).strftime("%Y%m%d") + "-"
+
+
+def create_run_id(output_root: Path) -> str:
+    """生成 human-friendly run_id：`<UTC YYYYMMDD>-<NNN>`，例如 `20260430-001`。
+
+    扫描 `output_root` 下今日已存在的子目录，取最大序号 +1；空目录或 output_root
+    不存在时返回 `001`。仅做读侧扫描——不建目录；并发场景下两个进程可能同时
+    算到同一序号，由 `create_run_output_dir` 的 `mkdir(exist_ok=False)` 仲裁，
+    撞名时调用方应重试（已内建于 `create_run_output_dir`）。
+
+    单日上限 999；超出抛 `RuntimeError`，提示用户显式指定 run_id 或更换 output_dir。
+    日期分隔符 `-` 同时充当格式锚点：旧 22 字符微秒格式（无 `-`）天然不会与新格式
+    冲突，老 run 目录原样保留。
     """
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    prefix = _today_utc_prefix()
+    max_existing = 0
+    if output_root.is_dir():
+        for entry in output_root.iterdir():
+            name = entry.name
+            if not entry.is_dir() or not name.startswith(prefix):
+                continue
+            suffix = name[len(prefix) :]
+            # 严格匹配 NNN（与生成格式一致）：避免把误命名目录算进序号
+            if len(suffix) == _RUN_ID_COUNTER_WIDTH and suffix.isdigit():
+                value = int(suffix)
+                if value > max_existing:
+                    max_existing = value
+    next_counter = max_existing + 1
+    if next_counter > _RUN_ID_COUNTER_MAX:
+        raise RuntimeError(
+            f"daily run counter exceeded {_RUN_ID_COUNTER_MAX} on {prefix[:-1]}; "
+            "set run.run_id explicitly or rotate output_dir."
+        )
+    return f"{prefix}{next_counter:0{_RUN_ID_COUNTER_WIDTH}d}"
 
 
-def resolve_run_id(run_id: str | None = None) -> str:
-    """规整 run_id：None 时自动生成；传了字符串则必须是合法的单级目录名。
+def resolve_run_id(run_id: str | None, *, output_root: Path | None = None) -> str:
+    """规整 run_id：None 时自动生成（需要 output_root 计数）；显式值需是合法单段目录名。
 
     拒绝包含 `/` `\\` 或等于 `.`/`..` 的输入，防止 Agent 误写到父目录或根目录。
+    `output_root` 仅在 `run_id is None` 时使用：调用方若传了显式 id，扫描参数可省。
     """
     if run_id is None:
-        return create_run_id()
+        if output_root is None:
+            raise ValueError("output_root is required when run_id is auto-generated.")
+        return create_run_id(output_root)
 
     normalized = run_id.strip()
     if not normalized:
@@ -85,12 +124,32 @@ def resolve_run_id(run_id: str | None = None) -> str:
 def create_run_output_dir(output_root: Path, *, run_id: str | None = None) -> tuple[str, Path]:
     """在 `output_root` 下创建 `<run_id>/` 子目录。
 
-    `exist_ok=False` 是故意的：防止复用同名 run_id 覆盖历史产物。
+    显式 run_id：直接 mkdir(exist_ok=False)，撞名抛 FileExistsError——保持历史
+    覆盖防护。
+
+    自动 run_id：扫描 + mkdir + 撞名重试（最多 50 次）。并发 worker 可能同时算到
+    同一序号，靠 mkdir 的原子失败仲裁，失败方重新扫描并取下一个序号。
     """
-    effective_run_id = resolve_run_id(run_id)
-    run_output_dir = output_root / effective_run_id
-    run_output_dir.mkdir(parents=True, exist_ok=False)
-    return effective_run_id, run_output_dir
+    if run_id is not None:
+        effective_run_id = resolve_run_id(run_id)
+        run_output_dir = output_root / effective_run_id
+        run_output_dir.mkdir(parents=True, exist_ok=False)
+        return effective_run_id, run_output_dir
+
+    last_error: FileExistsError | None = None
+    for _ in range(_RUN_ID_ALLOC_RETRIES):
+        candidate = create_run_id(output_root)
+        run_output_dir = output_root / candidate
+        try:
+            run_output_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            last_error = exc
+            continue
+        return candidate, run_output_dir
+    raise RuntimeError(
+        f"failed to allocate a daily-counter run_id after {_RUN_ID_ALLOC_RETRIES} retries; "
+        "filesystem may be saturated or counter exhausted."
+    ) from last_error
 
 
 def resolve_ratelimit_state_dir(config: AppConfig, effective_run_id: str) -> Path:
