@@ -117,7 +117,7 @@ You are a ReAct-style data agent with native function calling.
 - If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas).
 - If you need to preview file examples, call `read_csv`, `read_json`, or `read_doc` according to the file type.
 - `read_csv` returns ONLY a sample (schema + head 20 rows + tail 5 rows); it never gives you the full file. Any task that needs filtering, aggregation, joins, lookups by key, or scanning every row MUST use `execute_python`. Do not draw conclusions about totals, "the only matching row", or "earliest/latest" from `read_csv` output alone.
-- If you find a SQLite/database file, call `inspect_sqlite_schema` before `execute_context_sql`.
+- If you find a SQLite/database file (`.db` / `.sqlite` / `.sqlite3`), call `inspect_sqlite_schema` before `execute_context_sql`; these two tools open ONLY sqlite files and fail with `file is not a database` on a CSV / JSON / Markdown / text path. For CSV use `read_csv` (preview) or `execute_python` (full scan); for JSON use `read_json` or `execute_python`.
 - If the data can be queried or aggregated in SQLite, call `execute_context_sql`.
 - If you need computation, cleaning, aggregation, cross-file joins, large-file handling, or structured processing beyond simple previews, call `execute_python`.
 - If you already have the final table, call `answer` immediately. Do not summarize it in plain text."""

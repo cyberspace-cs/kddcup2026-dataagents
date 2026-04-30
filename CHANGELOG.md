@@ -129,6 +129,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the 1087-line `superhero.md` 7 times sequentially and still failed with
   `max_steps`. The new contract collapses such serial pagers into a single
   call. Paging mode (no keyword) is unchanged.
+- **System prompt now names the file-kind boundary for SQLite tools.**
+  `inspect_sqlite_schema` and `execute_context_sql` open ONLY `.db` /
+  `.sqlite` / `.sqlite3` files and fail with `file is not a database` on a
+  CSV / JSON / Markdown / text path. The native-prompt SQLite decision-tree
+  bullet now spells this out and routes CSV / JSON paths to
+  `read_csv` / `execute_python` and `read_json` / `execute_python` instead.
+  Empirical motivation: in run 20260429T215118057832Z, task_13 step 3 and
+  task_29 step 20 invoked `execute_context_sql` with `csv/qualifying.csv`
+  and `csv/postHistory.csv`; task_13 self-recovered via `execute_python`,
+  task_29 hit a 429 immediately after and ended as `missing_prediction`.
+  The pre-existing bullet said only "If you find a SQLite/database file,
+  call `inspect_sqlite_schema` before `execute_context_sql`" without naming
+  the rejected file kinds.
 - **System prompt now requires full numeric precision for computed values.**
   Averages, ratios, sums, etc. must be submitted as Python prints them (e.g.
   `60.77956989247312`), not in a human-readable rounded form (e.g. `60.78`).
