@@ -22,13 +22,24 @@ import json
 from data_agent_baseline.benchmark.schema import PublicTask
 from data_agent_baseline.tools.inputs import PATH_CONVENTION_NOTE
 
-# 共享：任务身份与权限边界。两套 prompt 都以此开头第二段。
-# 不抽"You are a ReAct-style data agent"那一句，因为 native 版有
-# "with native function calling" 的差异。
-_INTRO = (
-    "You are solving a task from a public dataset. "
-    "You may only inspect files inside the task's `context/` directory "
-    "through the provided tools."
+# 共享：任务身份/权限边界 + 评分协议。两套 prompt 都以此开头第二/三段。
+# `_TASK_PROFILE` 把"你接收什么 + 你能访问什么 + 你怎么提交"压成一段，让
+# success criterion（"通过 `answer` 工具提交"）在 prompt 起首就进入注意力，
+# 取代旧版仅讲身份的 _INTRO。访问边界（"only ... `context/`"）也并入此段。
+# `_GRADER_NOTE` 单独成段，把 grader 罚多余列/近似值的事实显式化——这是
+# `_DATA_OUTPUT_RULES` 多条规则共同的 motivation，前置后下面的具体规则
+# 才有"为什么这么写"的语境锚点。两常量同时被两套 prompt 引用，单一真相源。
+_TASK_PROFILE = (
+    "For each task you receive one question and a `context/` directory of "
+    "CSV / JSON / SQLite / Markdown files; you inspect them through the "
+    "provided tools, compute the answer, and submit via the `answer` tool. "
+    "You may only read files inside that `context/` directory."
+)
+
+_GRADER_NOTE = (
+    "Your answer is scored by an automated grader against a gold reference. "
+    "The grader penalizes extra columns and approximate values, so "
+    "prioritize correctness over coverage."
 )
 
 # 共享：answer 表的内容契约——schema mirroring / WH-target / cell type。
@@ -57,9 +68,11 @@ _PATH_CONVENTION_BLOCK = (
 #  - 必须以 answer 工具结束（没有它，循环只能因 max_steps 被动终止）
 #  - 响应格式严格，是为了让 parse_model_step 能稳定提取
 REACT_SYSTEM_PROMPT = f"""\
-You are a ReAct-style data agent.
+You are a ReAct-style data analysis agent.
 
-{_INTRO}
+{_TASK_PROFILE}
+
+{_GRADER_NOTE}
 
 ## Behavior
 - Use tools to inspect the available context before answering.
@@ -100,9 +113,11 @@ Example response when you have the final answer:
 # （commit 9e5a24f 解决 Qwen3-thinking 漏 emit 的踩坑），f-string 化会引入
 # 大量 `{{` 转义噪声，影响 review。
 _NATIVE_HEADER = f"""\
-You are a ReAct-style data agent with native function calling.
+You are a data analysis agent.
 
-{_INTRO}
+{_TASK_PROFILE}
+
+{_GRADER_NOTE}
 
 ## Behavior
 - Every assistant turn must use tool_calls to call at least one provided tool. Plain text replies are not delivered to the runner — if you reply with prose instead of a tool_call, the answer is lost and the task fails.
@@ -124,11 +139,10 @@ You are a ReAct-style data agent with native function calling.
 ## Decision tree
 - If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas).
 - If `inspect_files` lists a `knowledge.md`, your very next turn MUST call `read_doc` on it — in parallel with any CSV/JSON previews is fine, but do NOT skip to `execute_python` first. It typically pins down code↔label mappings (e.g. `VYBER` = cash withdrawal), unit conventions (e.g. times standardized to `MM:SS.mmm`), or formula definitions that change the filter; reading it after analysis wastes turns.
-- If you need to preview file examples, call `read_csv`, `read_json`, or `read_doc` according to the file type.
-- `read_csv` returns ONLY a sample (schema + head 20 rows + tail 5 rows); it never gives you the full file. Any task that needs filtering, aggregation, joins, lookups by key, or scanning every row MUST use `execute_python`. Do not draw conclusions about totals, "the only matching row", or "earliest/latest" from `read_csv` output alone.
-- If you find a SQLite/database file (`.db` / `.sqlite` / `.sqlite3`), call `inspect_sqlite_schema` before `execute_context_sql`; these two tools open ONLY sqlite files and fail with `file is not a database` on a CSV / JSON / Markdown / text path. For CSV use `read_csv` (preview) or `execute_python` (full scan); for JSON use `read_json` or `execute_python`.
-- If the data can be queried or aggregated in SQLite, call `execute_context_sql`.
-- If you need computation, cleaning, aggregation, cross-file joins, large-file handling, or structured processing beyond simple previews, call `execute_python`. Each call runs in a FRESH subprocess — imports, DataFrames, and variables are NOT carried over; combine read + filter + projection + verification into ONE call.
+- For previews, call `read_csv`, `read_json`, or `read_doc` according to file type. `read_csv` / `read_json` return ONLY a sample of the file, so do not draw conclusions about totals, "the only matching row", or "earliest/latest" from their output alone (`read_doc` keyword mode does scan the whole file — see its tool description).
+- If you find a SQLite/database file (`.db` / `.sqlite` / `.sqlite3`), call `inspect_sqlite_schema` first, then `execute_context_sql` for queries and aggregations; these two tools open ONLY sqlite files and fail with `file is not a database` on a CSV / JSON / Markdown / text path.
+- For any work beyond a preview — filtering, aggregation, joins, lookups by key, scanning every row, computation, cleaning, cross-file joins, large-file handling, or structured processing — call `execute_python` (it is also the route for full CSV/JSON scans, since `read_csv` / `read_json` only return samples).
+- `execute_python` runs each call in a FRESH subprocess — imports, DataFrames, and variables are NOT carried over; combine read + filter + projection + verification into ONE call.
 - If you already have the final table, call `answer` immediately. Do not summarize it in plain text."""
 
 _NATIVE_OUTPUT_PROTOCOL = """\
@@ -152,10 +166,6 @@ Self-check: if you catch yourself drafting a tool_call shape (in any format) ins
 
 The `answer` tool is your ONLY way to submit. The instant the final table is ready, the very next thing you emit must be a structured `answer` tool_call — no narration, no preview, no JSON-in-text."""
 
-REACT_NATIVE_SYSTEM_PROMPT = "\n\n".join(
-    [_NATIVE_HEADER, _NATIVE_OUTPUT_PROTOCOL, _PATH_CONVENTION_BLOCK]
-)
-
 
 def build_system_prompt(tool_descriptions: str, system_prompt: str | None = None) -> str:
     """拼装**文本协议**下的系统消息：基础 prompt + 可用工具表 + 响应示例 + 格式硬约束。
@@ -176,13 +186,36 @@ def build_system_prompt(tool_descriptions: str, system_prompt: str | None = None
     )
 
 
-def build_native_system_prompt(system_prompt: str | None = None) -> str:
+def build_native_system_prompt(
+    system_prompt: str | None = None,
+    enable_thinking: bool | None = None,
+) -> str:
     """拼装**原生 function calling** 下的系统消息。
 
     关键差异：工具定义通过 OpenAI `tools=[...]` 请求字段下推，无需在 prompt 里复述。
     允许外部覆盖基座 prompt（A/B 调优用），缺省走 `REACT_NATIVE_SYSTEM_PROMPT`。
+
+    `enable_thinking` 控制是否注入 `<think>` 警告段（约 240 tokens，
+    专治 Qwen3-thinking 模式下漏 emit tool_call 的失败模式，commit 9e5a24f）：
+      - None（未设置，默认）：注入。Qwen3 服务端默认通常 thinking-on，
+        保守起见保留警告。
+      - True：注入。thinking 显式开启，失败模式适用。
+      - False：不注入。模型不会产出 `<think>`，警告对其无意义且占 token；
+        显式关闭 thinking 时省 ~240 tokens。
     """
-    return system_prompt or REACT_NATIVE_SYSTEM_PROMPT
+    if system_prompt is not None:
+        return system_prompt
+    sections = [_NATIVE_HEADER]
+    if enable_thinking is not False:
+        sections.append(_NATIVE_OUTPUT_PROTOCOL)
+    sections.append(_PATH_CONVENTION_BLOCK)
+    return "\n\n".join(sections)
+
+
+# 向后兼容：保留模块级常量供外部调用方（notebooks / 自定义 A/B 配置）继续 import。
+# 等价于 `build_native_system_prompt(enable_thinking=None)`，即"未指定 → 注入警告"
+# 的保守缺省，与历史行为完全一致。
+REACT_NATIVE_SYSTEM_PROMPT = build_native_system_prompt()
 
 
 def build_task_prompt(task: PublicTask) -> str:

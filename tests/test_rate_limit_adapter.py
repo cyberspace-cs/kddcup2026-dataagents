@@ -155,6 +155,69 @@ def _messages() -> list[ModelMessage]:
     ]
 
 
+# ------- inner metadata passthrough ----------------------------------------------
+
+
+@pytest.mark.parametrize("inner_value", [None, True, False])
+def test_rate_limited_adapter_forwards_enable_thinking(
+    rate_limit_cfg: RateLimitConfig,
+    inner_value: bool | None,
+) -> None:
+    """`RateLimitedAdapter` 必须把 inner 的 `enable_thinking` 元数据原样暴露。
+
+    动机：`ReActAgent._system_message` 通过 `getattr(model, 'enable_thinking', None)`
+    决定是否注入 `<think>` 警告段。当 wrapper 没透传这个字段时，agent 拿到的
+    永远是 None，落到"保守缺省=注入"分支——即使 config 显式配 `False` 也无效。
+    本测试在 wrapper 层钉死透传契约；任何未来再加的 wrapper 漏转发都会被这条
+    回归立刻暴露。
+    """
+    inner = _ScriptedInnerAdapter([])
+    inner.enable_thinking = inner_value  # type: ignore[attr-defined]
+
+    wrapper = RateLimitedAdapter(inner=inner, api_key="test-key", rate_limit=rate_limit_cfg)
+
+    assert wrapper.enable_thinking == inner_value
+
+
+def test_rate_limited_adapter_enable_thinking_defaults_to_none_when_inner_lacks_attr(
+    rate_limit_cfg: RateLimitConfig,
+) -> None:
+    """inner 上没 `enable_thinking` 字段时，wrapper 暴露 None（保守缺省）。
+
+    `_ScriptedInnerAdapter` 默认就不带这个字段——这正好覆盖"老 adapter 没升级"
+    的兼容场景。`getattr(..., None)` 必须吃下 AttributeError，让 wrapper 不抛错。
+    """
+    inner = _ScriptedInnerAdapter([])
+    assert not hasattr(inner, "enable_thinking")
+
+    wrapper = RateLimitedAdapter(inner=inner, api_key="test-key", rate_limit=rate_limit_cfg)
+
+    assert wrapper.enable_thinking is None
+
+
+def test_rate_limited_adapter_propagates_thinking_off_through_react_system_message(
+    rate_limit_cfg: RateLimitConfig,
+) -> None:
+    """端到端：inner.enable_thinking=False → wrapper → ReActAgent → prompt 不含警告段。
+
+    这是上一条 wrapper 单元测试的集成版：钉死"配置 thinking=False 的真实 wiring
+    路径下，`<think>` 警告确实被 strip 掉"。失败即意味着 wrapper / agent /
+    prompt builder 三段中至少一段断链。
+    """
+    from data_agent_baseline.agents.react import ReActAgent
+    from data_agent_baseline.tools.registry import create_default_tool_registry
+
+    inner = _ScriptedInnerAdapter([])
+    inner.enable_thinking = False  # type: ignore[attr-defined]
+    wrapper = RateLimitedAdapter(inner=inner, api_key="test-key", rate_limit=rate_limit_cfg)
+
+    agent = ReActAgent(model=wrapper, tools=create_default_tool_registry(), protocol="native")
+    system_content = agent._system_message().content
+
+    assert "## Output protocol" not in system_content
+    assert "anything inside <think>...</think>" not in system_content.lower()
+
+
 # ------- estimate_prompt_tokens ---------------------------------------------------
 
 

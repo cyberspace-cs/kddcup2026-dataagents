@@ -151,9 +151,20 @@ class ReActAgent:
     # ----------------------------- 消息构造 -----------------------------
 
     def _system_message(self) -> ModelMessage:
-        """按协议选合适的 system prompt。"""
+        """按协议选合适的 system prompt。
+
+        native 协议下额外读取 `model.enable_thinking`：仅在显式 False 时
+        会跳过 `_NATIVE_OUTPUT_PROTOCOL` 段（参见 `build_native_system_prompt`）。
+        `getattr` + isinstance 让 ModelAdapter Protocol 可以无该属性，未来
+        加入非 bool 字段也不会被误读。
+        """
         if self.protocol == "native":
-            content = build_native_system_prompt(self.system_prompt)
+            raw_enable_thinking = getattr(self.model, "enable_thinking", None)
+            enable_thinking = raw_enable_thinking if isinstance(raw_enable_thinking, bool) else None
+            content = build_native_system_prompt(
+                self.system_prompt,
+                enable_thinking=enable_thinking,
+            )
         else:
             content = build_system_prompt(
                 self.tools.describe_for_prompt(),

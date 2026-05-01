@@ -178,6 +178,12 @@ class RateLimitedAdapter:
         self.inner = inner
         self.api_key = api_key
         self._rl = rate_limit
+        # 透传 inner 的 `enable_thinking` 元数据。本壳不参与 thinking 行为本身——
+        # `complete` 只把 messages 转交给 inner——但 `ReActAgent._system_message`
+        # 会 introspect `model.enable_thinking` 决定是否注入 `<think>` 警告段
+        # （见 `prompt.build_native_system_prompt`）。不转发会导致 wrapper 路径下
+        # 永远走"未指定→保守缺省→注入"分支，即使 config 显式配了 `False`。
+        self.enable_thinking = getattr(inner, "enable_thinking", None)
         # Key 哈希取前 10 位：2^40 空间，2-4 个 Key 碰撞概率可忽略；文件名也短些
         key_hash = hashlib.sha1(api_key.encode("utf-8")).hexdigest()[:10]
         state_path = rate_limit.state_dir / f"bucket_{key_hash}.json"

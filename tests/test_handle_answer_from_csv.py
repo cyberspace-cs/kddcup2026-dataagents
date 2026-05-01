@@ -319,9 +319,7 @@ def test_from_csv_unlinks_artifact_after_successful_submission(
     assert not csv_path.exists()
 
 
-def test_inline_submission_clears_stale_answer_artifact(
-    task: PublicTask, tmp_path: Path
-) -> None:
+def test_inline_submission_clears_stale_answer_artifact(task: PublicTask, tmp_path: Path) -> None:
     """走 inline 也清理 `task.task_dir/_answer/answer.csv`。
 
     场景：模型先用 execute_python 写出 _answer/answer.csv，但最终决定换 inline
