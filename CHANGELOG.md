@@ -154,6 +154,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   kwargs (zero callers).
 
 ### Behavior changes (intentional tightening)
+- **System prompt: entity-vs-id and answer-cell truncation rules.** Two inline
+  clauses added to `_DATA_OUTPUT_RULES` (shared by text and native protocols):
+  (1) when the WH-target is a content entity ("the comment / answer /
+  description / name / title / message"), the answer column is the entity's
+  natural-language column (Text/Body/Name/Title), not the primary key — `Id` /
+  `Code` is correct only when the question literally says "ID" or "identifier";
+  (2) the verification snapshot must show FULL cell values for every column in
+  the final list — slicing (`[:N]` / truncation) on a cell about to be
+  submitted is forbidden, since the resulting ellipsis flips the model into
+  substituting the row's primary key. Empirical motivation: task_31 failed 5/5
+  runs (artifacts/runs/20260501-007..011) by submitting `Id=90813` instead of
+  the gold `Text` content; the trace showed the agent both misreading "what is
+  the comment" as "the comment's identifier" and printing `Text[:100] + "..."`
+  for verification, demoting Text to a preview column.
 - **Strict bool/int coercion.** YAML quoted booleans/integers (`"false"`, `"0"`,
   `"16384"`) are now rejected. Use unquoted YAML scalars (`false`, `0`, `16384`).
   The previous behavior silently flipped quoted bools (`bool("false") == True`).
