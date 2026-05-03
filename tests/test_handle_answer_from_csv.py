@@ -300,39 +300,97 @@ def test_from_csv_missing_file_hint_messages_are_actionable(
 def test_from_csv_unlinks_artifact_after_successful_submission(
     task: PublicTask, tmp_path: Path
 ) -> None:
-    """模型提交成功后，from_csv 指向的 CSV 必须被删除。
+    """模型提交成功后，from_csv 指向的 CSV 与整个 `_answer/` 目录都必须被删除。
 
     输入树污染回归：曾出现 `data/public/input/task_*/_answer/answer.csv` 残留，
-    造成离线分析时把它误读成"项目自带参考答案"。失败路径不在本测试覆盖范围，
-    那里保留文件让 ReAct 循环 retry 时 to_csv 直接覆盖更稳。
+    造成离线分析时把它误读成"项目自带参考答案"；草稿/日志同理。失败路径不在本
+    测试覆盖范围，那里保留文件让 ReAct 循环 retry 时 to_csv 直接覆盖更稳。
     """
-    csv_path = _write(
-        tmp_path / "_answer" / "answer.csv",
-        "id,name\n1,alpha\n2,beta\n",
-    )
-    assert csv_path.exists()
+    answer_dir = task.task_dir / "_answer"
+    csv_path = _write(answer_dir / "answer.csv", "id,name\n1,alpha\n2,beta\n")
+    # 草稿文件：模型可能把中间表/日志也丢在 DABENCH_ANSWER_DIR 下
+    draft_path = _write(answer_dir / "draft.csv", "tmp\n1\n")
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
     result = handle_answer(task, args)
 
     assert result.ok is True
     assert not csv_path.exists()
+    assert not draft_path.exists()
+    assert not answer_dir.exists()
 
 
-def test_inline_submission_clears_stale_answer_artifact(task: PublicTask, tmp_path: Path) -> None:
-    """走 inline 也清理 `task.task_dir/_answer/answer.csv`。
+def test_from_csv_external_path_still_clears_answer_dir(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """from_csv 指向 `_answer/` 之外（如 `/tmp/...`）也要清掉 `_answer/` 目录。
 
-    场景：模型先用 execute_python 写出 _answer/answer.csv，但最终决定换 inline
-    提交（例如 row count 缩水后切回 inline 更省 token）。残留文件必须一起清，
-    否则下一次离线分析又会把它误当"参考答案"读入。
+    场景：模型把 artifact 写到非约定路径（绕开 DABENCH_ANSWER_DIR），但更早的
+    execute_python 已经在 `_answer/` 留下文件；rmtree 兜底带走，避免下次离线
+    分析读到错位的 stale answer。
     """
-    stale = task.task_dir / "_answer" / "answer.csv"
-    stale.parent.mkdir(parents=True, exist_ok=True)
-    stale.write_text("id\n999\n", encoding="utf-8")
-    assert stale.exists()
+    answer_dir = task.task_dir / "_answer"
+    stale = _write(answer_dir / "answer.csv", "id\n999\n")
+    external = _write(tmp_path / "elsewhere" / "real.csv", "id\n1\n2\n")
+    args = AnswerInput.model_validate({"from_csv": str(external)})
+
+    result = handle_answer(task, args)
+
+    assert result.ok is True
+    assert not external.exists()
+    assert not stale.exists()
+    assert not answer_dir.exists()
+
+
+def test_inline_submission_with_existing_artifact_raises(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """残留 `_answer/answer.csv` + inline 提交：handler 拒绝并指回 from_csv。
+
+    回归参照 run 20260501-010/task_8：execute_python 已经把 140 行写到
+    `_answer/answer.csv`，但 `answer` tool_call 的 JSON 参数里只 inline 了 head(20)
+    的 20 行（attention drift 把更早一轮 head() 预览当成了完整表）。inline
+    硬闸（30 行 / 200 cells）抓不住此类小体量截断；提交时间点检测到 artifact
+    残留就直接拒绝，让 ReAct 循环把错误回灌给模型自行改用 from_csv。
+
+    artifact 文件必须保留在原位——下一轮模型才能用同一路径走 from_csv 重交。
+    """
+    artifact = task.task_dir / "_answer" / "answer.csv"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("id\n999\n", encoding="utf-8")
+
+    args = AnswerInput.model_validate({"columns": ["id"], "rows": [[1], [2]]})
+
+    with pytest.raises(ValueError, match=r"answer artifact already exists") as exc_info:
+        handle_answer(task, args)
+
+    # 错误消息要把绝对路径与 from_csv 修复方向都贴上，模型下一轮才能直接照搬
+    msg = str(exc_info.value)
+    assert str(artifact) in msg
+    assert "from_csv" in msg
+    # 关键：保留 artifact 与 `_answer/` 目录，模型 retry 时还能指它
+    assert artifact.exists()
+    assert artifact.parent.exists()
+
+
+def test_inline_submission_with_zero_byte_artifact_passes(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """zero-byte 残留不视作 artifact：inline 提交照常成功并清理零字节文件。
+
+    `_FROM_CSV_SIZE_LIMIT_BYTES` 上限不是这里的拦截理由；空文件更像 mkdir/touch
+    误产物，不应触发 from_csv 改写要求。
+    """
+    artifact = task.task_dir / "_answer" / "answer.csv"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"")
+    assert artifact.exists()
 
     args = AnswerInput.model_validate({"columns": ["id"], "rows": [[1], [2]]})
     result = handle_answer(task, args)
 
     assert result.ok is True
-    assert not stale.exists()
+    assert result.answer is not None
+    assert result.answer.rows == [[1], [2]]
+    assert not artifact.exists()
+    assert not artifact.parent.exists()

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import pathlib
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -213,9 +214,16 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
       构 AnswerTable；任何 IO/格式/越界错误以 `ValueError` 上抛，dispatcher 翻译成
       `ToolErrorEvent`，ReAct 循环续跑让模型 retry
 
-    提交成功路径上会清理 `_answer/answer.csv`：模型在 `execute_python` 里写出的
+    提交成功路径上会清理整个 `_answer/` 目录：模型在 `execute_python` 里写出的
     artifact 此时已被 `_parse_answer_csv` 全量读入内存（或 inline 路径压根没用到），
-    保留磁盘文件只会污染输入树（曾被误读为参考答案）。任一返回前 unlink 一次即可。
+    保留磁盘文件只会污染输入树（曾被误读为参考答案）。`DABENCH_ANSWER_DIR` 还可能
+    存放草稿/备份/日志等非 answer.csv 文件，单独 unlink 主文件不够，整个目录 rmtree。
+
+    Inline + 残留 artifact 互斥：模型若已经把表写到 `_answer/answer.csv`，
+    必须用 `from_csv` 指向它；继续 inline 一律拒绝。回归参照见
+    `run 20260501-010/task_8`——`to_csv` 写出 140 行后，模型在 `answer` tool_call
+    里只 inline 了 `head(20)` 的 20 行，inline 硬闸（30 行 / 200 cells）抓不住。
+    raise ValueError 让 dispatcher 翻译为 `ToolErrorEvent`，下一轮模型自己改 `from_csv`。
     """
     artifact_path = task.task_dir / "_answer" / "answer.csv"
     if args.from_csv is not None:
@@ -230,9 +238,10 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
             )
         columns, rows, dtypes = _parse_answer_csv(path)
         answer = AnswerTable(columns=columns, rows=rows)
-        # 优先 unlink 模型实际提交的那份；artifact_path 兜底（万一二者不一致）
+        # 用户提交路径若落在 `_answer/` 之外，rmtree 不会清到，这里先 unlink 兜底；
+        # 然后整目录 rmtree 把 artifact_path 与任何草稿/日志一起带走
         path.unlink(missing_ok=True)
-        artifact_path.unlink(missing_ok=True)
+        shutil.rmtree(artifact_path.parent, ignore_errors=True)
         return ToolExecutionResult(
             ok=True,
             content={
@@ -250,12 +259,22 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
             is_terminal=True,
             answer=answer,
         )
+    # 残留 artifact + inline 提交：拒绝并指回 from_csv（详见 docstring 中
+    # run 20260501-010/task_8 案例）。size > 0 防御 zero-byte 残留误伤。
+    if artifact_path.exists() and artifact_path.stat().st_size > 0:
+        raise ValueError(
+            f"answer artifact already exists at {artifact_path} but inline "
+            "columns/rows were sent; the artifact is the canonical answer "
+            "and inline cannot override it. Resubmit as "
+            f'answer({{"from_csv": "{artifact_path}"}}) with no columns/rows.'
+        )
     # inline 路径：list(...) 拷贝让最终落盘的 AnswerTable 不与外部对象共享底层引用
     columns = list(args.columns)
     rows = [list(row) for row in args.rows]
     answer = AnswerTable(columns=columns, rows=rows)
-    # 即便走 inline，模型可能先写过 _answer/answer.csv 再切回 inline，残留同样要清掉
-    artifact_path.unlink(missing_ok=True)
+    # 走到这里 artifact 要么不存在、要么是零字节；连同 `_answer/` 目录一起清，
+    # 下次同一 task_dir 重跑或离线分析都不会读到旧产物
+    shutil.rmtree(artifact_path.parent, ignore_errors=True)
     return ToolExecutionResult(
         ok=True,
         content={
