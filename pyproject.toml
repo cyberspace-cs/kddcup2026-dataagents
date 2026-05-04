@@ -87,7 +87,10 @@ docstring-code-format = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --cov=data_agent_baseline --cov-report=term-missing --cov-fail-under=70"
+# basetemp 固定到项目内：默认的 %TEMP%/pytest-of-<user>/ 在 Windows 上常因 AV
+# / 残留句柄被拒（WinError 5），整组 tmp_path fixture 失败前根本进不到 test。
+# 项目盘 (E:) 不走 Defender 实时扫描，落盘可控。
+addopts = "-ra --cov=data_agent_baseline --cov-report=term-missing --cov-fail-under=70 --basetemp=.pytest_tmp"
 
 [tool.pyright]
 include = ["src/data_agent_baseline", "tests"]
