@@ -66,8 +66,12 @@ def test_execute_read_only_sql_translates_non_db_path(
     target = tmp_path / f"trans{ext}"
     target.write_text("dummy content\n", encoding="utf-8")
 
+    # `SELECT 1` is a constant query and never reads the file, so sqlite never
+    # validates the file header → no "file is not a database" → translation
+    # path doesn't fire. Use a query that touches the file to mirror what real
+    # model-issued SQL would do.
     with pytest.raises(ValueError) as exc_info:
-        execute_read_only_sql(target, "SELECT 1")
+        execute_read_only_sql(target, "SELECT * FROM sqlite_master")
 
     msg = str(exc_info.value)
     assert target.name in msg

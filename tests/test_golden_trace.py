@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
+
+import pytest
 
 from data_agent_baseline.agents.model import (
     ModelResponse,
@@ -69,6 +72,13 @@ def _scripted_adapter() -> ScriptedNativeModelAdapter:
     )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    # Golden fixtures use forward-slash paths (Linux Docker baseline);
+    # on Windows the runtime emits backslashes which can't byte-match without
+    # platform-specific golden files. Production target is Linux.
+    reason="Golden fixtures are POSIX-form; byte-stable on Linux only",
+)
 def test_trace_and_prediction_byte_stable(tmp_path: Path) -> None:
     """运行 agent 后比对 trace.json / prediction.csv 与 golden 字节一致。"""
     dataset_root = tmp_path / "input"
@@ -115,6 +125,10 @@ def test_trace_and_prediction_byte_stable(tmp_path: Path) -> None:
     assert artifact.prediction_csv_path.read_bytes() == (GOLDEN_DIR / "prediction.csv").read_bytes()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Golden fixtures are POSIX-form; byte-stable on Linux only",
+)
 def test_summary_byte_stable(tmp_path: Path) -> None:
     """run_benchmark 风格 summary.json 与 golden 字节一致（替换 <RUN_DIR> 占位符后）。"""
     dataset_root = tmp_path / "input"

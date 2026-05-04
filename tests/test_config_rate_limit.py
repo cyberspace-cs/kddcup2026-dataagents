@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,14 @@ def test_defaults_when_both_absent(tmp_path: Path) -> None:
 # --- 完整块解析 -------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    # `state_dir: /tmp/ratelimit-test` resolves to drive-relative `E:/tmp/...`
+    # on Windows; the assertion compares against `Path('/tmp/ratelimit-test')`
+    # which becomes a different WindowsPath. Behaviour is correct on the Linux
+    # production target.
+    reason="POSIX-only path semantics; verified on Linux",
+)
 def test_full_block_round_trip(tmp_path: Path) -> None:
     body = """
   api_keys:
