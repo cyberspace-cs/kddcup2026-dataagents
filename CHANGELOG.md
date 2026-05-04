@@ -122,6 +122,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   helper, so no wire-format change ships.
 
 ### Fixed
+- **`submission.py` silent fallback on missing config.** `_build_config`
+  previously fell back to dataclass defaults (`AppConfig()`) when
+  `CONFIG_PATH` (or `DEFAULT_CONFIG = /app/configs/react_baseline.example.yaml`)
+  was missing — locally tuned `max_steps`, sampling, prompts, and timeouts
+  silently reverted, with no signal at runtime. The judge could mark a run
+  "successful" while it actually used stock defaults. New behavior: missing
+  config raises `SystemExit(78)` with the resolved path in stderr, matching
+  the `EX_CONFIG` exit-code convention used elsewhere in the entrypoint.
 - **`tools/python_exec.py` unbounded captured stream → context overflow.**
   `_read_captured_stream` previously read the entire stdout/stderr file
   verbatim; an agent's `print(huge_object)` could put a multi-MB observation

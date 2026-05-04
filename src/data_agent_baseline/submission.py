@@ -107,7 +107,18 @@ def _build_config(input_root: Path) -> AppConfig:
     - `agent.max_steps` ← `MAX_STEPS` env when set (smoke-test escape hatch)
     """
     config_path = Path(os.environ.get("CONFIG_PATH", DEFAULT_CONFIG))
-    base = load_app_config(config_path) if config_path.is_file() else AppConfig()
+    # Fail loud rather than silently fall back to `AppConfig()` defaults: a
+    # missing config means the image was built without the COPY (or CONFIG_PATH
+    # points at a typo), and the silent path produced a "successful" run with
+    # all locally-tuned knobs (max_steps, sampling, prompts) reverted to
+    # dataclass defaults — undetectable from the judge's side.
+    if not config_path.is_file():
+        sys.stderr.write(
+            f"FATAL: config not found at {config_path}; "
+            "verify Dockerfile COPY configs/ and CONFIG_PATH env\n"
+        )
+        raise SystemExit(78)
+    base = load_app_config(config_path)
 
     agent_overrides: dict[str, Any] = {
         "model": os.environ["MODEL_NAME"],
