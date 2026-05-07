@@ -91,6 +91,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with a ~30-token `{from_csv: ...}` call and a millisecond CSV re-parse.
 
 ### Changed
+- **Minimum Python bumped to 3.11.** `requires-python = ">=3.11"`,
+  `[tool.ruff].target-version = "py311"`, `[tool.pyright].pythonVersion = "3.11"`,
+  and `uv.lock` re-resolved against the new floor. Aligns the dev/CI surface
+  with the submission image (`docker/Dockerfile` already runs
+  `python:3.11-slim`); 3.10 was a phantom target with no real consumers and an
+  EOL of 2026-10. Source uses `from __future__ import annotations` throughout
+  and no 3.10-only runtime API, so no caller-visible behavior changes.
 - **`read_json` / `inspect_files` size cap raised from 5MB to 100MB; >100MB
   files now return a streamed schema instead of `kind:"unknown" skipped:true`.**
   Empirical motivator: run `20260430-025` task_2 failed because the 5MB cap on

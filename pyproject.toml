@@ -7,7 +7,7 @@ name = "data-agent-baseline"
 version = "0.1.0"
 description = "ReAct-style baseline for the DABench data-agent benchmark"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "datasets>=3.3.2",
     "duckdb>=1.5.0",
@@ -43,7 +43,7 @@ dabench = "data_agent_baseline.cli:main"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 src = ["src", "tests"]
 extend-exclude = [
     ".venv",
@@ -101,5 +101,5 @@ exclude = [
     "data",
 ]
 typeCheckingMode = "basic"
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 strict = ["src/data_agent_baseline"]
