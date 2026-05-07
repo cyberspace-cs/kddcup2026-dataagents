@@ -121,8 +121,10 @@ def normalize_cell(value: Any, *, strict_commas: bool = False) -> str:
         return value.isoformat()
 
     text = str(value).strip().replace("\r\n", "\n")
-    candidate = text if strict_commas else (
-        text.replace(",", "") if NUMBER_WITH_COMMAS.fullmatch(text) else text
+    candidate = (
+        text
+        if strict_commas
+        else (text.replace(",", "") if NUMBER_WITH_COMMAS.fullmatch(text) else text)
     )
     canonical = _canonical_number(candidate)
     if canonical is not None:
@@ -249,9 +251,7 @@ def _task_difficulty(input_root: Path | None, task_id: str) -> str:
         return "unknown"
 
 
-def aggregate(
-    per_task: dict[str, TaskScore], task_meta: dict[str, str]
-) -> dict[str, Any]:
+def aggregate(per_task: dict[str, TaskScore], task_meta: dict[str, str]) -> dict[str, Any]:
     if not per_task:
         return {
             "total_score": 0.0,
@@ -300,15 +300,41 @@ def _discover_task_ids(pred_dir: Path, gold_dir: Path) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Local scorer for KDD Cup 2026 Data Agents.")
-    parser.add_argument("--pred", required=True, type=Path, help="Predictions dir (task_<id>/prediction.csv).")
-    parser.add_argument("--gold", required=True, type=Path, help="Ground-truth dir (task_<id>/gold.csv).")
-    parser.add_argument("--lambda", dest="lambda_val", type=float, default=0.1, help="Penalty weight λ (default 0.1).")
+    parser.add_argument(
+        "--pred", required=True, type=Path, help="Predictions dir (task_<id>/prediction.csv)."
+    )
+    parser.add_argument(
+        "--gold", required=True, type=Path, help="Ground-truth dir (task_<id>/gold.csv)."
+    )
+    parser.add_argument(
+        "--lambda",
+        dest="lambda_val",
+        type=float,
+        default=0.1,
+        help="Penalty weight λ (default 0.1).",
+    )
     parser.add_argument("--output", type=Path, required=True, help="Output JSON path.")
-    parser.add_argument("--input-root", type=Path, default=None, help="Input dir for difficulty lookup (defaults to sibling 'input/' of --gold).")
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        default=None,
+        help="Input dir for difficulty lookup (defaults to sibling 'input/' of --gold).",
+    )
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--strict-commas", action="store_true", help="Do NOT strip thousands commas before numeric coercion.")
-    parser.add_argument("--fail-on-regression", type=Path, default=None, help="Previous scores.json to compare against.")
-    parser.add_argument("--force", action="store_true", help="Continue even if regressions detected.")
+    parser.add_argument(
+        "--strict-commas",
+        action="store_true",
+        help="Do NOT strip thousands commas before numeric coercion.",
+    )
+    parser.add_argument(
+        "--fail-on-regression",
+        type=Path,
+        default=None,
+        help="Previous scores.json to compare against.",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Continue even if regressions detected."
+    )
     args = parser.parse_args(argv)
 
     gold_dir: Path = args.gold

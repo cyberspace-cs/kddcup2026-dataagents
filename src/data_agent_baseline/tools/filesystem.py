@@ -722,8 +722,9 @@ def _summarize_json(path: Path) -> dict[str, Any]:
         return result
     payload = json.loads(path.read_text(errors="replace"))
     if isinstance(payload, dict):
-        keys: list[str] = list(payload.keys())
-        sample_kinds = {key: type(payload[key]).__name__ for key in keys[:10]}
+        payload_dict = cast(dict[str, Any], payload)
+        keys: list[str] = list(payload_dict.keys())
+        sample_kinds = {key: type(payload_dict[key]).__name__ for key in keys[:10]}
         return {
             "kind": "object",
             "keys": keys[:20],
@@ -731,12 +732,13 @@ def _summarize_json(path: Path) -> dict[str, Any]:
             "sample_value_kinds": sample_kinds,
         }
     if isinstance(payload, list):
+        payload_list = cast(list[Any], payload)
         first_kind: str | None = None
-        if payload:
-            first_kind = type(payload[0]).__name__
+        if payload_list:
+            first_kind = type(payload_list[0]).__name__
         return {
             "kind": "array",
-            "length": len(payload),
+            "length": len(payload_list),
             "first_item_kind": first_kind,
         }
     # 标量（int/float/str/bool/None）

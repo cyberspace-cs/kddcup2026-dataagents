@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 # 按文件扩展名给出的"应改用哪个工具"的路由提示。
 # 与 prompt.py:121 Decision-tree bullet 中的措辞同源（CSV→read_csv/execute_python，
@@ -55,7 +56,7 @@ def _connect_read_only(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(uri, uri=True)
 
 
-def inspect_sqlite_schema(path: Path) -> dict[str, object]:
+def inspect_sqlite_schema(path: Path) -> dict[str, Any]:
     """列出所有用户表及其 CREATE 语句。
 
     过滤 `sqlite_%` 系统表；按名字排序让结果稳定可对比。
@@ -78,7 +79,7 @@ def inspect_sqlite_schema(path: Path) -> dict[str, object]:
     except sqlite3.DatabaseError as exc:
         _maybe_raise_non_sqlite_path_error(path, exc)
         raise
-    tables: list[dict[str, object]] = []
+    tables: list[dict[str, Any]] = []
     for name, create_sql in rows:
         # 保留原始 CREATE SQL：列类型和约束对 Agent 推导 schema 很有帮助
         tables.append(
@@ -93,7 +94,7 @@ def inspect_sqlite_schema(path: Path) -> dict[str, object]:
     }
 
 
-def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str, object]:
+def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str, Any]:
     """执行 SELECT/WITH/PRAGMA 语句并按行数截断。
 
     两道防线：

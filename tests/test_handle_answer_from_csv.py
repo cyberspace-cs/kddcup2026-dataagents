@@ -327,9 +327,7 @@ def test_from_csv_unlinks_artifact_after_successful_submission(
     assert not answer_dir.exists()
 
 
-def test_from_csv_external_path_still_clears_answer_dir(
-    task: PublicTask, tmp_path: Path
-) -> None:
+def test_from_csv_external_path_still_clears_answer_dir(task: PublicTask, tmp_path: Path) -> None:
     """from_csv 指向 `_answer/` 之外（如 `/tmp/...`）也要清掉 `_answer/` 目录。
 
     场景：模型把 artifact 写到非约定路径（绕开 DABENCH_ANSWER_DIR），但更早的
@@ -349,9 +347,7 @@ def test_from_csv_external_path_still_clears_answer_dir(
     assert not answer_dir.exists()
 
 
-def test_inline_submission_with_existing_artifact_raises(
-    task: PublicTask, tmp_path: Path
-) -> None:
+def test_inline_submission_with_existing_artifact_raises(task: PublicTask, tmp_path: Path) -> None:
     """残留 `_answer/answer.csv` + inline 提交：handler 拒绝并指回 from_csv。
 
     回归参照 run 20260501-010/task_8：execute_python 已经把 140 行写到
@@ -380,9 +376,7 @@ def test_inline_submission_with_existing_artifact_raises(
     assert artifact.parent.exists()
 
 
-def test_inline_submission_with_zero_byte_artifact_passes(
-    task: PublicTask, tmp_path: Path
-) -> None:
+def test_inline_submission_with_zero_byte_artifact_passes(task: PublicTask, tmp_path: Path) -> None:
     """zero-byte 残留不视作 artifact：inline 提交照常成功并清理零字节文件。
 
     `_FROM_CSV_SIZE_LIMIT_BYTES` 上限不是这里的拦截理由；空文件更像 mkdir/touch

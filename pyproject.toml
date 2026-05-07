@@ -28,6 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pandas-stubs>=2.2.0",
     "pre-commit>=3.7.0",
     "pyright>=1.1.400",
     "pytest>=8.3.5",

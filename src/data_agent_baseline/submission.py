@@ -43,7 +43,7 @@ from concurrent.futures import (
 )
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from data_agent_baseline.benchmark.schema import PublicTask
 from data_agent_baseline.config import AppConfig, load_app_config
@@ -101,12 +101,13 @@ def _maybe_write_trace(task_output_dir: Path, result: Any, elapsed_seconds: floa
     """
     if not os.environ.get("EMIT_TRACE"):
         return
-    payload = result.to_dict()
+    payload: dict[str, Any] = result.to_dict()
     payload["e2e_elapsed_seconds"] = round(elapsed_seconds, 3)
     sysprompt: str | None = None
-    steps = payload.get("steps") or []
+    steps = cast(list[dict[str, Any]], payload.get("steps") or [])
     if steps:
-        for msg in steps[0].get("prompt_messages") or []:
+        messages = cast(list[dict[str, Any]], steps[0].get("prompt_messages") or [])
+        for msg in messages:
             if msg.get("role") == "system":
                 sysprompt = msg.get("content")
                 break

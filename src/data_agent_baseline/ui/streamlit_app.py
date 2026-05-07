@@ -14,12 +14,19 @@ CLI 通过 `streamlit run streamlit_app.py -- --run-id <id> --task-id <id>` 透�
 `st.query_params` 用作"URL 状态同步"：刷新页面后保留 run/task 选择。
 """
 
+# Streamlit 官方 stubs 在 `st.dataframe` / `st.line_chart` / `st.bar_chart` 等
+# 重载签名里把 Snowpark/连接器类型写成 `Unknown`（参见调用处错误信息），strict
+# 模式会逐个 call 报 reportUnknownMemberType。这是 streamlit 上游 stub 的限制，
+# 不在我们代码控制内——文件级关掉这一规则；其它 strict 检查（参数类型/变量
+# 类型/不必要 isinstance 等）继续生效。
+# pyright: reportUnknownMemberType=false
+
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import streamlit as st
@@ -56,6 +63,24 @@ def _parse_extra_args() -> argparse.Namespace:
 def _project_root() -> Path:
     """推断项目根：本文件位于 `<root>/src/data_agent_baseline/ui/`。"""
     return Path(__file__).resolve().parents[3]
+
+
+# ----------------------------- 类型 helpers -----------------------------
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """JSON 反序列化值若为 dict 则规约成 dict[str, Any]，否则返回 {}。
+
+    pyright strict 把 isinstance(any, dict) narrowing 后视作 dict[Unknown, Unknown]，
+    走 cast 一次性把 trace.json 解析出来的 dict 收敛到统一类型，避免上层每个 .get
+    都触发 reportUnknown* 系列警告。
+    """
+    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    """同 `_as_dict`，但收敛到 list[Any]。"""
+    return cast(list[Any], value) if isinstance(value, list) else []
 
 
 # ----------------------------- 渲染 helpers -----------------------------
@@ -149,8 +174,8 @@ def _render_token_chart(steps: list[dict[str, Any]]) -> None:
     cumulative_tokens: list[int] = []
     running = 0
     for step in steps:
-        usage = step.get("usage") or {}
-        running += int(usage.get("total_tokens", 0)) if isinstance(usage, dict) else 0
+        usage = _as_dict(step.get("usage"))
+        running += int(usage.get("total_tokens", 0))
         cumulative_tokens.append(running)
     st.sidebar.markdown("**Cumulative tokens**")
     st.sidebar.line_chart(pd.DataFrame({"tokens": cumulative_tokens}))
@@ -199,8 +224,8 @@ def _render_step_expander(step: dict[str, Any]) -> None:
     step_index = step.get("step_index", "?")
     action = step.get("action", "?")
     ok = step.get("ok", False)
-    usage = step.get("usage") or {}
-    total_tokens = int(usage.get("total_tokens", 0)) if isinstance(usage, dict) else 0
+    usage = _as_dict(step.get("usage"))
+    total_tokens = int(usage.get("total_tokens", 0))
     label = f"Step {step_index} · [{action}] · {total_tokens} tok · {'✓' if ok else '✗'}"
 
     with st.expander(label, expanded=False):
@@ -221,8 +246,8 @@ def _render_step_expander(step: dict[str, Any]) -> None:
                 st.caption("(no thought captured for this step)")
 
         with tab_prompt:
-            prompt_messages = step.get("prompt_messages")
-            if isinstance(prompt_messages, list) and prompt_messages:
+            prompt_messages = _as_list(step.get("prompt_messages"))
+            if prompt_messages:
                 _render_prompt_messages(prompt_messages)
             else:
                 st.caption(
@@ -232,8 +257,8 @@ def _render_step_expander(step: dict[str, Any]) -> None:
 
         with tab_tool:
             st.markdown(f"**action:** `{action}`")
-            action_input = step.get("action_input") or {}
-            observation = step.get("observation") or {}
+            action_input = _as_dict(step.get("action_input"))
+            observation = _as_dict(step.get("observation"))
             _render_tool_call(action, action_input, observation)
 
         with tab_response:
@@ -288,10 +313,6 @@ def _render_observation(action: str, observation: dict[str, Any]) -> None:
     - `execute_context_sql`：把 rows 走表格渲染（如果有），其它字段走 JSON
     - 其它工具：默认 `st.json()`
     """
-    if not isinstance(observation, dict):
-        st.json(observation)
-        return
-
     ok = observation.get("ok")
     if ok is False:
         # 错误：把 error 字段单独高亮成红色提示，便于一眼看到失败原因
@@ -304,10 +325,11 @@ def _render_observation(action: str, observation: dict[str, Any]) -> None:
             st.json(leftover)
         return
 
-    content = observation.get("content")
-    if not isinstance(content, dict):
+    content_raw = observation.get("content")
+    if not isinstance(content_raw, dict):
         st.json(observation)
         return
+    content = cast(dict[str, Any], content_raw)
 
     if action == "execute_python":
         _render_python_observation(content)
@@ -336,13 +358,15 @@ def _render_python_observation(content: dict[str, Any]) -> None:
 
 def _render_sql_observation(content: dict[str, Any]) -> None:
     """`execute_context_sql` 返回体：把 rows 渲染成 dataframe（如果有 columns + rows）。"""
-    columns = content.get("columns")
-    rows = content.get("rows")
+    columns_raw = content.get("columns")
+    rows_raw = content.get("rows")
     if (
-        isinstance(columns, list)
-        and isinstance(rows, list)
-        and all(isinstance(c, str) for c in columns)
+        isinstance(columns_raw, list)
+        and isinstance(rows_raw, list)
+        and all(isinstance(c, str) for c in cast(list[Any], columns_raw))
     ):
+        columns = cast(list[str], columns_raw)
+        rows = cast(list[Any], rows_raw)
         try:
             df = pd.DataFrame(rows, columns=columns)
             st.markdown("**rows**")
@@ -371,7 +395,7 @@ def _render_prompt_messages(messages: list[Any]) -> None:
     for idx, raw in enumerate(messages):
         if not isinstance(raw, dict):
             continue
-        msg = raw
+        msg = cast(dict[str, Any], raw)
         role = str(msg.get("role", "?"))
         content = msg.get("content", "")
         # 用 streamlit 的 chat_message 控件，role 不能任意——映射到内置 4 角色
@@ -393,8 +417,8 @@ def _render_prompt_messages(messages: list[Any]) -> None:
                         st.markdown(content)
                 else:
                     st.markdown(content)
-            tool_calls = msg.get("tool_calls")
-            if isinstance(tool_calls, list) and tool_calls:
+            tool_calls = _as_list(msg.get("tool_calls"))
+            if tool_calls:
                 st.markdown("**tool_calls**")
                 _render_tool_calls_pretty(tool_calls)
             tool_call_id = msg.get("tool_call_id")
@@ -417,21 +441,21 @@ def _render_tool_calls_pretty(tool_calls: list[Any]) -> None:
         if not isinstance(raw, dict):
             st.json(raw)
             continue
-        call = raw
-        function = call.get("function") or {}
-        name = function.get("name", "?") if isinstance(function, dict) else "?"
+        call = cast(dict[str, Any], raw)
+        function = _as_dict(call.get("function"))
+        name = function.get("name", "?")
         st.caption(f"tool_call #{idx} · {name} · id={call.get('id', '?')}")
 
         # arguments 可能是 JSON 字符串或已经解析好的 dict
-        raw_args = function.get("arguments") if isinstance(function, dict) else None
+        raw_args = function.get("arguments")
         parsed_args: dict[str, Any] | None = None
         if isinstance(raw_args, dict):
-            parsed_args = raw_args
+            parsed_args = cast(dict[str, Any], raw_args)
         elif isinstance(raw_args, str) and raw_args.strip():
             try:
                 candidate = json.loads(raw_args)
                 if isinstance(candidate, dict):
-                    parsed_args = candidate
+                    parsed_args = cast(dict[str, Any], candidate)
             except json.JSONDecodeError:
                 parsed_args = None
 
@@ -497,7 +521,7 @@ def main() -> None:
 
     _render_table_tabs(gold, pred)
 
-    system_prompt = trace.get("system_prompt") if isinstance(trace, dict) else None
+    system_prompt = trace.get("system_prompt")
     if isinstance(system_prompt, str) and system_prompt:
         with st.expander("系统提示词 (system prompt)", expanded=False):
             st.markdown(f"```\n{system_prompt}\n```")
@@ -505,18 +529,19 @@ def main() -> None:
     st.divider()
     st.subheader("ReAct 时间线")
 
-    steps_raw = trace.get("steps") if isinstance(trace, dict) else None
-    steps = steps_raw if isinstance(steps_raw, list) else []
+    steps = _as_list(trace.get("steps"))
 
     # 侧栏图表（依赖 steps 中的 usage）
-    _render_token_chart(steps)
+    typed_steps: list[dict[str, Any]] = [
+        cast(dict[str, Any], s) for s in steps if isinstance(s, dict)
+    ]
+    _render_token_chart(typed_steps)
 
-    if not steps:
+    if not typed_steps:
         st.info("No steps recorded for this task.")
         return
-    for step in steps:
-        if isinstance(step, dict):
-            _render_step_expander(step)
+    for step in typed_steps:
+        _render_step_expander(step)
 
 
 def _load_question(public_data_dir: Path, task_id: str) -> str | None:
@@ -529,7 +554,7 @@ def _load_question(public_data_dir: Path, task_id: str) -> str | None:
     except (OSError, json.JSONDecodeError):
         return None
     if isinstance(payload, dict):
-        question = payload.get("question")
+        question = cast(dict[str, Any], payload).get("question")
         if isinstance(question, str):
             return question
     return None
