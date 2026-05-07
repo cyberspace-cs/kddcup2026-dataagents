@@ -18,7 +18,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -64,7 +64,7 @@ _RUN_ID_ALLOC_RETRIES = 50
 
 def _today_utc_prefix() -> str:
     """当前 UTC 日期的目录名前缀，如 `20260430-`。"""
-    return datetime.now(timezone.utc).strftime("%Y%m%d") + "-"
+    return datetime.now(UTC).strftime("%Y%m%d") + "-"
 
 
 def create_run_id(output_root: Path) -> str:

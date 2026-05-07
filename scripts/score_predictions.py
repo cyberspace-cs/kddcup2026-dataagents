@@ -38,7 +38,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -117,7 +117,7 @@ def normalize_cell(value: Any, *, strict_commas: bool = False) -> str:
 
     if isinstance(value, (pd.Timestamp, datetime)):
         if getattr(value, "tzinfo", None) is not None:
-            return value.astimezone(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return value.astimezone(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         return value.isoformat()
 
     text = str(value).strip().replace("\r\n", "\n")
@@ -136,7 +136,7 @@ def normalize_cell(value: Any, *, strict_commas: bool = False) -> str:
         except ValueError:
             continue
         if parsed.tzinfo is not None:
-            return parsed.astimezone(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return parsed.astimezone(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         return parsed.isoformat()
 
     for fmt in DATE_ONLY_FORMATS:
@@ -353,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
             "gold_dir": str(gold_dir),
             "lambda": args.lambda_val,
             "strict_commas": args.strict_commas,
-            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "n_tasks_gold": sum(1 for t in task_ids if (gold_dir / t / "gold.csv").exists()),
             "n_tasks_pred": sum(1 for t in task_ids if (pred_dir / t / "prediction.csv").exists()),
         },
