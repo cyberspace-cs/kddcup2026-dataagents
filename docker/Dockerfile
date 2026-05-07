@@ -11,7 +11,7 @@
 # main's old `docker/pip.conf` was dead — uv does not read pip.conf, only
 # UV_INDEX_URL / [tool.uv] in pyproject.toml. Build-arg is the correct knob.
 
-FROM python:3.11-slim AS builder
+FROM --platform=linux/amd64 python:3.11-slim AS builder
 
 ARG UV_INDEX_URL=""
 ENV UV_INDEX_URL=${UV_INDEX_URL}
@@ -36,7 +36,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv export --frozen --no-dev --no-emit-project --no-hashes -o requirements.txt \
  && uv pip install --system --no-cache -r requirements.txt
 
-FROM python:3.11-slim
+FROM --platform=linux/amd64 python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
