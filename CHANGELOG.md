@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`EMIT_TRACE` env var on the submission entrypoint.** When set,
+  `submission.py` writes a per-task `trace.json` next to `prediction.csv`
+  in `/output/<task_id>/`, matching the format
+  `runner_artifacts.write_task_outputs` produces (steps + answer +
+  total_usage + e2e_elapsed_seconds + system_prompt) so existing UI
+  loaders work on these traces. Default OFF: §3.7 disallows trace data
+  in the judged archive (raw rows from `/input` CSVs land in tool
+  observations and count as test-set leakage). Opt in only on local
+  rehearsals, e.g. `docker run … -e EMIT_TRACE=1 …` via
+  `scripts/eval_local.sh`.
 - **Mode-aware Qwen3 sampling defaults.** `agent.{top_p, top_k, min_p,
   presence_penalty, seed}` are now configurable; when left unset, defaults
   follow the Qwen3 model card recommendation for the selected

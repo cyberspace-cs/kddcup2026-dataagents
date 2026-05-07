@@ -89,6 +89,34 @@ def _write_prediction_csv(path: Path, columns: list[str], rows: list[list[Any]])
             writer.writerow(row)
 
 
+def _maybe_write_trace(task_output_dir: Path, result: Any, elapsed_seconds: float) -> None:
+    """Local-debug-only: dump per-task trace.json when EMIT_TRACE is set.
+
+    §3.7 forbids trace artifacts inside the judged archive (raw rows from
+    /input CSVs can land in tool observations and count as test-set leakage).
+    Default is therefore OFF; opt in for local rehearsals via
+    `docker run -e EMIT_TRACE=1 …`. Format matches `runner_artifacts.write_task_outputs`
+    (steps + answer + total_usage + e2e_elapsed_seconds + system_prompt) so
+    the same UI loaders work on these traces.
+    """
+    if not os.environ.get("EMIT_TRACE"):
+        return
+    payload = result.to_dict()
+    payload["e2e_elapsed_seconds"] = round(elapsed_seconds, 3)
+    sysprompt: str | None = None
+    steps = payload.get("steps") or []
+    if steps:
+        for msg in steps[0].get("prompt_messages") or []:
+            if msg.get("role") == "system":
+                sysprompt = msg.get("content")
+                break
+    payload["system_prompt"] = sysprompt
+    (task_output_dir / "trace.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _build_config(input_root: Path) -> AppConfig:
     """Load the baked-in YAML and apply §3.4 / §3.5 overrides.
 
@@ -145,6 +173,7 @@ def _run_one_task(app: AgentApp, task: PublicTask, output_root: Path, logs_root:
 
     answer = None
     failure_reason: str | None = None
+    result: Any = None
     try:
         agent = app.new_agent()
         result = agent.run(task)
@@ -166,6 +195,8 @@ def _run_one_task(app: AgentApp, task: PublicTask, output_root: Path, logs_root:
         wrote = True
 
     elapsed = time.monotonic() - task_started
+    if result is not None:
+        _maybe_write_trace(task_output_dir, result, elapsed)
     status = "ok" if wrote else f"no_answer ({failure_reason or 'unknown'})"
     _log(logs_root, f"task={task.task_id} status={status} elapsed={elapsed:.1f}s")
     return wrote
