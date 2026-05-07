@@ -15,7 +15,7 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict, cast
 
 from openai import APIError, OpenAI
 from openai.types.chat import ChatCompletion
@@ -46,6 +46,42 @@ def _strip_think_tags(text: str) -> str:
     把思考段塞进 `message.content`，让文本 ReAct 解析器困惑，这里做一层防御性处理。
     """
     return _THINK_TAG_PATTERN.sub("", text).strip()
+
+
+# 后端类型字面量。决定 `enable_thinking` 在 extra_body 中的位置：
+# - "vllm":      嵌套到 `chat_template_kwargs`（chat template 渲染参数）
+# - "dashscope": 顶层 `enable_thinking`（DashScope OpenAI 兼容模式约定）
+# 错置会被对端静默忽略 —— vLLM 路径下顶层 enable_thinking 不进 chat template，
+# 模型只会按 chat_template 默认值（Qwen3 系列默认 thinking on）渲染，配置开关失灵。
+BackendKind = Literal["vllm", "dashscope"]
+
+# 推断 dashscope 用的 host 关键字。命中即判 dashscope，否则归 vllm。
+# 选这两个：DashScope 兼容模式入口稳定为 `dashscope.aliyuncs.com`；vLLM 自部署
+# 通常是 IP/localhost/内网域名。误判时调用方显式写 backend_kind 即可覆盖。
+_DASHSCOPE_HOST_HINTS = ("aliyuncs.com", "dashscope")
+
+
+def _resolve_backend_kind(backend_kind: BackendKind | None, api_base: str) -> BackendKind:
+    """显式 `backend_kind` 优先；为 None 时按 `api_base` 主机名推断。
+
+    `api_base` 已在 adapter 构造时 `rstrip("/")`，可直接 lower 后做子串匹配。
+    """
+    if backend_kind is not None:
+        return backend_kind
+    lowered = api_base.lower()
+    return "dashscope" if any(hint in lowered for hint in _DASHSCOPE_HOST_HINTS) else "vllm"
+
+
+def _thinking_extra_body(enable_thinking: bool, backend_kind: BackendKind) -> dict[str, Any]:
+    """按 backend_kind 把 `enable_thinking` 包成正确的 extra_body 片段。
+
+    返回值用于 dict 合并。两条路径产出**不同 key**，互斥：
+    - vLLM:      `{"chat_template_kwargs": {"enable_thinking": <bool>}}`
+    - DashScope: `{"enable_thinking": <bool>}`
+    """
+    if backend_kind == "vllm":
+        return {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+    return {"enable_thinking": enable_thinking}
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +279,7 @@ class OpenAIModelAdapter:
         temperature: float | None = None,
         max_tokens: int = 0,
         enable_thinking: bool | None = None,
+        backend_kind: BackendKind | None = None,
         top_p: float | None = None,
         top_k: int | None = None,
         min_p: float | None = None,
@@ -267,6 +304,9 @@ class OpenAIModelAdapter:
         self.max_tokens = max_tokens
         # None = 不下发 enable_thinking（服务端默认）；True/False = 经 extra_body 透传
         self.enable_thinking = enable_thinking
+        # 解析后的 backend_kind 决定 enable_thinking 走顶层还是 chat_template_kwargs。
+        # 显式优先；未指定则按 self.api_base 自动推断（含 aliyuncs.com/dashscope → dashscope）。
+        self.backend_kind: BackendKind = _resolve_backend_kind(backend_kind, self.api_base)
 
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。"""
@@ -296,11 +336,12 @@ class OpenAIModelAdapter:
         if self.max_tokens > 0:
             # 下发显式上限；Qwen3 下封顶的是 **总输出**（含 reasoning tokens）
             request_kwargs["max_tokens"] = self.max_tokens
-        # extra_body 累积构建：top_k / min_p 与 enable_thinking 合并下发，避免后来者覆盖前者
+        # extra_body 累积构建：top_k / min_p 与 enable_thinking 合并下发，避免后来者覆盖前者。
+        # enable_thinking 的位置依赖 self.backend_kind：vLLM 必须嵌套到 chat_template_kwargs，
+        # DashScope 兼容模式则放顶层；错置会被对端静默忽略，详见 _thinking_extra_body 注释。
         extra_body: dict[str, Any] = {}
         if self.enable_thinking is not None:
-            # Qwen3 特有字段；经 extra_body 透传进请求体（OpenAI SDK 原生字段表没有）
-            extra_body["enable_thinking"] = self.enable_thinking
+            extra_body.update(_thinking_extra_body(self.enable_thinking, self.backend_kind))
         if self.top_k is not None:
             extra_body["top_k"] = self.top_k
         if self.min_p is not None:
@@ -358,6 +399,7 @@ class NativeToolsOpenAIAdapter:
         allow_parallel_tool_calls: bool = True,
         max_tokens: int = 0,
         enable_thinking: bool | None = None,
+        backend_kind: BackendKind | None = None,
         top_p: float | None = None,
         top_k: int | None = None,
         min_p: float | None = None,
@@ -380,6 +422,9 @@ class NativeToolsOpenAIAdapter:
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
         self.max_tokens = max_tokens
         self.enable_thinking = enable_thinking
+        # 解析后的 backend_kind 决定 enable_thinking 走顶层还是 chat_template_kwargs。
+        # 显式优先；未指定则按 self.api_base 自动推断（含 aliyuncs.com/dashscope → dashscope）。
+        self.backend_kind: BackendKind = _resolve_backend_kind(backend_kind, self.api_base)
         # 预先把不可变 ToolRegistry 的 definitions 转成 OpenAI tools 数组并缓存：
         # registry 在构造后无法增删工具，因此该缓存在适配器生命周期内永远有效，
         # 也保证了重复请求的 tools 字段字节稳定（prompt cache 命中）。
@@ -417,11 +462,12 @@ class NativeToolsOpenAIAdapter:
         if self.max_tokens > 0:
             # 下发显式上限；Qwen3 下封顶的是 **总输出**（含 reasoning tokens）
             request_kwargs["max_tokens"] = self.max_tokens
-        # extra_body 累积构建：top_k / min_p 与 enable_thinking 合并下发，避免后来者覆盖前者
+        # extra_body 累积构建：top_k / min_p 与 enable_thinking 合并下发，避免后来者覆盖前者。
+        # enable_thinking 的位置依赖 self.backend_kind：vLLM 必须嵌套到 chat_template_kwargs，
+        # DashScope 兼容模式则放顶层；错置会被对端静默忽略，详见 _thinking_extra_body 注释。
         extra_body: dict[str, Any] = {}
         if self.enable_thinking is not None:
-            # Qwen3 特有字段；经 extra_body 透传进请求体（OpenAI SDK 原生字段表没有）
-            extra_body["enable_thinking"] = self.enable_thinking
+            extra_body.update(_thinking_extra_body(self.enable_thinking, self.backend_kind))
         if self.top_k is not None:
             extra_body["top_k"] = self.top_k
         if self.min_p is not None:

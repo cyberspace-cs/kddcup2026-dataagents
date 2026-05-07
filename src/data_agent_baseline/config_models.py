@@ -19,7 +19,7 @@
 校验器声明顺序 = 错误暴露顺序，必须与旧实现保持一致，保证 fixture 报文不漂移：
 
     tool_protocol → temperature → top_p → top_k → min_p → presence_penalty
-        → enable_thinking → max_empty_tool_call_retries
+        → enable_thinking → backend_kind → max_empty_tool_call_retries
         → api_keys → rate_limit{rpm → tpm → safety → reserve > 0
         → reserve_vs_max_tokens → max_retries → backoff_init → backoff_max}
         → key/limit pairing
@@ -42,9 +42,11 @@ from pydantic import (
     model_validator,
 )
 
-# 从 config.py 复用 PROJECT_ROOT、默认路径工厂、tool_protocol 字面量，保证两套实现指向同一基准
+# 从 config.py 复用 PROJECT_ROOT、默认路径工厂、tool_protocol/backend_kind 字面量，
+# 保证两套实现指向同一基准
 from data_agent_baseline.config import (
     PROJECT_ROOT,
+    BackendKindLiteral,
     ToolProtocolLiteral,
     _default_dataset_root,  # pyright: ignore[reportPrivateUsage]
     _default_run_output_dir,  # pyright: ignore[reportPrivateUsage]
@@ -167,8 +169,8 @@ class RateLimitConfigModel(_StrictModel):
 
 class AgentConfigModel(_StrictModel):
     # 字段顺序 = 错误暴露顺序：tool_protocol → temperature → top_p → top_k → min_p
-    # → presence_penalty → enable_thinking → max_empty_tool_call_retries → api_keys
-    # → rate_limit。详见模块顶部 docstring。
+    # → presence_penalty → enable_thinking → backend_kind → max_empty_tool_call_retries
+    # → api_keys → rate_limit。详见模块顶部 docstring。
     model: str = "gpt-4.1-mini"
     api_base: str = "https://api.openai.com/v1"
     api_key: str = ""
@@ -187,6 +189,7 @@ class AgentConfigModel(_StrictModel):
     allow_parallel_tool_calls: StrictBool = True
     max_tokens: StrictInt = 16384
     enable_thinking: StrictBool | None = None
+    backend_kind: BackendKindLiteral | None = None
     max_empty_tool_call_retries: StrictInt = 8
     api_keys: tuple[str, ...] = Field(default_factory=tuple)
     rate_limit: RateLimitConfigModel | None = None
@@ -260,6 +263,19 @@ class AgentConfigModel(_StrictModel):
         if v is None or isinstance(v, bool):
             return v
         raise ValueError(f"agent.enable_thinking must be a bool or null; got {type(v).__name__}.")
+
+    @field_validator("backend_kind", mode="before")
+    @classmethod
+    def _normalize_backend_kind(cls, v: Any) -> Any:
+        # 接受任意大小写并 lower，与 tool_protocol 的 normalize 风格一致；None 透传不动
+        if v is None:
+            return v
+        normalized = str(v).strip().lower()
+        if normalized not in {"vllm", "dashscope"}:
+            raise ValueError(
+                f"agent.backend_kind must be 'vllm', 'dashscope', or null; got {normalized!r}."
+            )
+        return normalized
 
     @field_validator("max_empty_tool_call_retries")
     @classmethod

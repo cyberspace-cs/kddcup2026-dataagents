@@ -150,13 +150,14 @@ def test_openai_adapter_sends_extra_body_when_enable_thinking_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    # api_base="http://x" 不含 dashscope hint → 自动推断为 vllm → 嵌套形式
     adapter = OpenAIModelAdapter(
         model="m", api_base="http://x", api_key="k", temperature=0.0, enable_thinking=True
     )
     adapter.complete([ModelMessage(role="user", content="hello")])
 
     kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"enable_thinking": True}
+    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
 
 
 def test_openai_adapter_sends_extra_body_when_enable_thinking_false(
@@ -169,8 +170,8 @@ def test_openai_adapter_sends_extra_body_when_enable_thinking_false(
     adapter.complete([ModelMessage(role="user", content="hello")])
 
     kwargs = create_mock.call_args.kwargs
-    # False 也要显式下发 —— 避免服务端默认 on 时用户的关闭意图被吞掉
-    assert kwargs["extra_body"] == {"enable_thinking": False}
+    # False 也要显式下发 —— 避免服务端默认 on 时用户的关闭意图被吞掉；vLLM 推断走嵌套
+    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def test_openai_adapter_omits_extra_body_when_enable_thinking_none(
@@ -240,7 +241,11 @@ def test_openai_adapter_sends_presence_penalty_when_set(monkeypatch: pytest.Monk
 def test_openai_adapter_extra_body_merges_top_k_and_enable_thinking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """关键回归测试：top_k / min_p 必须与 enable_thinking 在 extra_body 里共存而非覆盖。"""
+    """关键回归测试：top_k / min_p 必须与 enable_thinking 在 extra_body 里共存而非覆盖。
+
+    vLLM 推断路径下 enable_thinking 走 chat_template_kwargs 嵌套，
+    与顶层的 top_k / min_p 互不冲突。
+    """
     create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m",
@@ -254,7 +259,11 @@ def test_openai_adapter_extra_body_merges_top_k_and_enable_thinking(
     adapter.complete([ModelMessage(role="user", content="hello")])
 
     kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"enable_thinking": True, "top_k": 20, "min_p": 0.0}
+    assert kwargs["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": True},
+        "top_k": 20,
+        "min_p": 0.0,
+    }
 
 
 def test_openai_adapter_extra_body_contains_only_top_k_when_thinking_none(
@@ -317,7 +326,8 @@ def test_native_adapter_sends_max_tokens_and_extra_body(monkeypatch: pytest.Monk
 
     kwargs = create_mock.call_args.kwargs
     assert kwargs["max_tokens"] == 8192
-    assert kwargs["extra_body"] == {"enable_thinking": True}
+    # api_base="http://x" → 推断 vllm → 嵌套形式
+    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
     # 保留原有 native 字段确保没被改动回归
     assert kwargs["tool_choice"] == "auto"
     assert kwargs["parallel_tool_calls"] is True
@@ -398,13 +408,20 @@ def test_native_adapter_sends_presence_penalty_when_set(monkeypatch: pytest.Monk
 def test_native_adapter_extra_body_merges_top_k_and_enable_thinking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """关键回归测试：top_k / min_p 必须与 enable_thinking 在 extra_body 里共存而非覆盖。"""
+    """关键回归测试：top_k / min_p 必须与 enable_thinking 在 extra_body 里共存而非覆盖。
+
+    vLLM 推断路径下 enable_thinking 嵌入 chat_template_kwargs，与顶层 top_k/min_p 并存。
+    """
     create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
     adapter = _native_adapter(enable_thinking=True, top_k=20, min_p=0.0)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
     kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"enable_thinking": True, "top_k": 20, "min_p": 0.0}
+    assert kwargs["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": True},
+        "top_k": 20,
+        "min_p": 0.0,
+    }
 
 
 def test_native_adapter_extra_body_contains_only_top_k_when_thinking_none(
@@ -416,3 +433,126 @@ def test_native_adapter_extra_body_contains_only_top_k_when_thinking_none(
 
     kwargs = create_mock.call_args.kwargs
     assert kwargs["extra_body"] == {"top_k": 20}
+
+
+# ---------- backend_kind 矩阵：vllm vs dashscope，自动推断 vs 显式覆盖 ----------
+
+
+def test_openai_adapter_dashscope_api_base_auto_infers_dashscope_top_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """api_base 含 aliyuncs.com → 自动推断 dashscope → enable_thinking 走顶层。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="m",
+        api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key="k",
+        temperature=0.0,
+        enable_thinking=True,
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"enable_thinking": True}
+
+
+def test_openai_adapter_explicit_dashscope_overrides_localhost_inference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式 backend_kind="dashscope" 覆盖 localhost api_base 的 vllm 推断。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="m",
+        api_base="http://localhost:8000/v1",
+        api_key="k",
+        temperature=0.0,
+        enable_thinking=True,
+        backend_kind="dashscope",
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"enable_thinking": True}
+
+
+def test_openai_adapter_explicit_vllm_overrides_dashscope_inference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式 backend_kind="vllm" 覆盖 dashscope api_base 的自动推断 → 仍走嵌套。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="m",
+        api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key="k",
+        temperature=0.0,
+        enable_thinking=True,
+        backend_kind="vllm",
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
+
+
+def test_native_adapter_explicit_vllm_uses_chat_template_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NativeToolsOpenAIAdapter 与 OpenAIModelAdapter 共用 _thinking_extra_body 工具，
+    显式 backend_kind="vllm" 行为应当一致：走嵌套。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    adapter = _native_adapter(enable_thinking=True, backend_kind="vllm")
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
+
+
+def test_native_adapter_explicit_dashscope_uses_top_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    adapter = _native_adapter(enable_thinking=False, backend_kind="dashscope")
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"enable_thinking": False}
+
+
+def test_backend_kind_does_not_emit_extra_body_when_thinking_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """enable_thinking=None 时无论 backend_kind 是什么，都不应下发对应字段；
+    避免 backend_kind 单独下发误触发未定义 chat template 行为。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="m",
+        api_base="http://x",
+        api_key="k",
+        temperature=0.0,
+        enable_thinking=None,
+        backend_kind="vllm",
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert "extra_body" not in kwargs
+
+
+def test_resolve_backend_kind_explicit_value_wins() -> None:
+    """单独验证 _resolve_backend_kind helper 的显式优先语义。"""
+    from data_agent_baseline.agents.model import _resolve_backend_kind
+
+    assert _resolve_backend_kind("vllm", "https://dashscope.aliyuncs.com/v1") == "vllm"
+    assert _resolve_backend_kind("dashscope", "http://localhost:8000/v1") == "dashscope"
+
+
+def test_resolve_backend_kind_inference_fallback() -> None:
+    """None 时按 host 子串匹配；命中 aliyuncs.com 或 dashscope → dashscope，否则 vllm。"""
+    from data_agent_baseline.agents.model import _resolve_backend_kind
+
+    assert _resolve_backend_kind(None, "https://dashscope.aliyuncs.com/v1") == "dashscope"
+    assert _resolve_backend_kind(None, "https://api.dashscope.com/v1") == "dashscope"
+    assert _resolve_backend_kind(None, "http://localhost:8000/v1") == "vllm"
+    assert _resolve_backend_kind(None, "http://10.0.0.5:8001") == "vllm"
+    # 大小写不敏感（_resolve_backend_kind 内做 lower）
+    assert _resolve_backend_kind(None, "HTTPS://DASHSCOPE.ALIYUNCS.COM/v1") == "dashscope"

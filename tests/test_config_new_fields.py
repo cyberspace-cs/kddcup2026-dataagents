@@ -88,6 +88,47 @@ def test_enable_thinking_rejects_non_bool(tmp_path: Path) -> None:
         load_app_config(cfg_path)
 
 
+# ---------- backend_kind ----------
+
+
+def test_backend_kind_default_is_none(tmp_path: Path) -> None:
+    """缺省字段 → None，由 adapter 按 api_base 自动推断。"""
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "")
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.backend_kind is None
+
+
+def test_backend_kind_vllm_explicit(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "  backend_kind: vllm\n")
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.backend_kind == "vllm"
+
+
+def test_backend_kind_dashscope_explicit(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "  backend_kind: dashscope\n")
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.backend_kind == "dashscope"
+
+
+def test_backend_kind_normalizes_case(tmp_path: Path) -> None:
+    """与 tool_protocol 一致：大小写规范化，保留 strict 字段集合校验。"""
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "  backend_kind: VLLM\n")
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.backend_kind == "vllm"
+
+
+def test_backend_kind_explicit_null(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "  backend_kind: null\n")
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.backend_kind is None
+
+
+def test_backend_kind_rejects_unknown_value(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "  backend_kind: ollama\n")
+    with pytest.raises(ValueError, match="backend_kind"):
+        load_app_config(cfg_path)
+
+
 # ---------- 采样字段：temperature / top_p / top_k / min_p / presence_penalty / seed ----------
 
 

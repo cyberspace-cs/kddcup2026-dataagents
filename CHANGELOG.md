@@ -6,7 +6,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **`enable_thinking` now reaches the chat template on self-hosted vLLM.**
+  Previously the flag rode `extra_body.enable_thinking` at the top level,
+  which the vLLM OpenAI server silently drops as an unknown field — the
+  Qwen3 chat template kept whatever its built-in default was
+  (`enable_thinking=True` for Qwen3 family), so flipping the config to
+  `false` was a no-op on self-hosted vLLM. The flag is now placed under
+  `chat_template_kwargs.enable_thinking` for vLLM and remains top-level
+  for DashScope (which uses the inverse convention). Selection is
+  controlled by the new `agent.backend_kind` field below.
+
 ### Added
+- **`agent.backend_kind` config field (`vllm` | `dashscope` | `null`).**
+  Picks where `enable_thinking` is placed in the chat completions
+  request: `"vllm"` → `extra_body.chat_template_kwargs.enable_thinking`
+  (required by `vllm --reasoning-parser qwen3`); `"dashscope"` →
+  top-level `extra_body.enable_thinking` (DashScope OpenAI-compatible
+  convention). `null` (default) auto-infers from `agent.api_base` —
+  hosts containing `aliyuncs.com` or `dashscope` → dashscope, otherwise
+  vllm. Explicit values win over inference. Only affects requests when
+  `agent.enable_thinking` is non-null.
 - **`EMIT_TRACE` env var on the submission entrypoint.** When set,
   `submission.py` writes a per-task `trace.json` next to `prediction.csv`
   in `/output/<task_id>/`, matching the format

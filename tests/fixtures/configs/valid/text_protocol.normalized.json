@@ -4,6 +4,7 @@
     "api_base": "https://api.example.com/v1",
     "api_key": "sk-text-protocol",
     "api_keys": [],
+    "backend_kind": null,
     "enable_thinking": false,
     "max_empty_tool_call_retries": 4,
     "max_steps": 8,

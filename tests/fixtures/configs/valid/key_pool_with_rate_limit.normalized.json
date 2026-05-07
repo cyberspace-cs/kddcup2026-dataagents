@@ -7,6 +7,7 @@
       "sk-key-a",
       "sk-key-b"
     ],
+    "backend_kind": null,
     "enable_thinking": true,
     "max_empty_tool_call_retries": 8,
     "max_steps": 24,

@@ -41,6 +41,12 @@ def _default_run_output_dir() -> Path:
 # 工具协议字面量：所有调用方对此字段的取值假设都收敛到这里
 ToolProtocolLiteral = Literal["native", "text"]
 
+# 后端类型字面量：决定 enable_thinking 在 extra_body 里的位置
+# - "vllm":      嵌套到 chat_template_kwargs（vLLM `--reasoning-parser qwen3` 要求）
+# - "dashscope": 顶层 enable_thinking（DashScope OpenAI 兼容模式约定）
+# None = 由 adapter 按 api_base 主机名自动推断（含 aliyuncs.com/dashscope → dashscope）。
+BackendKindLiteral = Literal["vllm", "dashscope"]
+
 
 @dataclass(frozen=True, slots=True)
 class DatasetConfig:
@@ -103,6 +109,14 @@ class AgentConfig:
     - True:  显式开；与线上行为对齐
     - False: 显式关；本地省 token 时可选，但线上不可用→慎用
 
+    backend_kind 决定 `enable_thinking` 在 extra_body 里的放置位置（两端协议不一致）：
+    - None (默认):  由 adapter 按 api_base 主机名自动推断
+                    （含 aliyuncs.com/dashscope → dashscope，其余 → vllm）
+    - "vllm":       嵌套到 chat_template_kwargs.enable_thinking
+                    （vLLM `--reasoning-parser qwen3` 要求；顶层会被静默忽略）
+    - "dashscope":  顶层 enable_thinking（DashScope OpenAI 兼容模式约定）
+    误判时显式声明即可覆盖；只在 enable_thinking is not None 时影响请求体。
+
     采样字段（temperature / top_p / top_k / min_p / presence_penalty / seed）保存
     "用户原始意图"：None = 未显式设置，由 `run/app.py:_resolve_sampling_defaults` 按
     `enable_thinking` 选 Qwen3 官方推荐组合：
@@ -135,6 +149,8 @@ class AgentConfig:
     allow_parallel_tool_calls: bool = True
     max_tokens: int = 16384  # 单次输出上限；0=不下发（用服务端默认）
     enable_thinking: bool | None = None  # None=不下发；True/False=走 extra_body 透传
+    # 后端类型（决定 enable_thinking 走顶层还是 chat_template_kwargs）；None=按 api_base 推断
+    backend_kind: BackendKindLiteral | None = None
     # PR-2：本地 Key 池；runner 按 task_index 轮询并下推单 Key 视图给子进程。空元组=禁用
     api_keys: tuple[str, ...] = ()
     # PR-2：限速配置；None=不启用限速器（线上 vLLM 路径默认如此）
@@ -216,6 +232,7 @@ def load_app_config(config_path: Path) -> AppConfig:
         allow_parallel_tool_calls=validated.agent.allow_parallel_tool_calls,
         max_tokens=validated.agent.max_tokens,
         enable_thinking=validated.agent.enable_thinking,
+        backend_kind=validated.agent.backend_kind,
         api_keys=validated.agent.api_keys,
         rate_limit=rate_limit,
         max_empty_tool_call_retries=validated.agent.max_empty_tool_call_retries,

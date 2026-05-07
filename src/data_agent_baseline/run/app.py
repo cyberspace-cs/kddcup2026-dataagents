@@ -115,6 +115,7 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
             allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
             max_tokens=config.agent.max_tokens,
             enable_thinking=config.agent.enable_thinking,
+            backend_kind=config.agent.backend_kind,
             **sampling,
         )
     else:
@@ -124,6 +125,7 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
             api_key=config.agent.api_key,
             max_tokens=config.agent.max_tokens,
             enable_thinking=config.agent.enable_thinking,
+            backend_kind=config.agent.backend_kind,
             **sampling,
         )
 
