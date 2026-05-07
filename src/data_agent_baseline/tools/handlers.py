@@ -118,20 +118,35 @@ def handle_execute_context_sql(
     )
 
 
+_ANSWER_SCRATCH_ROOT = pathlib.Path("/tmp/dabench")
+
+
+def _answer_dir_for(task: PublicTask) -> pathlib.Path:
+    """每个任务的 `_answer/` artifact 目录（execute_python 写、handle_answer 读）。
+
+    锚定到 `/tmp/dabench/<task_id>/_answer/` 而非 `task.task_dir/_answer/`：§3.4
+    把判题容器的 `/input` 挂为 read-only，沿用 task_dir 会让 mkdir/写入抛
+    `[Errno 30] Read-only file system`，agent 在 execute_python 失败上死循环
+    直到 max_steps。docker 内外统一指向 `/tmp/dabench`，本地 CLI 行为对齐
+    判题环境，少一处隐式分叉。
+    """
+    return _ANSWER_SCRATCH_ROOT / task.task_id / "_answer"
+
+
 def handle_execute_python(task: PublicTask, args: ExecutePythonInput) -> ToolExecutionResult:
     """`execute_python`: 在子进程中跑任意 Python 代码，30s 超时。
 
     注意这里根据 `content.success` 决定 `ok` 的真假——和其他工具不同，
     这个工具本身可能因用户代码抛错而失败，模型需要一个明确的 ok 信号。
 
-    `answer_dir = <task_dir>/_answer`：execute_python 子进程把它 set 到
-    `os.environ['DABENCH_ANSWER_DIR']`，让 artifact handoff（`answer({from_csv})`)
-    有一个稳定写盘位置；目录由 `execute_python_code` 保证 mkdir。
+    `answer_dir`：execute_python 子进程把它 set 到 `os.environ['DABENCH_ANSWER_DIR']`，
+    让 artifact handoff（`answer({from_csv})`)有一个稳定写盘位置；目录由
+    `execute_python_code` 保证 mkdir。具体路径解析见 `_answer_dir_for`。
     """
     content = execute_python_code(
         context_root=task.context_dir,
         code=args.code,
-        answer_dir=task.task_dir / "_answer",
+        answer_dir=_answer_dir_for(task),
         timeout_seconds=EXECUTE_PYTHON_TIMEOUT_SECONDS,
     )
     return ToolExecutionResult(ok=bool(content.get("success")), content=content)
@@ -225,7 +240,7 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
     里只 inline 了 `head(20)` 的 20 行，inline 硬闸（30 行 / 200 cells）抓不住。
     raise ValueError 让 dispatcher 翻译为 `ToolErrorEvent`，下一轮模型自己改 `from_csv`。
     """
-    artifact_path = task.task_dir / "_answer" / "answer.csv"
+    artifact_path = _answer_dir_for(task) / "answer.csv"
     if args.from_csv is not None:
         path = pathlib.Path(args.from_csv).expanduser()
         if not path.is_absolute():

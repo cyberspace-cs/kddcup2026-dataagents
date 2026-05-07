@@ -20,15 +20,22 @@ from data_agent_baseline.benchmark.schema import (
     TaskAssets,
     TaskRecord,
 )
+from data_agent_baseline.tools import handlers as _handlers
 from data_agent_baseline.tools.handlers import handle_answer
 from data_agent_baseline.tools.inputs import AnswerInput
 
 
 @pytest.fixture
-def task(tmp_path: Path) -> PublicTask:
+def task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PublicTask:
     task_dir = tmp_path / "task_1"
     context_dir = task_dir / "context"
     context_dir.mkdir(parents=True)
+    # Production now anchors _answer/ under `/tmp/dabench/<task_id>/_answer/` so
+    # the §3.4 read-only `/input` mount doesn't break execute_python. Repointing
+    # the scratch root at tmp_path keeps existing assertions (`task.task_dir /
+    # "_answer"`) byte-equivalent — `_answer_dir_for(task)` collapses to
+    # `tmp_path / "task_1" / "_answer"` which is exactly `task.task_dir / "_answer"`.
+    monkeypatch.setattr(_handlers, "_ANSWER_SCRATCH_ROOT", tmp_path)
     return PublicTask(
         record=TaskRecord(task_id="task_1", difficulty="easy", question="?"),
         assets=TaskAssets(task_dir=task_dir, context_dir=context_dir),

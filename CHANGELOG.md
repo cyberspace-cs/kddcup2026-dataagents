@@ -122,6 +122,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   helper, so no wire-format change ships.
 
 ### Fixed
+- **`tools/handlers.py` `_answer/` artifact write under read-only `/input`
+  mount.** `handle_execute_python` rooted the per-task scratch dir at
+  `<task_dir>/_answer/`, but §3.4 mounts `/input` read-only inside the judged
+  container — every `execute_python` call hit `[Errno 30] Read-only file
+  system` before the model code ran, and the agent looped on the same error
+  until `max_steps`. Scratch root now anchors at
+  `/tmp/dabench/<task_id>/_answer/` for both local CLI runs and the docker
+  submission, so the path resolves to a writable location regardless of how
+  `/input` is mounted. Also unblocks the `answer({"from_csv": ...})` artifact
+  handoff under §3.4-mirroring rehearsals (`scripts/eval_local.sh`).
 - **`submission.py` silent fallback on missing config.** `_build_config`
   previously fell back to dataclass defaults (`AppConfig()`) when
   `CONFIG_PATH` (or `DEFAULT_CONFIG = /app/configs/react_baseline.example.yaml`)
