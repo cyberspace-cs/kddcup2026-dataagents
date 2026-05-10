@@ -304,7 +304,6 @@ class ReActAgent:
         turn_index = 0
         terminated = False
         budget_warning_fired = False
-        budget_critical_fired = False
 
         while effective_turns < self.config.max_steps:
             turn_index += 1
@@ -315,9 +314,20 @@ class ReActAgent:
             budget_ratio = (
                 effective_turns / self.config.max_steps if self.config.max_steps > 0 else 0
             )
-            if not budget_warning_fired and budget_ratio >= 0.70:
+            remaining = self.config.max_steps - effective_turns
+            if budget_ratio >= 0.90:
+                messages.append(
+                    ModelMessage(
+                        role="user",
+                        content=(
+                            f"CRITICAL: {remaining} step(s) left. "
+                            "You MUST call `answer` NOW with whatever result you have. "
+                            "Failure to answer = score 0."
+                        ),
+                    )
+                )
+            elif not budget_warning_fired and budget_ratio >= 0.70:
                 budget_warning_fired = True
-                remaining = self.config.max_steps - effective_turns
                 messages.append(
                     ModelMessage(
                         role="user",
@@ -327,17 +337,6 @@ class ReActAgent:
                             "If you have computed ANY answer, call `answer` NOW — "
                             "an imperfect answer scores higher than no answer. "
                             "If not, do ONE final computation and submit."
-                        ),
-                    )
-                )
-            elif not budget_critical_fired and budget_ratio >= 0.90:
-                budget_critical_fired = True
-                messages.append(
-                    ModelMessage(
-                        role="user",
-                        content=(
-                            "CRITICAL: Only 1-2 steps remain. You MUST call `answer` on this turn "
-                            "with whatever result you have. Failure to answer = score 0."
                         ),
                     )
                 )
