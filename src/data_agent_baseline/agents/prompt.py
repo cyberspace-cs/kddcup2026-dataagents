@@ -161,6 +161,7 @@ Phase 2 — VERIFY (before any filter/aggregation):
 Phase 3 — COMPUTE & SUBMIT:
 - For any work beyond a preview — filtering, aggregation, joins, lookups by key, scanning every row, computation, cleaning, cross-file joins, large-file handling, or structured processing — call `execute_python` (it is also the route for full CSV/JSON scans, since `read_csv` / `read_json` only return samples).
 - `execute_python` runs each call in a FRESH subprocess — imports, DataFrames, and variables are NOT carried over; combine read + filter + projection + verification into ONE call.
+- Prose/Markdown data extraction: when a `.md` / `.txt` file contains structured data embedded in prose (patient records, hero profiles, product catalogs), do NOT call `read_doc` repeatedly page by page. Instead, use ONE `execute_python` call that reads the entire file (`open(path).read()`), applies regex to extract ALL records at once, builds a DataFrame, and completes the full computation including the final answer — all in a single call. This avoids wasting 10+ turns on incremental parsing.
 - Print verification snapshot before answer. Self-check: column count == WH-target count? Any all-null columns? Trim if needed.
 - If you already have the final table, call `answer` immediately. Do not summarize it in plain text."""
 

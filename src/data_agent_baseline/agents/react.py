@@ -304,6 +304,7 @@ class ReActAgent:
         turn_index = 0
         terminated = False
         budget_warning_fired = False
+        last_step_retries = 0
 
         while effective_turns < self.config.max_steps:
             turn_index += 1
@@ -421,16 +422,18 @@ class ReActAgent:
                 continue
 
             # ---- 3. 依次派发 tool_calls ----
-            effective_turns += 1
 
             # Last-step guardrail: on the final step of a long-running task
-            # (past the 90% CRITICAL threshold), block non-answer tools to
-            # prevent wasting the last turn on yet another execute_python.
+            # (past the 90% CRITICAL threshold), block non-answer tools and
+            # give the model one free retry to call `answer`. The blocked
+            # turn does NOT consume effective_turns budget.
             if (
                 remaining <= 1
                 and budget_ratio >= 0.90
+                and last_step_retries < 2
                 and not any(c.name == "answer" for c in turn.calls)
             ):
+                last_step_retries += 1
                 step_counter += 1
                 record_step_event(
                     state,
@@ -454,6 +457,8 @@ class ReActAgent:
                     callback=self.step_callback,
                 )
                 continue
+
+            effective_turns += 1
             # text 协议下 StepRecord 不承载原生调用 id / 原始 tool_calls（语义上它们都是
             # 合成的占位值），保持 None 可让 trace.json 读者清楚区分两种协议。
             is_native = self.protocol == "native"
