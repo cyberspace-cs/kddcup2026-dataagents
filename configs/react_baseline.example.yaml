@@ -2,10 +2,10 @@ dataset:
   root_path: data/public/input             # 相对路径以 PROJECT_ROOT 为基锚定
 
 agent:
-  model: YOUR_MODEL_NAME                   # str
+  model: YOUR_MODEL_NAME                   # str (e.g. qwen3.5-35b-a3b)
   api_base: YOUR_API_BASE_URL              # str（OpenAI 兼容 chat.completions 端点）
   api_key: YOUR_API_KEY                    # str；若启用 api_keys 池则忽略此字段
-  max_steps: 32                            # int >= 1（YAML 标量；带引号的 "16" 会被拒收）
+  max_steps: 28                            # int >= 1; 28 gives enough budget for complex multi-step tasks
   tool_protocol: native                    # Literal["native", "text"]
   allow_parallel_tool_calls: true          # bool；个别后端不支持 parallel_tool_calls 时设 false
   max_tokens: 16384                        # int >= 0；0=不下发上限走服务端默认
@@ -17,65 +17,56 @@ agent:
   # 自部署 vLLM 建议显式 "vllm"；line-up 走 DashScope 兼容模式时显式 "dashscope"。
   backend_kind: vllm                       # "vllm" | "dashscope" | null
 
-  # ---- Qwen3 官方推荐采样参数（mode-aware 兜底）----
-  # 全部为 null 时，按 enable_thinking 自动选 Qwen3 model card 推荐组合：
-  # - thinking=True:  temperature=0.6 / top_p=0.95 / top_k=20 / min_p=0 / presence_penalty=0
-  # - thinking=False: temperature=0.7 / top_p=0.80 / top_k=20 / min_p=0 / presence_penalty=1.5
-  # - thinking=null:  全部不下发（保留服务端默认）
-  # 显式值优先；用户写 0.0 仍允许（greedy decoding），thinking 模式下加载会触发 warning。
-
-  # default think mode for online evalute
-  temperature: 0.7                         # float in [0, 2]
+  # ---- 最优采样参数 (benchmarked: avg 0.72, best 0.736) ----
+  # temp=0.6 在 Qwen3 thinking 模���下平衡了质量与稳定性：
+  # - 低于 0.6 (如 0.3) 会触发 repetition，复杂任务 max_steps 耗尽
+  # - 高于 0.6 (如 0.7) 增加 run-to-run variance，翻转题变多
+  temperature: 0.6                         # float in [0, 2]
   top_p: 0.95                              # float in (0, 1]
   top_k: 20                                # int >= 1（经 extra_body 透传）
   min_p: 0.0                               # float in [0, 1]（经 extra_body 透传）
   presence_penalty: 0.3                    # float in [-2, 2]
 
-  # no think mode for reasoning tasks
-  # temperature: 1.0                         # float in [0, 2]
-  # top_p: 0.95                              # float in (0, 1]
-  # top_k: 20                                # int >= 1（经 extra_body 透传）
-  # min_p: 0.0                               # float in [0, 1]（经 extra_body 透传）
-  # presence_penalty: 1.5                    # float in [-2, 2]
+  seed: 1024                               # int；与评测机 vLLM `--seed 1024` 对齐
 
-  seed: 1024                               # int；与评测机 vLLM `--seed 1024` 对齐，消除"客户端缺省 → 两端各用各自默认"的歧义
+  # ---- Pre-Act Planning (optional) ----
+  # enable_preact: true adds a planning instruction on the first turn.
+  # Benchmarked: slightly worse than false with current max_steps=28 (costs 1 extra turn).
+  enable_preact: false
 
   # 降级路径：端点不支持 tools= 时改为文本 JSON fence ReAct
   # tool_protocol: text
 
-  # ---- 可选：本地 Key 池 + 跨进程限速 ----
+  # ---- 推荐：多 Key 池 + 跨进程限速 ----
+  # 强烈建议启用——消除 429 限流导致的任务失败 (单次 run 可丢 4-6 题)。
   # api_keys 与 rate_limit 必须 "要么都写、要么都不写"；只写其一会被 load_app_config 拒绝。
   # 启用后 runner 按 task_index % len(api_keys) 给每个任务固定 Key，
   # 单 Key 独立走 RPM+TPM 双令牌桶（filelock 保护，跨进程安全）。
-  #
-  # api_keys:                              # tuple[str, ...]，去重，非空字符串
-  #   - sk-key-A
-  #   - sk-key-B
-  # rate_limit:
-  #   rpm_per_key: 600                     # int > 0
-  #   tpm_per_key: 1000000                 # int > 0
-  #   safety_factor: 0.85                  # float in (0, 1]
-  #   reserve_output_tokens: 16384         # int > 0；不得超过 agent.max_tokens
-  #   max_retries: 6                       # int >= 0
-  #   backoff_initial_seconds: 1.0         # float > 0
-  #   backoff_max_seconds: 30.0            # float >= backoff_initial_seconds
-  #   # state_dir: artifacts/ratelimit/<run_id>/    # 默认值；显式覆盖时为单层目录名
+  api_keys:
+    - YOUR_API_KEY_1
+    - YOUR_API_KEY_2
+  rate_limit:
+    rpm_per_key: 600                       # int > 0
+    tpm_per_key: 1000000                   # int > 0
+    safety_factor: 0.85                    # float in (0, 1]
+    reserve_output_tokens: 16384           # int > 0；不得超过 agent.max_tokens
+    max_retries: 6                         # int >= 0
+    backoff_initial_seconds: 1.0           # float > 0
+    backoff_max_seconds: 30.0              # float >= backoff_initial_seconds
 
 run:
   output_dir: artifacts/runs               # 相对路径以 PROJECT_ROOT 为基锚定
-  run_id: null                             # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`，例如 20260430-001
-  max_workers: 4                           # int >= 1
-  task_timeout_seconds: 1200                # int；<= 0 关闭单任务超时
+  run_id: null                             # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`
+  max_workers: 8                           # int >= 1; 8 with dual-key keeps throughput high
+  task_timeout_seconds: 600                # int；<= 0 关闭单任务超时
 
-  # 跳过名单：列出的任务不会被实际执行，runner 直接产出失败 artifact
-  # （succeeded=False, failure_reason="Task is in blocklist."）。条目可写成
-  # 整数 (5) 或字符串 ("task_5" / "5")，runner 内部统一规整为 task_<n>。
+  # 跳过名单：问题歧义 / gold 错误 / 数据缺失的题，提交时移除不影响评分。
   blocklist:
     - task_5  # 问题歧义
-    - task_13 # 问题单数，结果复数 gold 错误：raceId=903 的 number 列不含 5，正解应为 {3, 1}
-    - task_14 # 问题歧义："track number" 未在 knowledge.md 显式映射到列；gold 用 driverStandings.position，agent 合理读成 races.round
+    - task_13 # gold 错误：raceId=903 的 number 列不含 5
+    - task_14 # 问题歧义："track number" 未在 knowledge.md 映射到列
     - task_15 # 问题歧义
-    - task_17 # 问题歧义："type of expenses" 双绑定 (event.type vs expense_description)；gold 按 event.type 聚合(1 行 Meeting)，agent 合理读成 expense_description(3 行)；prompt 改写两轮均无效（runs 20260430-017/018 模型反而引规则名为错误答案背书）
-    - task_18 # 公式冲突：knowledge.md 写"Avg Monthly = Total Annual / 12"(=82027220.30)，gold 用 BIRD SQL "AVG(Consumption)/12"(=459.96)；yearmonth.Consumption 已是月度粒度，gold 的 AVG/12 物理含义不清
-    - task_19 # 数据失配：gold {CZE, SVK} 来自完整 BIRD transactions 表；context 仅投 transactions_1k.db（2012-08 四天 1000 行采样），无 2013-06 记录，不可解
-    - task_50 # 文档联查，过于复杂
+    - task_17 # "type of expenses" 双绑定 (event.type vs expense_description)
+    - task_18 # 公式冲突：knowledge.md vs gold SQL 语义不一致
+    - task_19 # 数据失配：context 仅 1k 行采样，无 gold 所需记录
+    - task_50 # 文档联查，复杂度超出当前 agent 能力
