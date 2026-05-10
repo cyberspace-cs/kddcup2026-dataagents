@@ -751,7 +751,7 @@ def test_budget_warning_injected_at_75_percent(task: PublicTask) -> None:
     fourth_call_messages = captured_messages[3]
     budget_msgs = [m for m in fourth_call_messages if "BUDGET WARNING" in (m.content or "")]
     assert len(budget_msgs) == 1
-    assert "call answer NOW" in budget_msgs[0].content
+    assert "call `answer` NOW" in budget_msgs[0].content
 
 
 def test_preact_planning_message_on_first_turn(task: PublicTask) -> None:

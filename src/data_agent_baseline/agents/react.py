@@ -303,7 +303,8 @@ class ReActAgent:
         empty_tool_call_retries = 0
         turn_index = 0
         terminated = False
-        budget_reflected = False
+        budget_warning_fired = False
+        budget_critical_fired = False
 
         while effective_turns < self.config.max_steps:
             turn_index += 1
@@ -311,21 +312,32 @@ class ReActAgent:
             # ---- 1. 调用模型 ----
             messages = self._build_messages(task, state)
 
-            # 步数预算 75% 反思注入（只触发一次）
-            if (
-                not budget_reflected
-                and self.config.max_steps > 0
-                and effective_turns / self.config.max_steps >= 0.75
-            ):
-                budget_reflected = True
+            budget_ratio = (
+                effective_turns / self.config.max_steps if self.config.max_steps > 0 else 0
+            )
+            if not budget_warning_fired and budget_ratio >= 0.70:
+                budget_warning_fired = True
+                remaining = self.config.max_steps - effective_turns
                 messages.append(
                     ModelMessage(
                         role="user",
                         content=(
-                            "BUDGET WARNING: 75% of step budget used. "
-                            "If you have enough data, call answer NOW. "
-                            "If not, identify the single most critical "
-                            "verification and do it."
+                            f"BUDGET WARNING: {effective_turns}/{self.config.max_steps} steps used, "
+                            f"{remaining} remaining. "
+                            "If you have computed ANY answer, call `answer` NOW — "
+                            "an imperfect answer scores higher than no answer. "
+                            "If not, do ONE final computation and submit."
+                        ),
+                    )
+                )
+            elif not budget_critical_fired and budget_ratio >= 0.90:
+                budget_critical_fired = True
+                messages.append(
+                    ModelMessage(
+                        role="user",
+                        content=(
+                            "CRITICAL: Only 1-2 steps remain. You MUST call `answer` on this turn "
+                            "with whatever result you have. Failure to answer = score 0."
                         ),
                     )
                 )
