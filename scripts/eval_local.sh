@@ -25,7 +25,7 @@ MODEL_API_KEY="${MODEL_API_KEY:-${DASHSCOPE_API_KEY:-}}"
 MODEL_NAME="${MODEL_NAME:-qwen3.5-35b-a3b}"
 # §3.4 limits. On smaller hosts Docker silently falls back to host capacity,
 # so leaving these at official values is safe and keeps rehearsal honest.
-CPUS="${CPUS:-16}"
+CPUS="${CPUS:-8}"
 MEMORY="${MEMORY:-64g}"
 
 [[ -d "$INPUT_DIR" ]]        || { echo "ERROR: input dir missing: $INPUT_DIR"; exit 2; }

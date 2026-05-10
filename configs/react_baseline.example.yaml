@@ -25,11 +25,11 @@ agent:
   # 显式值优先；用户写 0.0 仍允许（greedy decoding），thinking 模式下加载会触发 warning。
 
   # default think mode for online evalute
-  temperature: 0.6                         # float in [0, 2]
+  temperature: 0.7                         # float in [0, 2]
   top_p: 0.95                              # float in (0, 1]
   top_k: 20                                # int >= 1（经 extra_body 透传）
   min_p: 0.0                               # float in [0, 1]（经 extra_body 透传）
-  presence_penalty: 0.0                    # float in [-2, 2]
+  presence_penalty: 0.3                    # float in [-2, 2]
 
   # no think mode for reasoning tasks
   # temperature: 1.0                         # float in [0, 2]
@@ -64,8 +64,8 @@ agent:
 run:
   output_dir: artifacts/runs               # 相对路径以 PROJECT_ROOT 为基锚定
   run_id: null                             # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`，例如 20260430-001
-  max_workers: 8                           # int >= 1
-  task_timeout_seconds: 600                # int；<= 0 关闭单任务超时
+  max_workers: 4                           # int >= 1
+  task_timeout_seconds: 1200                # int；<= 0 关闭单任务超时
 
   # 跳过名单：列出的任务不会被实际执行，runner 直接产出失败 artifact
   # （succeeded=False, failure_reason="Task is in blocklist."）。条目可写成
