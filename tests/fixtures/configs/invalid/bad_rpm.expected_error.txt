@@ -1,1 +1,0 @@
-agent.rate_limit.rpm_per_key must be positive.

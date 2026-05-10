@@ -1,1 +1,0 @@
-agent.tool_protocol must be either 'native' or 'text'; got 'hybrid'.

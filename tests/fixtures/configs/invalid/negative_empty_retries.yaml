@@ -1,3 +1,0 @@
-agent:
-  api_key: sk
-  max_empty_tool_call_retries: -1

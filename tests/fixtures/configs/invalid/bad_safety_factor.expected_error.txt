@@ -1,1 +1,0 @@
-agent.rate_limit.safety_factor must be in the interval (0, 1].
