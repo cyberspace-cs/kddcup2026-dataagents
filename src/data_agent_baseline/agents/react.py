@@ -422,6 +422,38 @@ class ReActAgent:
 
             # ---- 3. 依次派发 tool_calls ----
             effective_turns += 1
+
+            # Last-step guardrail: on the final step of a long-running task
+            # (past the 90% CRITICAL threshold), block non-answer tools to
+            # prevent wasting the last turn on yet another execute_python.
+            if (
+                remaining <= 1
+                and budget_ratio >= 0.90
+                and not any(c.name == "answer" for c in turn.calls)
+            ):
+                step_counter += 1
+                record_step_event(
+                    state,
+                    ToolErrorEvent(
+                        thought=turn.thought,
+                        arguments={},
+                        error=(
+                            "BLOCKED: final step must be an `answer` call. "
+                            "Call `answer` with your best result immediately."
+                        ),
+                        raw_response=response.raw_response,
+                        tool_call_id=turn.calls[0].id if turn.calls else None,
+                        raw_tool_calls=response.raw_tool_calls,
+                        reasoning=response.reasoning_content,
+                        usage=response.usage,
+                        prompt_messages=serialized_prompt,
+                        response_message=serialized_response,
+                    ),
+                    step_index=step_counter,
+                    turn_index=turn_index,
+                    callback=self.step_callback,
+                )
+                continue
             # text 协议下 StepRecord 不承载原生调用 id / 原始 tool_calls（语义上它们都是
             # 合成的占位值），保持 None 可让 trace.json 读者清楚区分两种协议。
             is_native = self.protocol == "native"

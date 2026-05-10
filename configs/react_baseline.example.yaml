@@ -69,4 +69,5 @@ run:
     - task_17 # "type of expenses" 双绑定 (event.type vs expense_description)
     - task_18 # 公式冲突：knowledge.md vs gold SQL 语义不一致
     - task_19 # 数据失配：context 仅 1k 行采样，无 gold 所需记录
+    - task_40 # 数据不完整：patient_sex.csv 仅 92/302 人，context 不足以复现 gold=4
     - task_50 # 文档联查，复杂度超出当前 agent 能力
