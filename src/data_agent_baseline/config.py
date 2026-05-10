@@ -156,6 +156,7 @@ class AgentConfig:
     # PR-2：限速配置；None=不启用限速器（线上 vLLM 路径默认如此）
     rate_limit: RateLimitConfig | None = None
     max_empty_tool_call_retries: int = 8
+    enable_preact: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +237,7 @@ def load_app_config(config_path: Path) -> AppConfig:
         api_keys=validated.agent.api_keys,
         rate_limit=rate_limit,
         max_empty_tool_call_retries=validated.agent.max_empty_tool_call_retries,
+        enable_preact=validated.agent.enable_preact,
     )
 
     return AppConfig(

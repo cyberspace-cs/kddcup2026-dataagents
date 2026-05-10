@@ -191,6 +191,7 @@ class AgentConfigModel(_StrictModel):
     enable_thinking: StrictBool | None = None
     backend_kind: BackendKindLiteral | None = None
     max_empty_tool_call_retries: StrictInt = 8
+    enable_preact: StrictBool = False
     api_keys: tuple[str, ...] = Field(default_factory=tuple)
     rate_limit: RateLimitConfigModel | None = None
 

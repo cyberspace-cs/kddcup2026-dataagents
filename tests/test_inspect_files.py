@@ -99,6 +99,22 @@ def test_inspect_files_csv_dtype_inference(task_with_mixed_context: PublicTask) 
     assert schema["dtypes"] == ["int", "float", "str"]
     assert schema["row_count"] == 3
     assert schema["dtypes_confidence"] == "approx"
+    # Step 1: column profile assertions
+    assert "profile" in schema
+    assert schema["profile_sample_rows"] == 3
+    profile = schema["profile"]
+    assert len(profile) == 3
+    # int column: min/max
+    assert profile[0]["null_rate"] == 0.0
+    assert profile[0]["min"] == 12
+    assert profile[0]["max"] == 56
+    # float column: min/max
+    assert profile[1]["null_rate"] == 0.0
+    assert profile[1]["min"] == 1.41
+    assert profile[1]["max"] == 3.14
+    # str column with <=20 unique: values list
+    assert profile[2]["null_rate"] == 0.0
+    assert profile[2]["values"] == ["alice", "bob", "carol"]
 
 
 def test_inspect_files_sqlite_tables(task_with_mixed_context: PublicTask) -> None:
@@ -108,8 +124,10 @@ def test_inspect_files_sqlite_tables(task_with_mixed_context: PublicTask) -> Non
     assert sqlite_entry["supported"] is True
     tables = sqlite_entry["schema"]["tables"]
     assert set(tables.keys()) == {"patients", "visits"}
-    assert tables["patients"] == ["id", "name"]
-    assert tables["visits"] == ["id", "patient_id", "date"]
+    assert tables["patients"]["columns"] == ["id", "name"]
+    assert tables["patients"]["row_count"] == 1
+    assert tables["visits"]["columns"] == ["id", "patient_id", "date"]
+    assert tables["visits"]["row_count"] == 0
 
 
 def test_inspect_files_xlsx_marked_unsupported(task_with_mixed_context: PublicTask) -> None:

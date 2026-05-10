@@ -137,12 +137,22 @@ You are a data analysis agent.
 - `knowledge.md` is authoritative where it explicitly defines a field; observed data wins on conflict.
 
 ## Decision tree
-- If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas).
-- If `inspect_files` lists a `knowledge.md`, your very next turn MUST call `read_doc` on it — in parallel with any CSV/JSON previews is fine, but do NOT skip to `execute_python` first. It typically pins down code↔label mappings (e.g. `VYBER` = cash withdrawal), unit conventions (e.g. times standardized to `MM:SS.mmm`), or formula definitions that change the filter; reading it after analysis wastes turns.
+
+Phase 1 — DISCOVER (first 1-2 turns):
+- If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas, column profiles).
+- If `inspect_files` lists a `knowledge.md` or any `.md` / `.txt`, your very next turn MUST call `read_doc` on it — in parallel with any CSV/JSON previews is fine, but do NOT skip to `execute_python` first. It typically pins down code↔label mappings (e.g. `VYBER` = cash withdrawal), unit conventions (e.g. times standardized to `MM:SS.mmm`), or formula definitions that change the filter; reading it after analysis wastes turns.
 - For previews, call `read_csv`, `read_json`, or `read_doc` according to file type. `read_csv` / `read_json` return ONLY a sample of the file, so do not draw conclusions about totals, "the only matching row", or "earliest/latest" from their output alone (`read_doc` keyword mode does scan the whole file — see its tool description).
+- After Phase 1 you must know: file list, schemas, column semantics, code↔label mappings from docs.
+
+Phase 2 — VERIFY (before any filter/aggregation):
+- For every column you will use in WHERE / filter / grouping: categorical/code → `SELECT DISTINCT col LIMIT 30` or `df[col].unique()`; numeric → `SELECT MIN(col), MAX(col)`.
+- Hedge words ("likely", "probably") signal an unverified guess — the very next turn MUST be verification, not a filter.
 - If you find a SQLite/database file (`.db` / `.sqlite` / `.sqlite3`), call `inspect_sqlite_schema` first, then `execute_context_sql` for queries and aggregations; these two tools open ONLY sqlite files and fail with `file is not a database` on a CSV / JSON / Markdown / text path.
+
+Phase 3 — COMPUTE & SUBMIT:
 - For any work beyond a preview — filtering, aggregation, joins, lookups by key, scanning every row, computation, cleaning, cross-file joins, large-file handling, or structured processing — call `execute_python` (it is also the route for full CSV/JSON scans, since `read_csv` / `read_json` only return samples).
 - `execute_python` runs each call in a FRESH subprocess — imports, DataFrames, and variables are NOT carried over; combine read + filter + projection + verification into ONE call.
+- Print verification snapshot before answer. Self-check: column count == WH-target count? Any all-null columns? Trim if needed.
 - If you already have the final table, call `answer` immediately. Do not summarize it in plain text."""
 
 _NATIVE_OUTPUT_PROTOCOL = """\
@@ -229,10 +239,30 @@ def build_task_prompt(task: PublicTask) -> str:
     return f"Question: {task.question}"
 
 
-def build_observation_prompt(observation: dict[str, object]) -> str:
+def _recovery_hint(observation: dict[str, object]) -> str | None:
+    """根据 observation 中的 error 信息生成定向恢复提示。"""
+    error_text = str(observation.get("error", "")).lower()
+    if not error_text:
+        return None
+    if "no such column" in error_text or "no such table" in error_text:
+        return "Re-check schema via inspect_sqlite_schema."
+    if "syntax error" in error_text:
+        return "Fix the syntax and retry."
+    if "timeout" in error_text or "timed out" in error_text:
+        return "Simplify: use SQL aggregation or add WHERE."
+    return "Review the error and adjust."
+
+
+def build_observation_prompt(observation: dict[str, object], *, ok: bool | None = None) -> str:
     """把工具执行结果以格式化 JSON 回传给模型作为下一轮的观察。
 
     ensure_ascii=False 保留中文等非 ASCII 字符原样可读；indent=2 让模型更易 parse。
+    当 ok=False 时追加定向恢复提示帮助模型纠偏。
     """
     rendered = json.dumps(observation, ensure_ascii=False, indent=2)
-    return f"Observation:\n{rendered}"
+    result = f"Observation:\n{rendered}"
+    if ok is False:
+        hint = _recovery_hint(observation)
+        if hint:
+            result += f"\n\nRecovery hint: {hint}"
+    return result

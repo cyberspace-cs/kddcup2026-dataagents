@@ -198,6 +198,7 @@ def build_application(
     agent_config = ReActAgentConfig(
         max_steps=config.agent.max_steps,
         max_empty_tool_call_retries=config.agent.max_empty_tool_call_retries,
+        enable_preact=config.agent.enable_preact,
     )
     return AgentApp(
         dataset=dataset,

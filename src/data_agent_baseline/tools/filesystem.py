@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
 from pathlib import Path
@@ -22,6 +23,8 @@ _INSPECT_FILES_MAX_FILES = 100
 _INSPECT_FILES_JSON_SIZE_LIMIT = 100 * 1024 * 1024
 # inspect_files dtype 推断扫描行数；多了也无谓——只为给模型一个粗略提示。
 _INSPECT_FILES_DTYPE_SAMPLE = 5
+# inspect_files 列级 profiling 采样行数：前 100 行足够推断值域/枚举/null 率。
+_INSPECT_FILES_PROFILE_SAMPLE = 100
 # read_csv 预览返回的 head / tail 行数（固定不让模型自调，避免被当作"取数据"工具）：
 # - head 给前缀样本（多数 CSV 把表头敏感的行放前）
 # - tail 给后缀样本（catch sort-order surprise，比如 task_22 那条第 36 行的 dues）
@@ -667,7 +670,7 @@ def _classify_dtype(values: list[str]) -> str:
 
 
 def _summarize_csv(path: Path) -> dict[str, Any]:
-    """流式读取 CSV：拿 header + 前 N 行做 dtype 推断 + 累加总行数。
+    """流式读取 CSV：拿 header + 前 N 行做 dtype 推断 + 列级 profiling + 累加总行数。
 
     用 `csv.reader` 逐行迭代，避免一次性 list(reader) 撑爆内存——
     inspect_files 会被一次性扫描整个 context，单文件大小不可控。
@@ -677,7 +680,6 @@ def _summarize_csv(path: Path) -> dict[str, Any]:
         try:
             header = next(reader)
         except StopIteration:
-            # 空文件：没有 header 也没有数据行
             return {
                 "columns": [],
                 "dtypes": [],
@@ -685,11 +687,14 @@ def _summarize_csv(path: Path) -> dict[str, Any]:
                 "dtypes_confidence": "approx",
             }
         sample_rows: list[list[str]] = []
+        profile_rows: list[list[str]] = []
         row_count = 0
         for row in reader:
             row_count += 1
             if len(sample_rows) < _INSPECT_FILES_DTYPE_SAMPLE:
                 sample_rows.append(row)
+            if len(profile_rows) < _INSPECT_FILES_PROFILE_SAMPLE:
+                profile_rows.append(row)
     # 按列重组样本：每列取前 N 个值，长度不齐时缺位用空串
     column_count = len(header)
     dtypes: list[str] = []
@@ -698,12 +703,48 @@ def _summarize_csv(path: Path) -> dict[str, Any]:
             row[column_index] if column_index < len(row) else "" for row in sample_rows
         ]
         dtypes.append(_classify_dtype(column_values))
+
+    # 列级 profiling：基于 profile_rows 生成值域/枚举/null 率
+    profile: list[dict[str, Any]] = []
+    profile_count = len(profile_rows)
+    for column_index in range(column_count):
+        col_values = [row[column_index] if column_index < len(row) else "" for row in profile_rows]
+        null_count = sum(1 for v in col_values if v.strip() == "")
+        null_rate = round(null_count / profile_count, 3) if profile_count > 0 else 0.0
+        col_profile: dict[str, Any] = {"null_rate": null_rate}
+        col_dtype = dtypes[column_index] if column_index < len(dtypes) else "str"
+
+        if col_dtype in ("int", "float"):
+            numeric_vals: list[float] = []
+            for v in col_values:
+                v_stripped = v.strip()
+                if v_stripped:
+                    with contextlib.suppress(ValueError):
+                        numeric_vals.append(float(v_stripped))
+            if numeric_vals:
+                if col_dtype == "int":
+                    col_profile["min"] = int(min(numeric_vals))
+                    col_profile["max"] = int(max(numeric_vals))
+                else:
+                    col_profile["min"] = min(numeric_vals)
+                    col_profile["max"] = max(numeric_vals)
+        else:
+            non_empty = sorted({v.strip() for v in col_values if v.strip()})
+            if len(non_empty) <= 20:
+                col_profile["values"] = non_empty
+            else:
+                col_profile["unique_count"] = len(non_empty)
+                col_profile["sample_values"] = non_empty[:5]
+
+        profile.append(col_profile)
+
     return {
         "columns": header,
         "dtypes": dtypes,
         "row_count": row_count,
-        # dtype 基于前 5 行；返回字段提示模型不要把推断当真值
         "dtypes_confidence": "approx",
+        "profile": profile,
+        "profile_sample_rows": min(profile_count, row_count),
     }
 
 
@@ -758,7 +799,7 @@ def _summarize_doc(path: Path) -> dict[str, Any]:
 
 
 def _summarize_sqlite(path: Path) -> dict[str, Any]:
-    """sqlite/db：返回 `{"tables": {table_name: [col, ...]}}` 形态。
+    """sqlite/db：返回 `{"tables": {table_name: {"columns": [...], "row_count": N}}}` 形态。
 
     `inspect_sqlite_schema` 会回传完整 CREATE SQL，inspect_files 全量扫描时太
     费 token。这里单连接直接走 sqlite_master + PRAGMA table_info 抽列名，
@@ -766,7 +807,7 @@ def _summarize_sqlite(path: Path) -> dict[str, Any]:
     """
     import sqlite3
 
-    tables: dict[str, list[str]] = {}
+    tables: dict[str, dict[str, Any]] = {}
     uri = f"file:{path.resolve().as_posix()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     try:
@@ -778,12 +819,12 @@ def _summarize_sqlite(path: Path) -> dict[str, Any]:
         for (name,) in table_rows:
             if not isinstance(name, str):
                 continue
-            # PRAGMA table_info 不能参数化表名；name 来自 sqlite_master 不存在
-            # 外部注入面，但仍双引号包裹以适配带特殊字符的表名
             quoted = name.replace('"', '""')
             cursor = conn.execute(f'PRAGMA table_info("{quoted}")')
             columns = [row[1] for row in cursor.fetchall()]
-            tables[name] = columns
+            count_cursor = conn.execute(f'SELECT COUNT(*) FROM "{quoted}"')
+            row_count = count_cursor.fetchone()[0]
+            tables[name] = {"columns": columns, "row_count": row_count}
     finally:
         conn.close()
     return {"tables": tables}

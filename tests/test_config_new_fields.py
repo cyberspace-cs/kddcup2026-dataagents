@@ -287,3 +287,24 @@ def test_no_warning_when_thinking_disabled_with_greedy(tmp_path: Path) -> None:
         load_app_config(cfg_path)
     user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
     assert not any("greedy" in str(w.message).lower() for w in user_warnings)
+
+
+# ---------- enable_preact ----------
+
+
+def test_enable_preact_default_is_false(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "")
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.enable_preact is False
+
+
+def test_enable_preact_true(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "  enable_preact: true\n")
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.enable_preact is True
+
+
+def test_enable_preact_false_explicit(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "  enable_preact: false\n")
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.enable_preact is False

@@ -113,9 +113,13 @@ def handle_execute_context_sql(
 ) -> ToolExecutionResult:
     """`execute_context_sql`: 对 context/ 下的 sqlite 跑只读 SQL，默认 200 行上限。"""
     path = resolve_context_path(task, args.path)
-    return ToolExecutionResult(
-        ok=True, content=execute_read_only_sql(path, args.sql, limit=args.limit)
-    )
+    content = execute_read_only_sql(path, args.sql, limit=args.limit)
+    if content.get("row_count", -1) == 0:
+        content["warning"] = (
+            "Query returned 0 rows. Verify filter values with "
+            "SELECT DISTINCT or check for case/format mismatches."
+        )
+    return ToolExecutionResult(ok=True, content=content)
 
 
 _ANSWER_SCRATCH_ROOT = pathlib.Path("/tmp/dabench")
@@ -220,6 +224,40 @@ def _parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], l
     return header, typed, dtypes
 
 
+def _prune_null_columns(
+    columns: list[str], rows: list[list[Any]]
+) -> tuple[list[str], list[list[Any]], list[str]]:
+    """剔除所有值均为 null/空串/None 的列，返回 (pruned_columns, pruned_rows, removed)。
+
+    grader 对多余列的惩罚是确定性的；如果一列在所有行上都是空值，
+    它不可能是 gold 列，剔除只会减少 penalty，不可能伤害 recall。
+    """
+    if not rows or not columns:
+        return columns, rows, []
+
+    width = len(columns)
+    keep_indices: list[int] = []
+    removed: list[str] = []
+
+    for col_idx in range(width):
+        all_null = all(
+            row[col_idx] is None or (isinstance(row[col_idx], str) and row[col_idx].strip() == "")
+            for row in rows
+            if col_idx < len(row)
+        )
+        if all_null and len(rows) > 0:
+            removed.append(columns[col_idx])
+        else:
+            keep_indices.append(col_idx)
+
+    if not removed:
+        return columns, rows, []
+
+    pruned_columns = [columns[i] for i in keep_indices]
+    pruned_rows = [[row[i] for i in keep_indices] for row in rows]
+    return pruned_columns, pruned_rows, removed
+
+
 def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
     """`answer`: 终止工具，提交最终答案表。
 
@@ -252,25 +290,25 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
                 "(hint: use os.environ['DABENCH_ANSWER_DIR'] to build the path)"
             )
         columns, rows, dtypes = _parse_answer_csv(path)
+        columns, rows, pruned_cols = _prune_null_columns(columns, rows)
         answer = AnswerTable(columns=columns, rows=rows)
-        # 用户提交路径若落在 `_answer/` 之外，rmtree 不会清到，这里先 unlink 兜底；
-        # 然后整目录 rmtree 把 artifact_path 与任何草稿/日志一起带走
         path.unlink(missing_ok=True)
         shutil.rmtree(artifact_path.parent, ignore_errors=True)
+        content: dict[str, Any] = {
+            "status": "submitted",
+            "column_count": len(columns),
+            "row_count": len(rows),
+            "from_csv": {
+                "path": str(path),
+                "dtypes": dtypes,
+                "head_preview": rows[:5],
+            },
+        }
+        if pruned_cols:
+            content["pruned_null_columns"] = pruned_cols
         return ToolExecutionResult(
             ok=True,
-            content={
-                "status": "submitted",
-                "column_count": len(columns),
-                "row_count": len(rows),
-                "from_csv": {
-                    "path": str(path),
-                    "dtypes": dtypes,
-                    # 仅前 5 行做 trace 审计：模型回显已经写过的内容毫无意义，
-                    # 但留个抽样便于离线对账（prediction.csv vs gold）
-                    "head_preview": rows[:5],
-                },
-            },
+            content=content,
             is_terminal=True,
             answer=answer,
         )
@@ -286,18 +324,19 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
     # inline 路径：list(...) 拷贝让最终落盘的 AnswerTable 不与外部对象共享底层引用
     columns = list(args.columns)
     rows = [list(row) for row in args.rows]
+    columns, rows, pruned_cols = _prune_null_columns(columns, rows)
     answer = AnswerTable(columns=columns, rows=rows)
-    # 走到这里 artifact 要么不存在、要么是零字节；连同 `_answer/` 目录一起清，
-    # 下次同一 task_dir 重跑或离线分析都不会读到旧产物
     shutil.rmtree(artifact_path.parent, ignore_errors=True)
+    content: dict[str, Any] = {
+        "status": "submitted",
+        "column_count": len(columns),
+        "row_count": len(rows),
+    }
+    if pruned_cols:
+        content["pruned_null_columns"] = pruned_cols
     return ToolExecutionResult(
         ok=True,
-        content={
-            # 给模型一个简洁的提交确认信号，不把完整表回显（避免浪费 token）
-            "status": "submitted",
-            "column_count": len(columns),
-            "row_count": len(rows),
-        },
-        is_terminal=True,  # 触发 ReAct 循环退出
-        answer=answer,  # 答案对象交给循环，最终写入 prediction.csv
+        content=content,
+        is_terminal=True,
+        answer=answer,
     )

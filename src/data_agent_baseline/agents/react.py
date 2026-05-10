@@ -116,6 +116,7 @@ class ReActAgentConfig:
 
     max_steps: int = 16
     max_empty_tool_call_retries: int = 8
+    enable_preact: bool = False
 
 
 class ReActAgent:
@@ -186,10 +187,26 @@ class ReActAgent:
         """
         messages = [self._system_message()]
         messages.append(ModelMessage(role="user", content=build_task_prompt(task)))
+        if self.config.enable_preact and not state.steps:
+            messages.append(
+                ModelMessage(
+                    role="user",
+                    content=(
+                        "Before acting, outline a brief plan: "
+                        "(1) which files/tables contain the needed data, "
+                        "(2) what joins/filters/aggregations are needed, "
+                        "(3) what the final answer columns should be. "
+                        "Then start with inspect_files."
+                    ),
+                )
+            )
         for step in state.steps:
             messages.append(ModelMessage(role="assistant", content=step.raw_response))
             messages.append(
-                ModelMessage(role="user", content=build_observation_prompt(step.observation))
+                ModelMessage(
+                    role="user",
+                    content=build_observation_prompt(step.observation, ok=step.ok),
+                )
             )
         return messages
 
@@ -208,6 +225,20 @@ class ReActAgent:
         messages = [self._system_message()]
         messages.append(ModelMessage(role="user", content=build_task_prompt(task)))
 
+        if self.config.enable_preact and not state.steps:
+            messages.append(
+                ModelMessage(
+                    role="user",
+                    content=(
+                        "Before acting, outline a brief plan: "
+                        "(1) which files/tables contain the needed data, "
+                        "(2) what joins/filters/aggregations are needed, "
+                        "(3) what the final answer columns should be. "
+                        "Then start with inspect_files."
+                    ),
+                )
+            )
+
         # 按 turn_index 分组：同一轮的所有 StepRecord 共享一个 assistant 消息
         steps_by_turn: dict[int, list[StepRecord]] = {}
         for step in state.steps:
@@ -225,7 +256,7 @@ class ReActAgent:
                 messages.append(
                     ModelMessage(
                         role="user",
-                        content=build_observation_prompt(first_step.observation),
+                        content=build_observation_prompt(first_step.observation, ok=first_step.ok),
                     )
                 )
                 continue
@@ -272,12 +303,33 @@ class ReActAgent:
         empty_tool_call_retries = 0
         turn_index = 0
         terminated = False
+        budget_reflected = False
 
         while effective_turns < self.config.max_steps:
             turn_index += 1
 
             # ---- 1. 调用模型 ----
             messages = self._build_messages(task, state)
+
+            # 步数预算 75% 反思注入（只触发一次）
+            if (
+                not budget_reflected
+                and self.config.max_steps > 0
+                and effective_turns / self.config.max_steps >= 0.75
+            ):
+                budget_reflected = True
+                messages.append(
+                    ModelMessage(
+                        role="user",
+                        content=(
+                            "BUDGET WARNING: 75% of step budget used. "
+                            "If you have enough data, call answer NOW. "
+                            "If not, identify the single most critical "
+                            "verification and do it."
+                        ),
+                    )
+                )
+
             # 提前把 messages 序列化好：即便 model.complete 抛错，也能把当时发出的
             # prompt_messages 落进 ModelErrorEvent，方便复盘"哪条请求把 LLM 炸了"
             serialized_prompt = [_serialize_message(message) for message in messages]

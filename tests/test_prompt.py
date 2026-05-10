@@ -7,6 +7,7 @@ import pytest
 from data_agent_baseline.agents.prompt import (
     REACT_NATIVE_SYSTEM_PROMPT,
     build_native_system_prompt,
+    build_observation_prompt,
     build_system_prompt,
     build_task_prompt,
 )
@@ -509,3 +510,70 @@ def test_system_prompts_mandate_two_verification_self_checks() -> None:
         assert "count the things it explicitly names you should output" in lower
         # 反对"以防万一多带几列"
         assert 'do not "include extra columns just in case"' in lower
+
+
+# ---------- build_observation_prompt: ok parameter & recovery hints ----------
+
+
+def test_observation_prompt_ok_none_no_hint() -> None:
+    """ok=None (default) does not append recovery hint."""
+    obs: dict[str, object] = {"error": "no such column: foo"}
+    result = build_observation_prompt(obs)
+    assert "Recovery hint" not in result
+
+
+def test_observation_prompt_ok_true_no_hint() -> None:
+    """ok=True does not append recovery hint."""
+    obs: dict[str, object] = {"error": "no such column: foo"}
+    result = build_observation_prompt(obs, ok=True)
+    assert "Recovery hint" not in result
+
+
+def test_observation_prompt_ok_false_no_such_column() -> None:
+    """ok=False + 'no such column' -> schema recovery hint."""
+    obs: dict[str, object] = {"error": "no such column: amount"}
+    result = build_observation_prompt(obs, ok=False)
+    assert "Recovery hint:" in result
+    assert "inspect_sqlite_schema" in result
+
+
+def test_observation_prompt_ok_false_no_such_table() -> None:
+    obs: dict[str, object] = {"error": "no such table: orders"}
+    result = build_observation_prompt(obs, ok=False)
+    assert "Recovery hint:" in result
+    assert "inspect_sqlite_schema" in result
+
+
+def test_observation_prompt_ok_false_syntax_error() -> None:
+    obs: dict[str, object] = {"error": 'near "SELEC": syntax error'}
+    result = build_observation_prompt(obs, ok=False)
+    assert "Recovery hint:" in result
+    assert "Fix the syntax" in result
+
+
+def test_observation_prompt_ok_false_timeout() -> None:
+    obs: dict[str, object] = {"error": "execution timed out after 30s"}
+    result = build_observation_prompt(obs, ok=False)
+    assert "Recovery hint:" in result
+    assert "Simplify" in result
+
+
+def test_observation_prompt_ok_false_generic_error() -> None:
+    obs: dict[str, object] = {"error": "some unexpected failure"}
+    result = build_observation_prompt(obs, ok=False)
+    assert "Recovery hint:" in result
+    assert "Review the error" in result
+
+
+# ---------- Decision tree phase keywords ----------
+
+
+def test_native_system_prompt_has_phase_keywords() -> None:
+    """Decision tree three-phase protocol keywords."""
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+    assert "phase 1" in lower
+    assert "phase 2" in lower
+    assert "phase 3" in lower
+    assert "discover" in lower
+    assert "verify" in lower

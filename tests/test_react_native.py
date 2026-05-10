@@ -699,3 +699,138 @@ def test_native_total_usage_aggregates_per_turn_usage(task: PublicTask) -> None:
         "cached_tokens": 1300,
         "reasoning_tokens": 90,
     }
+
+
+def test_budget_warning_injected_at_75_percent(task: PublicTask) -> None:
+    """Budget warning injected once when effective_turns reaches 75% of max_steps."""
+    # max_steps=4 → 75% threshold at effective_turns=3
+    # Need 3 non-answer turns + 1 answer turn = 4 responses total
+    calls_and_raws = [
+        _build_tool_call(call_id=f"c_{i}", name="inspect_files", arguments={}) for i in range(3)
+    ]
+    answer_call, answer_raw = _build_tool_call(
+        call_id="final", name="answer", arguments={"columns": ["x"], "rows": [["y"]]}
+    )
+    responses = [
+        ModelResponse(
+            content=f"step {i}",
+            tool_calls=[calls_and_raws[i][0]],
+            raw_response=f"step {i}",
+            raw_tool_calls=[calls_and_raws[i][1]],
+        )
+        for i in range(3)
+    ]
+    responses.append(
+        ModelResponse(
+            content="done",
+            tool_calls=[answer_call],
+            raw_response="done",
+            raw_tool_calls=[answer_raw],
+        )
+    )
+
+    captured_messages: list[list] = []
+
+    class CapturingAdapter(ScriptedNativeModelAdapter):
+        def complete(self, messages):
+            captured_messages.append(messages)
+            return super().complete(messages)
+
+    adapter = CapturingAdapter(responses)
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+        protocol="native",
+    )
+
+    result = agent.run(task)
+    assert result.succeeded is True
+
+    # The 4th call (effective_turns=3 at that point, 3/4=0.75) should have budget warning
+    fourth_call_messages = captured_messages[3]
+    budget_msgs = [m for m in fourth_call_messages if "BUDGET WARNING" in (m.content or "")]
+    assert len(budget_msgs) == 1
+    assert "call answer NOW" in budget_msgs[0].content
+
+
+def test_preact_planning_message_on_first_turn(task: PublicTask) -> None:
+    """enable_preact=True injects planning instruction on first turn only."""
+    answer_call, answer_raw = _build_tool_call(
+        call_id="a", name="answer", arguments={"columns": ["x"], "rows": [["y"]]}
+    )
+
+    captured_messages: list[list] = []
+
+    class CapturingAdapter(ScriptedNativeModelAdapter):
+        def complete(self, messages):
+            captured_messages.append(messages)
+            return super().complete(messages)
+
+    adapter = CapturingAdapter(
+        [
+            ModelResponse(
+                content="",
+                tool_calls=[answer_call],
+                raw_response="",
+                raw_tool_calls=[answer_raw],
+            )
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4, enable_preact=True),
+        protocol="native",
+    )
+
+    result = agent.run(task)
+    assert result.succeeded is True
+
+    # First (and only) call should have the preact planning message
+    first_messages = captured_messages[0]
+    planning_msgs = [
+        m for m in first_messages if "Before acting, outline a brief plan" in (m.content or "")
+    ]
+    assert len(planning_msgs) == 1
+    assert "inspect_files" in planning_msgs[0].content
+
+
+def test_preact_disabled_no_planning_message(task: PublicTask) -> None:
+    """enable_preact=False (default) does not inject planning instruction."""
+    answer_call, answer_raw = _build_tool_call(
+        call_id="a", name="answer", arguments={"columns": ["x"], "rows": [["y"]]}
+    )
+
+    captured_messages: list[list] = []
+
+    class CapturingAdapter(ScriptedNativeModelAdapter):
+        def complete(self, messages):
+            captured_messages.append(messages)
+            return super().complete(messages)
+
+    adapter = CapturingAdapter(
+        [
+            ModelResponse(
+                content="",
+                tool_calls=[answer_call],
+                raw_response="",
+                raw_tool_calls=[answer_raw],
+            )
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4, enable_preact=False),
+        protocol="native",
+    )
+
+    result = agent.run(task)
+    assert result.succeeded is True
+
+    first_messages = captured_messages[0]
+    planning_msgs = [
+        m for m in first_messages if "Before acting, outline a brief plan" in (m.content or "")
+    ]
+    assert len(planning_msgs) == 0

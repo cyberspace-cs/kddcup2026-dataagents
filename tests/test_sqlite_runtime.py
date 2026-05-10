@@ -136,3 +136,17 @@ def test_other_database_errors_pass_through(tmp_path: Path) -> None:
     with pytest.raises(sqlite3.OperationalError) as exc_info:
         execute_read_only_sql(db_path, "SELECT * FROM nonexistent_table")
     assert "no such table" in str(exc_info.value).lower()
+
+
+def test_empty_result_returns_zero_row_count(tmp_path: Path) -> None:
+    """SQL query returning 0 rows has row_count=0 in the result dict."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE items (id INTEGER, name TEXT)")
+    conn.execute("INSERT INTO items VALUES (1, 'a'), (2, 'b')")
+    conn.commit()
+    conn.close()
+
+    result = execute_read_only_sql(db_path, "SELECT * FROM items WHERE id = 999")
+    assert result["row_count"] == 0
+    assert result["rows"] == []
