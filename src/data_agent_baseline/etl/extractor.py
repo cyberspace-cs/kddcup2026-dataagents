@@ -864,6 +864,80 @@ def _normalize_entity_lines(
     return "\n".join(normalized)
 
 
+_PLACEHOLDER_VALS = frozenset(
+    {
+        "",
+        "-",
+        "none",
+        "nan",
+        "n/a",
+        "placeholder",
+        "none (placeholder)",
+        "nan (placeholder)",
+        "- (placeholder)",
+        "0.0 (placeholder)",
+        "redacted",
+    }
+)
+_UNIT_SUFFIX = re.compile(r"^([\d.]+)\s*(?:cm|kg|U/L|mg/dL|mmHg|%)\s*$")
+
+
+def _clean_cell(val: str) -> str:
+    """Normalize a single KV value into a CSV-ready cell."""
+    if not val or val.lower().strip() in _PLACEHOLDER_VALS or "(placeholder)" in val.lower():
+        return ""
+    m = _UNIT_SUFFIX.match(val)
+    if m:
+        return m.group(1)
+    return val
+
+
+def _deterministic_kv_to_csv(
+    text: str,
+    schema_columns: list[str],
+    primary_key: str | None = None,
+) -> str | None:
+    """Parse normalized KV entity lines directly into CSV without LLM.
+
+    Each entity line is expected to be in the form:
+      col_a: val | col_b: val | ...
+    with columns in schema_columns order (produced by _normalize_entity_lines).
+    """
+    pk_token = f"{primary_key}:" if primary_key else None
+    col_set = set(schema_columns)
+
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        is_entity = (pk_token in stripped) if pk_token else _ENTITY_LINE.match(stripped)
+        if not is_entity:
+            continue
+
+        fields: dict[str, str] = {}
+        for part in stripped.split("|"):
+            if ":" not in part:
+                continue
+            key, _, val = part.partition(":")
+            key = key.strip()
+            if key in col_set:
+                fields[key] = _clean_cell(val.strip())
+
+        row = [fields.get(c, "") for c in schema_columns]
+        if any(row):
+            rows.append(row)
+
+    if not rows:
+        return None
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(schema_columns)
+    writer.writerows(rows)
+    return buf.getvalue()
+
+
 def _validate_csv(csv_path: Path) -> tuple[list[str], int] | None:
     """Read a CSV and return (header, row_count), or None if invalid."""
     if not csv_path.is_file():
@@ -929,7 +1003,28 @@ def extract_prose_file(
         compressed = _normalize_entity_lines(compressed, schema_columns, primary_key)
     compressed_path.write_text(compressed, encoding="utf-8")
 
-    # ---- Phase 2: LLM extraction ----
+    # ---- Phase 2a: deterministic KV→CSV (when normalized) ----
+    if schema_columns:
+        csv_text = _deterministic_kv_to_csv(compressed, schema_columns, primary_key)
+        if csv_text:
+            csv_path.write_text(csv_text, encoding="utf-8")
+            result = _validate_csv(csv_path)
+            if result:
+                header, row_count = result
+                logger.info(
+                    "ETL deterministic: %s → %s (%d cols, %d rows)",
+                    path.name,
+                    csv_path,
+                    len(header),
+                    row_count,
+                )
+                return ETLResult(
+                    source_file=path.name,
+                    csv_path=str(csv_path),
+                    columns=header,
+                    row_count=row_count,
+                )
+            logger.warning("ETL deterministic extraction produced invalid CSV, falling back")
 
     # ---- Phase 2b: LLM extraction (if compressed text is small enough) ----
     if len(compressed) <= _DIRECT_EXTRACT_CHAR_LIMIT:
