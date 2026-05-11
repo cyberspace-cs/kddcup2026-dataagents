@@ -285,6 +285,8 @@ class OpenAIModelAdapter:
         min_p: float | None = None,
         presence_penalty: float | None = None,
         seed: int | None = None,
+        max_retries: int = 2,
+        timeout: float = 120.0,
     ) -> None:
         self.model = model
         # 去掉尾部斜杠：OpenAI SDK 会自行拼 `/chat/completions`，重复的 `/` 在部分
@@ -307,6 +309,8 @@ class OpenAIModelAdapter:
         # 解析后的 backend_kind 决定 enable_thinking 走顶层还是 chat_template_kwargs。
         # 显式优先；未指定则按 self.api_base 自动推断（含 aliyuncs.com/dashscope → dashscope）。
         self.backend_kind: BackendKind = _resolve_backend_kind(backend_kind, self.api_base)
+        self.max_retries = max_retries
+        self.timeout = timeout
 
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。"""
@@ -317,7 +321,8 @@ class OpenAIModelAdapter:
         client = OpenAI(
             api_key=self.api_key,
             base_url=self.api_base,
-            timeout=120.0,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
         )
 
         request_kwargs: dict[str, Any] = {
@@ -405,6 +410,7 @@ class NativeToolsOpenAIAdapter:
         min_p: float | None = None,
         presence_penalty: float | None = None,
         seed: int | None = None,
+        max_retries: int = 2,
     ) -> None:
         self.model = model
         self.api_base = api_base.rstrip("/")
@@ -425,6 +431,7 @@ class NativeToolsOpenAIAdapter:
         # 解析后的 backend_kind 决定 enable_thinking 走顶层还是 chat_template_kwargs。
         # 显式优先；未指定则按 self.api_base 自动推断（含 aliyuncs.com/dashscope → dashscope）。
         self.backend_kind: BackendKind = _resolve_backend_kind(backend_kind, self.api_base)
+        self.max_retries = max_retries
         # 预先把不可变 ToolRegistry 的 definitions 转成 OpenAI tools 数组并缓存：
         # registry 在构造后无法增删工具，因此该缓存在适配器生命周期内永远有效，
         # 也保证了重复请求的 tools 字段字节稳定（prompt cache 命中）。
@@ -439,6 +446,7 @@ class NativeToolsOpenAIAdapter:
             api_key=self.api_key,
             base_url=self.api_base,
             timeout=120.0,
+            max_retries=self.max_retries,
         )
 
         request_kwargs: dict[str, Any] = {

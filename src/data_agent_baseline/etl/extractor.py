@@ -42,6 +42,9 @@ _COMPRESS_CHUNK_SIZE = 30
 _DIRECT_EXTRACT_CHAR_LIMIT = 60_000
 _MAX_WORKERS = 8
 _LLM_CALL_TIMEOUT = 180
+_ETL_HTTP_TIMEOUT = 300.0
+_EXTRACT_CHUNK_LINES = 30
+_ENTITY_LINE = re.compile(r"^ID:\s*", re.MULTILINE)
 
 
 def _detect_sections(text: str) -> list[dict[str, Any]]:
@@ -156,6 +159,8 @@ def _make_text_adapter(model_adapter: Any) -> OpenAIModelAdapter:
         temperature=0.1,
         enable_thinking=False,
         backend_kind=backend_kind,
+        max_retries=0,
+        timeout=_ETL_HTTP_TIMEOUT,
     )
 
 
@@ -404,51 +409,70 @@ def _extract_csv_from_text(
         return None
 
 
+def _split_entity_chunks(text: str, chunk_size: int = _EXTRACT_CHUNK_LINES) -> list[str]:
+    """Split compressed text into chunks of ~chunk_size entity lines each."""
+    entity_lines: list[str] = []
+    non_entity_header: list[str] = []
+    for line in text.splitlines():
+        if _ENTITY_LINE.match(line):
+            entity_lines.append(line)
+        elif not entity_lines:
+            non_entity_header.append(line)
+
+    if len(entity_lines) <= chunk_size:
+        return [text]
+
+    header = "\n".join(non_entity_header).strip()
+    chunks: list[str] = []
+    for i in range(0, len(entity_lines), chunk_size):
+        batch = "\n".join(entity_lines[i : i + chunk_size])
+        chunks.append(f"{header}\n\n{batch}" if header else batch)
+    return chunks
+
+
 def _direct_extract_csv(
     adapter: OpenAIModelAdapter,
     compressed_text: str,
     schema_columns: list[str] | None,
     question: str,
 ) -> str | None:
-    """Extract CSV from compressed text. Parallelises across sections when possible."""
-    sections = _detect_sections(compressed_text)
-    data_sections = [s for s in sections if s["para_count"] > 0]
+    """Extract CSV from compressed text. Splits into entity-line chunks for parallel extraction."""
+    chunks = _split_entity_chunks(compressed_text)
 
-    # Single call when: schema provided, small text, or ≤2 sections
-    if schema_columns or len(data_sections) <= 2:
+    if len(chunks) == 1:
         return _extract_csv_from_text(adapter, compressed_text, schema_columns, question)
 
-    # Parallel per-section extraction
     import pandas as pd
 
+    logger.info("ETL extract: splitting into %d chunks for parallel extraction", len(chunks))
     partial: dict[int, str] = {}
-    with ThreadPoolExecutor(max_workers=min(len(data_sections), _MAX_WORKERS)) as pool:
+    with ThreadPoolExecutor(max_workers=min(len(chunks), _MAX_WORKERS)) as pool:
         futs = {
             pool.submit(
                 _extract_csv_from_text,
                 adapter,
-                f"### {s['title']}\n{s['content']}",
-                None,
+                chunk,
+                schema_columns,
                 question,
             ): idx
-            for idx, s in enumerate(data_sections)
+            for idx, chunk in enumerate(chunks)
         }
         try:
-            for fut in as_completed(futs, timeout=_LLM_CALL_TIMEOUT * len(data_sections)):
+            for fut in as_completed(futs, timeout=_LLM_CALL_TIMEOUT * len(chunks)):
                 idx = futs[fut]
                 try:
                     result = fut.result(timeout=_LLM_CALL_TIMEOUT)
                     if result:
                         partial[idx] = result
                 except TimeoutError:
-                    logger.warning("Section %d extraction timed out", idx)
+                    logger.warning("Extract chunk %d timed out", idx)
                 except Exception as exc:
-                    logger.warning("Section %d extraction failed: %s", idx, exc)
+                    logger.warning("Extract chunk %d failed: %s", idx, exc)
         except TimeoutError:
             logger.warning("Extract pool timed out, proceeding with partial results")
 
     if not partial:
-        return _extract_csv_from_text(adapter, compressed_text, None, question)
+        return None
 
     dfs: list[pd.DataFrame] = []
     for idx in sorted(partial):
@@ -466,13 +490,9 @@ def _direct_extract_csv(
     if not dfs:
         return None
 
-    merged = dfs[0]
-    for df in dfs[1:]:
-        overlap = sorted(set(merged.columns) & set(df.columns) - {"id"})
-        if overlap:
-            df = df.drop(columns=overlap)
-        if len(df.columns) > 1:
-            merged = merged.merge(df, on="id", how="outer")
+    merged = pd.concat(dfs, ignore_index=True)
+    if "id" in merged.columns:
+        merged = merged.groupby("id", sort=False).first().reset_index()
     buf = io.StringIO()
     merged.to_csv(buf, index=False)
     return buf.getvalue()
@@ -672,6 +692,17 @@ def extract_prose_file(
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
     etl_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
+
+    cached = _validate_csv(csv_path)
+    if cached:
+        header, row_count = cached
+        logger.info("ETL cache hit: %s (%d cols, %d rows)", csv_path, len(header), row_count)
+        return ETLResult(
+            source_file=path.name,
+            csv_path=str(csv_path),
+            columns=header,
+            row_count=row_count,
+        )
 
     # ---- Phase 1: compress ----
     logger.info("ETL compress: %s (%d chars)", path.name, len(full_text))
