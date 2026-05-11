@@ -94,10 +94,12 @@ def _detect_prose_files(task: PublicTask) -> list[Path]:
     return results
 
 
-def _parse_knowledge_schema(task: PublicTask, prose_stem: str) -> list[str] | None:
-    """Parse knowledge.md to extract column names for the entity matching prose_stem.
+def _parse_knowledge_schema(
+    task: PublicTask, prose_stem: str, adapter: OpenAIModelAdapter
+) -> tuple[list[str], str] | None:
+    """Use LLM to extract column names and primary key from knowledge.md.
 
-    Returns the full field list prefixed with 'id', or None if no match.
+    Returns (columns, primary_key) or None if no matching entity.
     """
     km_path = task.context_dir / "knowledge.md"
     if not km_path.is_file():
@@ -107,32 +109,47 @@ def _parse_knowledge_schema(task: PublicTask, prose_stem: str) -> list[str] | No
     except OSError:
         return None
 
-    stem_lower = prose_stem.lower().replace("_", "").replace("-", "")
-    entity_pattern = re.compile(r"^###\s+(.+)$", re.MULTILINE)
-    field_pattern = re.compile(r"^\s*-\s+\*\*(\w+)\s*\(", re.MULTILINE)
+    prompt = textwrap.dedent(f"""\
+        Below is a data governance document describing database entities and their fields.
+        Find the entity whose name best matches "{prose_stem}".
 
-    all_fields: list[str] = []
-    best_name: str | None = None
+        Output exactly TWO lines:
+        Line 1: PK: <primary_key_field_name>
+        Line 2: all field names as a comma-separated list (including the primary key)
 
-    matches = list(entity_pattern.finditer(text))
-    for idx, m in enumerate(matches):
-        entity_name = m.group(1).strip()
-        name_lower = entity_name.lower().replace("_", "").replace("-", "").replace(" ", "")
-        if stem_lower not in name_lower and name_lower not in stem_lower:
-            continue
-        start = m.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-        section = text[start:end]
-        fields = field_pattern.findall(section)
-        if fields and (not all_fields or len(fields) > len(all_fields)):
-            all_fields = fields
-            best_name = entity_name
+        Return only what the document defines. Do NOT add extra fields.
+        If no matching entity exists, output exactly: NONE
 
-    if not all_fields:
+        Document:
+        {text}""")
+    messages = [
+        ModelMessage(
+            role="system",
+            content="You extract database schema. Output PK line then comma-separated columns.",
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception as exc:
+        logger.warning("LLM schema extraction failed: %s", exc)
         return None
-    columns = ["id", *all_fields]
-    logger.info("Schema from knowledge.md entity '%s': %s", best_name, columns)
-    return columns
+
+    result = response.content.strip().strip("`").strip()
+    if not result or result.upper() == "NONE":
+        return None
+
+    lines = [line.strip() for line in result.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+
+    pk_line = lines[0]
+    pk = pk_line.split(":", 1)[-1].strip() if pk_line.upper().startswith("PK") else None
+    columns = [c.strip() for c in lines[1].split(",") if c.strip()]
+    if len(columns) < 2 or not pk:
+        return None
+    logger.info("Schema from knowledge.md (LLM) for '%s': pk=%s, cols=%s", prose_stem, pk, columns)
+    return columns, pk
 
 
 def _make_text_adapter(model_adapter: Any) -> OpenAIModelAdapter:
@@ -241,15 +258,33 @@ def _compress_chunk(
     adapter: OpenAIModelAdapter,
     chunk_text: str,
     schema_columns: list[str] | None = None,
+    primary_key: str | None = None,
 ) -> str:
     """Ask LLM to extract labeled key-value pairs from prose paragraphs."""
-    schema_hint = ""
-    if schema_columns:
+    if schema_columns and primary_key:
         cols = ", ".join(schema_columns)
         schema_hint = (
-            f"\nUse EXACTLY these field names when applicable: {cols}\n"
+            f"\nUse EXACTLY these field names: {cols}\n"
             "Map every extracted value to the closest matching field name from this list. "
             "Do NOT invent synonyms or alternative names.\n"
+        )
+        format_hint = (
+            f"Format — one line per entity-paragraph:\n"
+            f"  {primary_key}: <value> | <field>: <value> | ...\n"
+        )
+        anchor_rule = (
+            f"- Start each line with {primary_key} as stated in the paragraph. "
+            "This field anchors every line."
+        )
+    else:
+        schema_hint = ""
+        format_hint = (
+            "Format — one line per entity-paragraph:\n"
+            "  ID: <number> | entity_name: <name> | <field>: <value> | ...\n"
+        )
+        anchor_rule = (
+            "- Start each line with the entity's numeric ID AND its name/codename/label "
+            "as stated in the paragraph. These two fields anchor every line."
         )
 
     prompt = textwrap.dedent(f"""\
@@ -258,19 +293,17 @@ def _compress_chunk(
 
         Task: for each paragraph, extract data as labeled key-value pairs.
         {schema_hint}
-        Format — one line per entity-paragraph:
-          ID: <number> | entity_name: <name> | <field>: <value> | ...
-
+        {format_hint}
         Rules:
-        - Start each line with the entity's numeric ID AND its name/codename/label \
-        as stated in the paragraph. These two fields anchor every line.
+        {anchor_rule}
         - Every value MUST have a descriptive field label before it.
         - Include units where present (cm, kg, U/L, mg/dL, etc.).
-        - If a field is explicitly stated as 0.0, None, NaN, placeholder, or \
-        redacted, output it as-is with a "(placeholder)" marker — e.g. \
-        "height_cm: 0.0 (placeholder)". Do NOT substitute another number from \
-        the same paragraph (such as a weight or mass value) for a placeholder field.
-        - Preserve corrections: "field: initially X, corrected to Y".
+        - If a field's ENTIRE value is 0.0, None, NaN, placeholder, or \
+        redacted (with no real data), output it with a "(placeholder)" marker — \
+        e.g. "height_cm: 0.0 (placeholder)". Do NOT mark corrected values as \
+        placeholder — "initially X, corrected to Y" means Y is the real value.
+        - For corrections: output the FINAL corrected value directly — e.g. \
+        "label: positive", not "label: positive (placeholder)".
         - Preserve URLs, names, dates, times, categories, classifications.
         - Strip ALL narrative filler (hobbies, catering, anecdotes, etc.).
         - Separate entries with ONE blank line. No commentary, no markdown.
@@ -290,6 +323,7 @@ def _compress_prose(
     adapter: OpenAIModelAdapter,
     text: str,
     schema_columns: list[str] | None = None,
+    primary_key: str | None = None,
 ) -> str:
     """Compress prose by stripping noise. All chunks across all sections run in one pool."""
     sections = _detect_sections(text)
@@ -316,7 +350,7 @@ def _compress_prose(
     compressed: list[str | None] = [None] * len(work)
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
         futs = {
-            pool.submit(_compress_chunk, adapter, item[1], schema_columns): idx
+            pool.submit(_compress_chunk, adapter, item[1], schema_columns, primary_key): idx
             for idx, item in enumerate(work)
         }
         try:
@@ -358,21 +392,21 @@ def _extract_csv_from_text(
         )
 
     prompt = textwrap.dedent(f"""\
-        Below is a compressed data document. Entities are identified by numeric ID. \
-        Different sections may provide different attributes for the same entity.
+        Below is a compressed data document. Each line describes one entity.
+        The numeric ID after "ID:" may repeat across sections — use the entity's \
+        own name/code (e.g. entity_name, molecule_id, patient_id) as the unique key.
 
-        Merge all attributes for the same entity ID into one row and output a CSV.
+        Output a CSV with one row per unique entity.
         {schema_line}
         Rules:
         - Output ONLY valid CSV. First line is the header.
-        - One row per entity. Merge data from all sections by matching ID.
-        - For corrections ("initially X, corrected to Y"): use Y.
-        - For missing values: leave empty.
-        - Strip backticks and trailing punctuation from URLs.
-        - If the same ID maps to DIFFERENT entity names in different lines, \
-        those are DIFFERENT entities with a data-entry error. Use the name \
-        from the FIRST occurrence of that ID and discard conflicting lines.
-        - Values marked "(placeholder)" should be treated as empty/missing.
+        - One row per entity. Merge data from all sections by matching the \
+        entity's name/code, NOT the numeric ID.
+        - For corrections ("initially X, corrected to Y"): use Y as the value.
+        - A value like "positive (placeholder)" where the real data is stated \
+        before "(placeholder)" should keep the real data — only treat a field \
+        as empty when the ENTIRE value is a placeholder/None/NaN/redacted.
+        - For genuinely missing values: leave empty.
         - No markdown fences, no explanation.
 
         Question context: {question}
@@ -409,12 +443,18 @@ def _extract_csv_from_text(
         return None
 
 
-def _split_entity_chunks(text: str, chunk_size: int = _EXTRACT_CHUNK_LINES) -> list[str]:
+def _split_entity_chunks(
+    text: str,
+    chunk_size: int = _EXTRACT_CHUNK_LINES,
+    primary_key: str | None = None,
+) -> list[str]:
     """Split compressed text into chunks of ~chunk_size entity lines each."""
+    pk_token = f"{primary_key}:" if primary_key else None
     entity_lines: list[str] = []
     non_entity_header: list[str] = []
     for line in text.splitlines():
-        if _ENTITY_LINE.match(line):
+        is_entity = (pk_token and pk_token in line) if pk_token else _ENTITY_LINE.match(line)
+        if is_entity:
             entity_lines.append(line)
         elif not entity_lines:
             non_entity_header.append(line)
@@ -435,9 +475,10 @@ def _direct_extract_csv(
     compressed_text: str,
     schema_columns: list[str] | None,
     question: str,
+    primary_key: str | None = None,
 ) -> str | None:
     """Extract CSV from compressed text. Splits into entity-line chunks for parallel extraction."""
-    chunks = _split_entity_chunks(compressed_text)
+    chunks = _split_entity_chunks(compressed_text, primary_key=primary_key)
 
     if len(chunks) == 1:
         return _extract_csv_from_text(adapter, compressed_text, schema_columns, question)
@@ -480,9 +521,6 @@ def _direct_extract_csv(
             df = pd.read_csv(io.StringIO(partial[idx]))
             if len(df) == 0:
                 continue
-            first_col = df.columns[0]
-            if first_col != "id":
-                df = df.rename(columns={first_col: "id"})
             dfs.append(df)
         except Exception:
             continue
@@ -491,8 +529,13 @@ def _direct_extract_csv(
         return None
 
     merged = pd.concat(dfs, ignore_index=True)
-    if "id" in merged.columns:
-        merged = merged.groupby("id", sort=False).first().reset_index()
+    dedup_col = (
+        primary_key
+        if primary_key and primary_key in merged.columns
+        else next((c for c in ("entity_name", "id") if c in merged.columns), None)
+    )
+    if dedup_col:
+        merged = merged.groupby(dedup_col, sort=False).first().reset_index()
     buf = io.StringIO()
     merged.to_csv(buf, index=False)
     return buf.getvalue()
@@ -683,6 +726,7 @@ def extract_prose_file(
     path: Path,
     task: PublicTask,
     schema_columns: list[str] | None = None,
+    primary_key: str | None = None,
 ) -> ETLResult | None:
     """Extract structured data from a prose file.
 
@@ -706,7 +750,9 @@ def extract_prose_file(
 
     # ---- Phase 1: compress ----
     logger.info("ETL compress: %s (%d chars)", path.name, len(full_text))
-    compressed = _compress_prose(adapter, full_text, schema_columns=schema_columns)
+    compressed = _compress_prose(
+        adapter, full_text, schema_columns=schema_columns, primary_key=primary_key
+    )
     compressed_path = etl_dir / f"{path.stem}_clean.md"
     compressed_path.write_text(compressed, encoding="utf-8")
     logger.info(
@@ -716,9 +762,9 @@ def extract_prose_file(
         len(compressed) / len(full_text) * 100,
     )
 
-    # ---- Phase 1b: resolve ID↔name conflicts deterministically ----
-    compressed = _resolve_id_conflicts(compressed)
-    compressed_path.write_text(compressed, encoding="utf-8")
+    if not primary_key:
+        compressed = _resolve_id_conflicts(compressed)
+        compressed_path.write_text(compressed, encoding="utf-8")
 
     # ---- Phase 2: LLM extraction ----
 
@@ -730,6 +776,7 @@ def extract_prose_file(
             compressed,
             schema_columns,
             task.question,
+            primary_key=primary_key,
         )
         if csv_text:
             csv_path.write_text(csv_text, encoding="utf-8")
@@ -817,8 +864,9 @@ def run_etl_for_task(
     adapter = _make_text_adapter(model_adapter)
 
     def _process(pf: Path) -> ETLResult | None:
-        schema = _parse_knowledge_schema(task, pf.stem)
-        return extract_prose_file(adapter, pf, task, schema_columns=schema)
+        parsed = _parse_knowledge_schema(task, pf.stem, adapter)
+        schema, pk = parsed if parsed else (None, None)
+        return extract_prose_file(adapter, pf, task, schema_columns=schema, primary_key=pk)
 
     if len(prose_files) == 1:
         result = _process(prose_files[0])
