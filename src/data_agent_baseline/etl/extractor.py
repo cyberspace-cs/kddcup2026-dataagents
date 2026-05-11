@@ -41,6 +41,7 @@ _SECTION_HEADING = re.compile(r"^(#{2,4})\s+(.+)$", re.MULTILINE)
 _COMPRESS_CHUNK_SIZE = 30
 _DIRECT_EXTRACT_CHAR_LIMIT = 60_000
 _MAX_WORKERS = 8
+_LLM_CALL_TIMEOUT = 180
 
 
 def _detect_sections(text: str) -> list[dict[str, Any]]:
@@ -313,12 +314,17 @@ def _compress_prose(
             pool.submit(_compress_chunk, adapter, item[1], schema_columns): idx
             for idx, item in enumerate(work)
         }
-        for fut in as_completed(futs):
-            idx = futs[fut]
-            try:
-                compressed[idx] = fut.result()
-            except Exception as exc:
-                logger.warning("Compress chunk %d failed: %s", idx, exc)
+        try:
+            for fut in as_completed(futs, timeout=_LLM_CALL_TIMEOUT * len(work)):
+                idx = futs[fut]
+                try:
+                    compressed[idx] = fut.result(timeout=_LLM_CALL_TIMEOUT)
+                except TimeoutError:
+                    logger.warning("Compress chunk %d timed out", idx)
+                except Exception as exc:
+                    logger.warning("Compress chunk %d failed: %s", idx, exc)
+        except TimeoutError:
+            logger.warning("Compress pool timed out, proceeding with partial results")
 
     parts: list[str] = []
     for idx, (title, _) in enumerate(work):
@@ -427,14 +433,19 @@ def _direct_extract_csv(
             ): idx
             for idx, s in enumerate(data_sections)
         }
-        for fut in as_completed(futs):
-            idx = futs[fut]
-            try:
-                result = fut.result()
-                if result:
-                    partial[idx] = result
-            except Exception as exc:
-                logger.warning("Section %d extraction failed: %s", idx, exc)
+        try:
+            for fut in as_completed(futs, timeout=_LLM_CALL_TIMEOUT * len(data_sections)):
+                idx = futs[fut]
+                try:
+                    result = fut.result(timeout=_LLM_CALL_TIMEOUT)
+                    if result:
+                        partial[idx] = result
+                except TimeoutError:
+                    logger.warning("Section %d extraction timed out", idx)
+                except Exception as exc:
+                    logger.warning("Section %d extraction failed: %s", idx, exc)
+        except TimeoutError:
+            logger.warning("Extract pool timed out, proceeding with partial results")
 
     if not partial:
         return _extract_csv_from_text(adapter, compressed_text, None, question)
@@ -785,12 +796,17 @@ def run_etl_for_task(
     results: list[ETLResult] = []
     with ThreadPoolExecutor(max_workers=min(len(prose_files), _MAX_WORKERS)) as pool:
         futs = {pool.submit(_process, pf): pf for pf in prose_files}
-        for fut in as_completed(futs):
-            try:
-                result = fut.result()
-                if result is not None:
-                    results.append(result)
-            except Exception as exc:
-                logger.error("ETL failed for %s: %s", futs[fut].name, exc)
+        try:
+            for fut in as_completed(futs, timeout=_LLM_CALL_TIMEOUT * len(prose_files)):
+                try:
+                    result = fut.result(timeout=_LLM_CALL_TIMEOUT)
+                    if result is not None:
+                        results.append(result)
+                except TimeoutError:
+                    logger.error("ETL timed out for %s", futs[fut].name)
+                except Exception as exc:
+                    logger.error("ETL failed for %s: %s", futs[fut].name, exc)
+        except TimeoutError:
+            logger.error("ETL orchestrator timed out, proceeding with partial results")
 
     return results if results else None
