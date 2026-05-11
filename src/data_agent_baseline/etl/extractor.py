@@ -1,11 +1,15 @@
 """Core ETL: detect large prose files, compress noise, extract to CSV.
 
-Two-phase strategy:
-  1. **Compress** — LLM strips narrative filler from prose chunks, keeping only
-     data-bearing sentences verbatim.  Output is a compact, near-structured text.
-  2. **Extract** — LLM reads the compressed text and directly outputs CSV.
-     Falls back to code-generation when the compressed text exceeds the
-     direct-extraction token budget or when direct extraction fails.
+Pipeline (when knowledge.md schema is available):
+  1. **Compress** — LLM strips narrative filler from prose chunks, producing
+     pipe-separated key-value entity lines.
+  2. **Pre-merge** — Python collapses multi-line entity records into one line
+     per unique primary key.
+  3. **Normalize** — reorder fields to match schema, drop unknowns.
+  4. **Deterministic CSV** — Python parses normalized KV lines into CSV
+     (no LLM needed).
+
+Fallback (no schema): LLM direct extraction → code-generation.
 """
 
 from __future__ import annotations
@@ -241,47 +245,6 @@ def _sample_paragraphs(text: str, first_n: int = 3, stride_n: int = 10) -> str:
     return "\n\n".join(samples)
 
 
-def _sample_per_section(
-    text: str, first_n: int = 2, extra_n: int = 2
-) -> tuple[str, list[dict[str, Any]]]:
-    """Sample paragraphs from each section for representative coverage.
-
-    Returns (sampled_text, section_info_list).
-    Falls back to flat sampling when the document has no multi-section structure.
-    """
-    sections = _detect_sections(text)
-
-    if len(sections) <= 1:
-        info = [{"title": s["title"], "para_count": s["para_count"]} for s in sections]
-        return _sample_paragraphs(text), info
-
-    samples: list[str] = []
-    info: list[dict[str, Any]] = []
-
-    for sec in sections:
-        paras = [
-            p.strip() for p in sec["content"].split("\n\n") if p.strip() and len(p.strip()) > 30
-        ]
-        info.append({"title": sec["title"], "para_count": len(paras)})
-        if not paras:
-            continue
-
-        samples.append(f"=== Section: {sec['title']} ({len(paras)} paragraphs) ===")
-        cap = first_n + extra_n if len(paras) >= 10 else min(2, len(paras))
-        selected = paras[: min(first_n, cap)]
-        remaining = paras[len(selected) :]
-        if remaining and len(selected) < cap:
-            want = cap - len(selected)
-            step = max(1, len(remaining) // want)
-            for j in range(0, len(remaining), step):
-                selected.append(remaining[j])
-                if len(selected) >= cap:
-                    break
-        samples.extend(selected)
-
-    return "\n\n".join(samples), info
-
-
 def _compress_chunk(
     adapter: OpenAIModelAdapter,
     chunk_text: str,
@@ -328,7 +291,7 @@ def _compress_chunk(
         Rules:
         {anchor_rule}
         - Every value MUST have a descriptive field label before it.
-        - Include units where present (cm, kg, U/L, mg/dL, etc.).
+        - Output numeric values WITHOUT unit suffixes (e.g. 193.0, not 193.0 cm).
         - If a field's ENTIRE value is 0.0, None, NaN, placeholder, or \
         redacted (with no real data), output it with a "(placeholder)" marker — \
         e.g. "height_cm: 0.0 (placeholder)". Do NOT mark corrected values as \
@@ -412,28 +375,22 @@ def _extract_csv_from_text(
     schema_columns: list[str] | None,
     question: str,
 ) -> str | None:
-    """Single LLM call: text → CSV."""
-    schema_line = ""
-    if schema_columns:
-        schema_line = f"\nColumns: {','.join(schema_columns)}\n"
-    else:
-        schema_line = (
-            "\nInfer column names from the data. First column must be the entity's "
-            "numeric ID named 'id'.\n"
-        )
+    """Single LLM call: text → CSV.  Used as fallback when no schema is available."""
+    schema_line = (
+        f"\nColumns: {','.join(schema_columns)}\n"
+        if schema_columns
+        else "\nInfer column names from the data. First column must be the entity's "
+        "numeric ID named 'id'.\n"
+    )
 
     prompt = textwrap.dedent(f"""\
         Below is a compressed data document. Each line describes one entity \
-        as pipe-separated key-value pairs (e.g. "field: value | field: value").
-        Each line is already a COMPLETE record — do NOT merge across lines.
+        as pipe-separated key-value pairs (e.g. "key: value | key: value").
 
-        Output a CSV with one row per line.
+        Output a CSV with one row per entity.
         {schema_line}
         Rules:
         - Output ONLY valid CSV. First line is the header.
-        - One row per entity line. Preserve EVERY field value exactly as given, \
-        including numeric IDs — do NOT substitute names for IDs.
-        - For corrections ("initially X, corrected to Y"): use Y as the value.
         - Placeholder/None/NaN/redacted values → leave the cell empty.
         - Strip unit suffixes (cm, kg, etc.) from numeric fields.
         - For genuinely missing values: leave empty.
@@ -572,67 +529,48 @@ def _direct_extract_csv(
 
 
 def _build_codegen_prompt(
-    prose_path: Path,
+    compressed_path: Path,
     csv_path: Path,
     sample_text: str,
-    total_paras: int,
+    total_lines: int,
     schema_columns: list[str] | None,
     question: str,
-    section_info: list[dict[str, Any]] | None = None,
+    **_kwargs: Any,
 ) -> str:
-    """Build the prompt asking the LLM to generate extraction code."""
+    """Build the prompt asking the LLM to generate extraction code.
+
+    The input file is the compressed/normalized KV text, NOT the original prose.
+    """
     schema_section = ""
     if schema_columns:
         schema_section = (
             f"\nTarget CSV columns (use exactly these, in this order):\n{schema_columns}\n"
         )
 
-    structure_section = ""
-    if section_info and len(section_info) > 1:
-        lines = [
-            f'  {i + 1}. "{s["title"]}" (~{s["para_count"]} paragraphs)'
-            for i, s in enumerate(section_info)
-        ]
-        structure_section = (
-            "Document structure (detected sections):\n"
-            + "\n".join(lines)
-            + "\n\nThe SAME entity (identified by its numeric ID) likely appears across "
-            "multiple sections with different attributes. Merge all attributes for the "
-            "same entity into a single CSV row.\n"
-        )
-
     return textwrap.dedent(f"""\
-        Write a Python script that reads the prose file and extracts ALL entities into a CSV.
+        Write a Python script that reads a pre-processed data file and converts it to CSV.
 
-        File: {prose_path}
-        Total paragraphs: ~{total_paras} (separated by blank lines)
+        Input file: {compressed_path}
+        Format: each non-blank line is one entity as pipe-separated key-value pairs, e.g.
+          field_a: value | field_b: value | field_c: value
+        Total entity lines: ~{total_lines}
         Output CSV: {csv_path}
         {schema_section}
         Question context: {question}
 
-        {structure_section}\
-        Sampled paragraphs (labelled by section when the document has multiple sections):
+        Sample lines:
         ---
         {sample_text}
         ---
 
         Requirements:
-        - Read the ENTIRE file, split by blank lines into paragraphs.
-        - For each paragraph, extract the entity's numeric ID using a broad regex — \
-        e.g. r'(?:registration\\s+(?:number|code)|identifier|reference\\s+code|\
-        (?:under|with)\\s+(?:the\\s+)?(?:unique\\s+)?(?:ID|identifier)|\
-        (?:Case\\s+ID|[Pp]atient|event|race|docket(?:ed)?(?:\\s+as)?))\\s+(?:#\\s*)?(\\d+)'. \
-        EVERY paragraph mentions an entity — if your regex misses some, broaden it.
-        - Extract whatever attributes are present in that paragraph. Different \
-        sections of the document contain different attributes for the same entity.
-        - Merge all attributes for the same ID into a single row (dict keyed by ID).
-        - For text fields: extract the VALUE only, not surrounding prose. \
-        Handle "None"/"-"/"redacted"/"N/A"/"not available" → NaN.
-        - For numeric fields with corrections: "initially 188.0, corrected to 193.0" → 193.0. \
-        Use r'(?:corrected|amended|adjusted|revised|rectified|finalized)\\s+(?:to|at)\\s+([\\d.]+)' \
-        to find the corrected value; if no correction, take the first numeric value.
-        - Wrap EVERY regex match in try/except so one bad paragraph doesn't crash the script.
-        - Use pandas to build the final DataFrame; write to CSV with index=False.
+        - Read the ENTIRE file line by line.
+        - For each non-blank, non-heading line, split by " | " then by ": " \
+        to extract key-value pairs.
+        - Values that are empty, "None", "-", "NaN", "redacted", or contain \
+        "(placeholder)" should be treated as missing (NaN).
+        - Strip unit suffixes (cm, kg, etc.) from numeric values.
+        - Build a pandas DataFrame with one row per entity; write to CSV with index=False.
         - Print shape and first 5 rows for verification.
         - Output ONLY the Python code in a ```python``` block. No explanation.""")
 
@@ -683,6 +621,23 @@ def _exec_code(code: str) -> tuple[bool, str]:
 
 
 _KV_LINE = re.compile(r"^ID:\s*(\d+)\s*\|\s*entity_name:\s*(.+?)\s*\|", re.MULTILINE)
+
+_PLACEHOLDER_VALS = frozenset(
+    {
+        "",
+        "-",
+        "none",
+        "nan",
+        "n/a",
+        "placeholder",
+        "none (placeholder)",
+        "nan (placeholder)",
+        "- (placeholder)",
+        "0.0 (placeholder)",
+        "redacted",
+    }
+)
+_UNIT_SUFFIX = re.compile(r"^([\d.]+)\s*(?:cm|kg|U/L|mg/dL|mmHg|%)\s*$")
 
 
 def _resolve_id_conflicts(compressed: str) -> str:
@@ -762,24 +717,8 @@ def _pre_merge_entity_lines(
     if len(entity_lines) <= 1:
         return text
 
-    _placeholder_vals = frozenset(
-        {
-            "",
-            "-",
-            "none",
-            "nan",
-            "n/a",
-            "placeholder",
-            "none (placeholder)",
-            "nan (placeholder)",
-            "- (placeholder)",
-            "0.0 (placeholder)",
-            "redacted",
-        }
-    )
-
     def _is_placeholder(val: str) -> bool:
-        return val.lower().strip() in _placeholder_vals or "(placeholder)" in val.lower()
+        return val.lower().strip() in _PLACEHOLDER_VALS or "(placeholder)" in val.lower()
 
     def _parse_kv(line: str) -> tuple[str | None, list[tuple[str, str]]]:
         parts = line.split("|")
@@ -864,24 +803,6 @@ def _normalize_entity_lines(
     return "\n".join(normalized)
 
 
-_PLACEHOLDER_VALS = frozenset(
-    {
-        "",
-        "-",
-        "none",
-        "nan",
-        "n/a",
-        "placeholder",
-        "none (placeholder)",
-        "nan (placeholder)",
-        "- (placeholder)",
-        "0.0 (placeholder)",
-        "redacted",
-    }
-)
-_UNIT_SUFFIX = re.compile(r"^([\d.]+)\s*(?:cm|kg|U/L|mg/dL|mmHg|%)\s*$")
-
-
 def _clean_cell(val: str) -> str:
     """Normalize a single KV value into a CSV-ready cell."""
     if not val or val.lower().strip() in _PLACEHOLDER_VALS or "(placeholder)" in val.lower():
@@ -963,7 +884,8 @@ def extract_prose_file(
 ) -> ETLResult | None:
     """Extract structured data from a prose file.
 
-    Pipeline: compress prose → try direct CSV extraction → fallback to code-gen.
+    Pipeline: compress → pre-merge → normalize → deterministic CSV.
+    Fallback: LLM direct extraction → code-gen.
     """
     full_text = path.read_text(encoding="utf-8")
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
@@ -1056,18 +978,19 @@ def extract_prose_file(
                 )
         logger.warning("ETL direct extraction failed, falling back to code-gen")
 
-    # ---- Phase 2b: code-generation fallback (on compressed file) ----
-    paras = [p.strip() for p in compressed.split("\n\n") if p.strip()]
-    sample_text, section_info = _sample_per_section(compressed)
+    # ---- Phase 2c: code-generation fallback (on compressed file) ----
+    entity_lines = [
+        ln.strip() for ln in compressed.splitlines() if ln.strip() and not ln.startswith("#")
+    ]
+    sample_text = "\n".join(entity_lines[:5] + (["..."] if len(entity_lines) > 5 else []))
 
     prompt = _build_codegen_prompt(
         compressed_path,
         csv_path,
         sample_text,
-        len(paras),
+        len(entity_lines),
         schema_columns,
         task.question,
-        section_info=section_info,
     )
 
     code = ""
