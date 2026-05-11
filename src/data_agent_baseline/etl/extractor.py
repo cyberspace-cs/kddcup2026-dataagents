@@ -420,20 +420,19 @@ def _extract_csv_from_text(
         )
 
     prompt = textwrap.dedent(f"""\
-        Below is a compressed data document. Each line describes one entity.
-        The numeric ID after "ID:" may repeat across sections — use the entity's \
-        own name/code (e.g. entity_name, molecule_id, patient_id) as the unique key.
+        Below is a compressed data document. Each line describes one entity \
+        as pipe-separated key-value pairs (e.g. "field: value | field: value").
+        Each line is already a COMPLETE record — do NOT merge across lines.
 
-        Output a CSV with one row per unique entity.
+        Output a CSV with one row per line.
         {schema_line}
         Rules:
         - Output ONLY valid CSV. First line is the header.
-        - One row per entity. Merge data from all sections by matching the \
-        entity's name/code, NOT the numeric ID.
+        - One row per entity line. Preserve EVERY field value exactly as given, \
+        including numeric IDs — do NOT substitute names for IDs.
         - For corrections ("initially X, corrected to Y"): use Y as the value.
-        - A value like "positive (placeholder)" where the real data is stated \
-        before "(placeholder)" should keep the real data — only treat a field \
-        as empty when the ENTIRE value is a placeholder/None/NaN/redacted.
+        - Placeholder/None/NaN/redacted values → leave the cell empty.
+        - Strip unit suffixes (cm, kg, etc.) from numeric fields.
         - For genuinely missing values: leave empty.
         - No markdown fences, no explanation.
 
