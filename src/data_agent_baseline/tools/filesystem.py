@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from data_agent_baseline._constants import ETL_SCRATCH_ROOT
 from data_agent_baseline.benchmark.schema import PublicTask
 
 # inspect_files 一次性扫描的文件数上限：超过即截断，避免单次 observation 爆炸。
@@ -82,14 +83,21 @@ def resolve_context_path(task: PublicTask, relative_path: str) -> Path:
     """把 Agent 传入的相对路径解析为绝对路径，并防止目录逃逸。
 
     安全模型：
-    - 所有路径必须落在 `task.context_dir` 之内
+    - 所有路径必须落在 `task.context_dir` 或 ETL scratch 目录之内
     - 传 `../` 或绝对路径会被 `candidate.resolve()` 规整后触发校验失败
     - 不存在的路径直接抛 FileNotFoundError，避免 Agent 拿到空结果误判
     """
-    # resolve() 会同时处理软链接和 ".."，给一个规范化的绝对路径
+    raw = Path(relative_path)
+    if raw.is_absolute():
+        candidate = raw.resolve()
+        etl_root = (ETL_SCRATCH_ROOT / task.task_id).resolve()
+        if etl_root in candidate.parents or candidate == etl_root:
+            if not candidate.exists():
+                raise FileNotFoundError(f"Missing ETL asset: {relative_path}")
+            return candidate
+
     candidate = (task.context_dir / relative_path).resolve()
     context_root = task.context_dir.resolve()
-    # 同时允许 candidate == root（Agent 想列出 context 本身）与 candidate 在 root 下
     if context_root not in candidate.parents and candidate != context_root:
         raise ValueError(f"Path escapes context dir: {relative_path}")
     if not candidate.exists():
@@ -107,21 +115,17 @@ def list_context_tree(task: PublicTask, *, max_depth: int = 4) -> dict[str, Any]
     entries: list[dict[str, Any]] = []
 
     def walk(path: Path, depth: int) -> None:
-        # 超出深度直接返回，避免巨型目录导致 observation 过大
         if depth > max_depth:
             return
-        # is_file=False（即目录）排在前面；同层按名字字典序
         for child in sorted(path.iterdir(), key=lambda item: (item.is_file(), item.name)):
             rel_path = child.relative_to(task.context_dir).as_posix()
             entries.append(
                 {
                     "path": rel_path,
                     "kind": "dir" if child.is_dir() else "file",
-                    # 目录没有有意义的 size，用 None 占位
                     "size": child.stat().st_size if child.is_file() else None,
                 }
             )
-            # 递归下钻，深度 +1
             if child.is_dir():
                 walk(child, depth + 1)
 
@@ -882,10 +886,20 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
     files_summary: list[dict[str, Any]] = []
     unsupported_formats: set[str] = set()
 
-    # 收集所有文件（不含目录），按相对路径字典序排序，保证输出稳定
+    etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
+    etl_csv: dict[str, Path] = {}
+    if etl_dir.is_dir():
+        for f in etl_dir.iterdir():
+            if f.is_file() and f.suffix == ".csv":
+                etl_csv[f.stem] = f
+
     candidates: list[tuple[str, Path]] = []
     for child in context_root.rglob("*"):
         if not child.is_file():
+            continue
+        if child.suffix == ".md" and child.stem in etl_csv:
+            csv_path = etl_csv[child.stem]
+            candidates.append((str(csv_path), csv_path))
             continue
         rel = child.relative_to(context_root).as_posix()
         candidates.append((rel, child))

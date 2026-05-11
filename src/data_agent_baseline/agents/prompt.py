@@ -149,6 +149,7 @@ You are a data analysis agent.
 
 Phase 1 — DISCOVER (first 1-2 turns):
 - If you have not inspected the context yet, call `inspect_files` for a one-shot summary of every file (columns, dtypes, row counts, table schemas, column profiles).
+- `inspect_files` may list pre-extracted CSV files (absolute paths under `/tmp/dabench/`) in place of large prose/Markdown documents. **Always prefer these CSV files over the raw `.md` source** — they save many turns of regex parsing. Use `read_csv` to preview them just like any other CSV.
 - If `inspect_files` lists a `knowledge.md` or any `.md` / `.txt`, your very next turn MUST call `read_doc` on it — in parallel with any CSV/JSON previews is fine, but do NOT skip to `execute_python` first. It typically pins down code↔label mappings (e.g. `VYBER` = cash withdrawal), unit conventions (e.g. times standardized to `MM:SS.mmm`), or formula definitions that change the filter; reading it after analysis wastes turns.
 - For previews, call `read_csv`, `read_json`, or `read_doc` according to file type. `read_csv` / `read_json` return ONLY a sample of the file, so do not draw conclusions about totals, "the only matching row", or "earliest/latest" from their output alone (`read_doc` keyword mode does scan the whole file — see its tool description).
 - After Phase 1 you must know: file list, schemas, column semantics, code↔label mappings from docs.
@@ -239,13 +240,7 @@ REACT_NATIVE_SYSTEM_PROMPT = build_native_system_prompt()
 
 
 def build_task_prompt(task: PublicTask) -> str:
-    """任务起始的 user 消息。
-
-    只承载**任务特定**的内容——具体到这一题的 `question`。所有跨任务的
-    不变量（工具决策、tool_call 协议、`<think>` 内 draft 不被执行、
-    路径约定 `PATH_CONVENTION_NOTE`）都在 system prompt 与 path 字段
-    schema description 中下发，单一真相源、利于 prompt cache 命中。
-    """
+    """任务起始的 user 消息——只放 question，其余全在 system prompt。"""
     return f"Question: {task.question}"
 
 

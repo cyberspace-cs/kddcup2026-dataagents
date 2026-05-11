@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from data_agent_baseline._constants import ETL_SCRATCH_ROOT
 from data_agent_baseline.agents.model import (
     ModelMessage,
     ModelResponse,
@@ -34,7 +35,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MIN_LINES = 200
-_ETL_SCRATCH_ROOT = Path("/tmp/dabench")
 _CODE_EXEC_TIMEOUT = 60
 _MAX_RETRIES = 2
 _SECTION_HEADING = re.compile(r"^(#{2,4})\s+(.+)$", re.MULTILINE)
@@ -658,7 +658,7 @@ def extract_prose_file(
     Pipeline: compress prose → try direct CSV extraction → fallback to code-gen.
     """
     full_text = path.read_text(encoding="utf-8")
-    etl_dir = _ETL_SCRATCH_ROOT / task.task_id / "_etl"
+    etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
     etl_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
 

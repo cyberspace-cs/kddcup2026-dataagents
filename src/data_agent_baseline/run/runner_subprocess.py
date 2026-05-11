@@ -48,6 +48,12 @@ def run_single_task_core(
     """
     app = build_application(config, model=model, tools=tools)
     task = app.dataset.get_task(task_id)
+    try:
+        from data_agent_baseline.etl.extractor import run_etl_for_task
+
+        run_etl_for_task(task, app.model_adapter)
+    except Exception:
+        pass
     agent = app.new_agent(step_callback=step_callback)
     return agent.run(task).to_dict()
 
