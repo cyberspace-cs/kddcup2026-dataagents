@@ -296,9 +296,12 @@ def _compress_chunk(
             "Map every extracted value to the closest matching field name from this list. "
             "Do NOT invent synonyms or alternative names.\n"
         )
+        field_template = " | ".join(f"{c}: <value>" for c in schema_columns)
         format_hint = (
-            f"Format — one line per entity-paragraph:\n"
-            f"  {primary_key}: <value> | <field>: <value> | ...\n"
+            f"Format — one line per entity-paragraph, fields in THIS EXACT ORDER:\n"
+            f"  {field_template}\n"
+            "Include ALL fields in EVERY line. For fields not mentioned in the "
+            'paragraph, leave the value empty (e.g. "field: ").\n'
         )
         anchor_rule = (
             f"- Start each line with {primary_key} as stated in the paragraph. "
@@ -823,6 +826,44 @@ def _pre_merge_entity_lines(
     return f"{header}\n\n{body}" if header else body
 
 
+def _normalize_entity_lines(
+    text: str,
+    schema_columns: list[str],
+    primary_key: str | None = None,
+) -> str:
+    """Reorder fields in every entity line to match schema_columns order.
+
+    Drops fields not in the schema and fills missing fields with empty
+    values, so downstream CSV extraction sees a uniform tabular layout.
+    """
+    pk_token = f"{primary_key}:" if primary_key else None
+    col_set = set(schema_columns)
+
+    normalized: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        is_entity = (pk_token in stripped) if pk_token else _ENTITY_LINE.match(stripped)
+        if not is_entity:
+            normalized.append(line)
+            continue
+
+        fields: dict[str, str] = {}
+        for part in stripped.split("|"):
+            if ":" not in part:
+                continue
+            key, _, val = part.partition(":")
+            key = key.strip()
+            if key in col_set:
+                fields[key] = val.strip()
+
+        parts = [f"{c}: {fields.get(c, '')}" for c in schema_columns]
+        normalized.append(" | ".join(parts))
+
+    return "\n".join(normalized)
+
+
 def _validate_csv(csv_path: Path) -> tuple[list[str], int] | None:
     """Read a CSV and return (header, row_count), or None if invalid."""
     if not csv_path.is_file():
@@ -884,6 +925,8 @@ def extract_prose_file(
         compressed = _resolve_id_conflicts(compressed)
 
     compressed = _pre_merge_entity_lines(compressed, primary_key=primary_key)
+    if schema_columns:
+        compressed = _normalize_entity_lines(compressed, schema_columns, primary_key)
     compressed_path.write_text(compressed, encoding="utf-8")
 
     # ---- Phase 2: LLM extraction ----
