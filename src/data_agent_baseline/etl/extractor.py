@@ -119,7 +119,7 @@ def _parse_knowledge_schema(
     prose_sample = ""
     try:
         prose_text = prose_path.read_text(encoding="utf-8")
-        prose_sample = _sample_paragraphs(prose_text, first_n=3, stride_n=5)
+        prose_sample = _sample_paragraphs_by_section(prose_text, per_section=1)
     except OSError:
         pass
 
@@ -127,9 +127,10 @@ def _parse_knowledge_schema(
     prose_section = ""
     if prose_sample:
         prose_section = (
-            f'\n\nSample paragraphs from the prose file "{prose_stem}.md" '
-            f"(use these to discover additional identifier fields like IDs or "
-            f"reference codes not listed in the governance document):\n"
+            f"\n\nSample paragraphs from EVERY SECTION of the prose file "
+            f'"{prose_stem}.md" (use these to discover ALL numeric/categorical '
+            f"data fields present in the prose, even if the governance document "
+            f"does not list them):\n"
             f"---\n{prose_sample}\n---"
         )
 
@@ -147,9 +148,11 @@ def _parse_knowledge_schema(
         IMPORTANT:
         - PK and column names must be SHORT GENERIC FIELD NAMES (like "event_id", \
         "molecule_id", "patient_id"), NEVER a specific data value.
-        - Include fields from the governance document. If the prose sample reveals \
-        a unique identifier field not in the governance document, give it a \
-        descriptive column name (e.g. "event_id") and add it to the list.
+        - Start with fields from the governance document.
+        - ALSO scan the prose sample for ADDITIONAL structured data fields \
+        that are present in the data but MISSING from the governance document. \
+        Add these to the list with descriptive short names matching the \
+        abbreviations used in the prose.
         - Do NOT add narrative/filler fields — only structured data fields.
 
         Governance document:
@@ -245,6 +248,31 @@ def _sample_paragraphs(text: str, first_n: int = 3, stride_n: int = 10) -> str:
     return "\n\n".join(samples)
 
 
+def _sample_paragraphs_by_section(text: str, per_section: int = 1) -> str:
+    """Sample data-bearing paragraphs for field discovery.
+
+    For multi-section files (>=3 sections), picks the longest paragraph from
+    each section so every field subset is represented.  For single/few-section
+    files, falls back to stride sampling for broader coverage.
+    """
+    sections = _detect_sections(text)
+    if not sections or len(sections) < 3:
+        return _sample_paragraphs(text, first_n=3, stride_n=5)
+
+    samples: list[str] = []
+    for sec in sections:
+        samples.append(f"### {sec['title']}")
+        paras = [
+            p.strip() for p in sec["content"].split("\n\n") if p.strip() and len(p.strip()) > 50
+        ]
+        if not paras:
+            continue
+        paras.sort(key=len, reverse=True)
+        for p in paras[:per_section]:
+            samples.append(p[:1000])
+    return "\n\n".join(samples)
+
+
 def _compress_chunk(
     adapter: OpenAIModelAdapter,
     chunk_text: str,
@@ -259,12 +287,11 @@ def _compress_chunk(
             "Map every extracted value to the closest matching field name from this list. "
             "Do NOT invent synonyms or alternative names.\n"
         )
-        field_template = " | ".join(f"{c}: <value>" for c in schema_columns)
         format_hint = (
-            f"Format — one line per entity-paragraph, fields in THIS EXACT ORDER:\n"
-            f"  {field_template}\n"
-            "Include ALL fields in EVERY line. For fields not mentioned in the "
-            'paragraph, leave the value empty (e.g. "field: ").\n'
+            f"Format — one line per entity-paragraph, pipe-separated key-value pairs:\n"
+            f"  {primary_key}: <value> | field_a: <value> | field_b: <value> | ...\n"
+            "ONLY include fields that have actual values in the paragraph. "
+            "OMIT fields not mentioned — do NOT output empty fields.\n"
         )
         anchor_rule = (
             f"- Start each line with {primary_key} as stated in the paragraph. "
@@ -281,6 +308,20 @@ def _compress_chunk(
             "as stated in the paragraph. These two fields anchor every line."
         )
 
+    sparse = bool(schema_columns and len(schema_columns) > 10)
+    if sparse:
+        placeholder_rule = (
+            "- If a field is not mentioned or its value is None/NaN/placeholder/redacted, "
+            "SKIP IT entirely — do NOT include it in the output line."
+        )
+    else:
+        placeholder_rule = (
+            "- If a field's ENTIRE value is 0.0, None, NaN, placeholder, or "
+            'redacted (with no real data), output it with a "(placeholder)" marker — '
+            'e.g. "height_cm: 0.0 (placeholder)". Do NOT mark corrected values as '
+            'placeholder — "initially X, corrected to Y" means Y is the real value.'
+        )
+
     prompt = textwrap.dedent(f"""\
         Below are paragraphs from a data document. Each paragraph describes one entity \
         and mixes data with narrative filler.
@@ -292,10 +333,7 @@ def _compress_chunk(
         {anchor_rule}
         - Every value MUST have a descriptive field label before it.
         - Output numeric values WITHOUT unit suffixes (e.g. 193.0, not 193.0 cm).
-        - If a field's ENTIRE value is 0.0, None, NaN, placeholder, or \
-        redacted (with no real data), output it with a "(placeholder)" marker — \
-        e.g. "height_cm: 0.0 (placeholder)". Do NOT mark corrected values as \
-        placeholder — "initially X, corrected to Y" means Y is the real value.
+        {placeholder_rule}
         - For corrections: output the FINAL corrected value directly — e.g. \
         "label: positive", not "label: positive (placeholder)".
         - Preserve URLs, names, dates, times, categories, classifications.
@@ -1057,12 +1095,13 @@ def run_etl_for_task(
         return [result] if result else None
 
     results: list[ETLResult] = []
+    orch_timeout = _LLM_CALL_TIMEOUT * max(4, len(prose_files))
     with ThreadPoolExecutor(max_workers=min(len(prose_files), _MAX_WORKERS)) as pool:
         futs = {pool.submit(_process, pf): pf for pf in prose_files}
         try:
-            for fut in as_completed(futs, timeout=_LLM_CALL_TIMEOUT * len(prose_files)):
+            for fut in as_completed(futs, timeout=orch_timeout):
                 try:
-                    result = fut.result(timeout=_LLM_CALL_TIMEOUT)
+                    result = fut.result(timeout=orch_timeout)
                     if result is not None:
                         results.append(result)
                 except TimeoutError:
