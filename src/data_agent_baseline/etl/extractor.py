@@ -733,6 +733,97 @@ def _resolve_id_conflicts(compressed: str) -> str:
     return "\n".join(fixed_lines)
 
 
+def _pre_merge_entity_lines(
+    text: str,
+    primary_key: str | None = None,
+) -> str:
+    """Merge multi-line entity records into one line per unique entity.
+
+    Compression can produce several lines for the same entity (each carrying
+    a different attribute subset).  This collapses them so downstream
+    extraction sees one complete record per entity.
+    """
+    pk_token = f"{primary_key}:" if primary_key else None
+
+    entity_lines: list[str] = []
+    header_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        is_entity = (pk_token in stripped) if pk_token else _ENTITY_LINE.match(stripped)
+        if is_entity:
+            entity_lines.append(stripped)
+        elif not entity_lines:
+            header_lines.append(line)
+
+    if len(entity_lines) <= 1:
+        return text
+
+    _placeholder_vals = frozenset(
+        {
+            "",
+            "-",
+            "none",
+            "nan",
+            "n/a",
+            "placeholder",
+            "none (placeholder)",
+            "nan (placeholder)",
+            "- (placeholder)",
+            "0.0 (placeholder)",
+            "redacted",
+        }
+    )
+
+    def _is_placeholder(val: str) -> bool:
+        return val.lower().strip() in _placeholder_vals or "(placeholder)" in val.lower()
+
+    def _parse_kv(line: str) -> tuple[str | None, list[tuple[str, str]]]:
+        parts = line.split("|")
+        pk_val: str | None = None
+        pairs: list[tuple[str, str]] = []
+        for part in parts:
+            if ":" not in part:
+                continue
+            key, _, val = part.partition(":")
+            key = key.strip()
+            val = val.strip()
+            if (pk_token and key == primary_key) or (not pk_token and key.upper() == "ID"):
+                pk_val = val
+            pairs.append((key, val))
+        return pk_val, pairs
+
+    groups: dict[str, dict[str, str]] = {}
+    order: list[str] = []
+
+    for line in entity_lines:
+        pk_val, pairs = _parse_kv(line)
+        if pk_val is None:
+            continue
+        if pk_val not in groups:
+            groups[pk_val] = {}
+            order.append(pk_val)
+        rec = groups[pk_val]
+        for k, v in pairs:
+            if k not in rec or (_is_placeholder(rec[k]) and not _is_placeholder(v)):
+                rec[k] = v
+
+    merged: list[str] = []
+    for pk_val in order:
+        parts = [f"{k}: {v}" for k, v in groups[pk_val].items()]
+        merged.append(" | ".join(parts))
+
+    before = len(entity_lines)
+    after = len(merged)
+    if before != after:
+        logger.info("ETL pre-merge: %d entity lines → %d unique entities", before, after)
+
+    header = "\n".join(header_lines).strip()
+    body = "\n".join(merged)
+    return f"{header}\n\n{body}" if header else body
+
+
 def _validate_csv(csv_path: Path) -> tuple[list[str], int] | None:
     """Read a CSV and return (header, row_count), or None if invalid."""
     if not csv_path.is_file():
@@ -792,7 +883,9 @@ def extract_prose_file(
 
     if not primary_key:
         compressed = _resolve_id_conflicts(compressed)
-        compressed_path.write_text(compressed, encoding="utf-8")
+
+    compressed = _pre_merge_entity_lines(compressed, primary_key=primary_key)
+    compressed_path.write_text(compressed, encoding="utf-8")
 
     # ---- Phase 2: LLM extraction ----
 
