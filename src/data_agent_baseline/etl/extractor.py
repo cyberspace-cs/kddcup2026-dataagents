@@ -95,9 +95,12 @@ def _detect_prose_files(task: PublicTask) -> list[Path]:
 
 
 def _parse_knowledge_schema(
-    task: PublicTask, prose_stem: str, adapter: OpenAIModelAdapter
+    task: PublicTask, prose_path: Path, adapter: OpenAIModelAdapter
 ) -> tuple[list[str], str] | None:
     """Use LLM to extract column names and primary key from knowledge.md.
+
+    Samples the prose file so the LLM can discover fields present in the data
+    but missing from the governance document (e.g. record IDs).
 
     Returns (columns, primary_key) or None if no matching entity.
     """
@@ -105,23 +108,48 @@ def _parse_knowledge_schema(
     if not km_path.is_file():
         return None
     try:
-        text = km_path.read_text(encoding="utf-8")
+        km_text = km_path.read_text(encoding="utf-8")
     except OSError:
         return None
 
-    prompt = textwrap.dedent(f"""\
-        Below is a data governance document describing database entities and their fields.
-        Find the entity whose name best matches "{prose_stem}".
+    prose_sample = ""
+    try:
+        prose_text = prose_path.read_text(encoding="utf-8")
+        prose_sample = _sample_paragraphs(prose_text, first_n=3, stride_n=5)
+    except OSError:
+        pass
 
-        Output exactly TWO lines:
+    prose_stem = prose_path.stem
+    prose_section = ""
+    if prose_sample:
+        prose_section = (
+            f'\n\nSample paragraphs from the prose file "{prose_stem}.md" '
+            f"(use these to discover additional identifier fields like IDs or "
+            f"reference codes not listed in the governance document):\n"
+            f"---\n{prose_sample}\n---"
+        )
+
+    prompt = textwrap.dedent(f"""\
+        Below is a data governance document AND a sample from a prose data file.
+        Find the entity in the governance document that best matches \
+        the prose file "{prose_stem}".
+
+        If NO entity in the governance document matches, output exactly: NONE
+
+        Otherwise output exactly TWO lines:
         Line 1: PK: <primary_key_field_name>
         Line 2: all field names as a comma-separated list (including the primary key)
 
-        Return only what the document defines. Do NOT add extra fields.
-        If no matching entity exists, output exactly: NONE
+        IMPORTANT:
+        - PK and column names must be SHORT GENERIC FIELD NAMES (like "event_id", \
+        "molecule_id", "patient_id"), NEVER a specific data value.
+        - Include fields from the governance document. If the prose sample reveals \
+        a unique identifier field not in the governance document, give it a \
+        descriptive column name (e.g. "event_id") and add it to the list.
+        - Do NOT add narrative/filler fields — only structured data fields.
 
-        Document:
-        {text}""")
+        Governance document:
+        {km_text}{prose_section}""")
     messages = [
         ModelMessage(
             role="system",
@@ -864,8 +892,11 @@ def run_etl_for_task(
     adapter = _make_text_adapter(model_adapter)
 
     def _process(pf: Path) -> ETLResult | None:
-        parsed = _parse_knowledge_schema(task, pf.stem, adapter)
-        schema, pk = parsed if parsed else (None, None)
+        parsed = _parse_knowledge_schema(task, pf, adapter)
+        if not parsed:
+            logger.info("ETL skip: no matching entity for %s", pf.name)
+            return None
+        schema, pk = parsed
         return extract_prose_file(adapter, pf, task, schema_columns=schema, primary_key=pk)
 
     if len(prose_files) == 1:
