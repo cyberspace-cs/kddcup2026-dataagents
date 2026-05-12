@@ -377,7 +377,9 @@ def create_default_tool_registry() -> ToolRegistry:
             description=(
                 "Use this when the final answer table is determined. This is the only "
                 "way to submit the answer to the user/evaluator; plain text answers "
-                "will be ignored."
+                "will be ignored. IMPORTANT: for content-entity questions "
+                '("what is the comment/post/message/title"), columns must contain '
+                "the text body (Text/Body/Title), NOT a surrogate key (Id/Code)."
             ),
             input_schema=AnswerInput.example_value(),
             json_schema=ANSWER_SCHEMA,

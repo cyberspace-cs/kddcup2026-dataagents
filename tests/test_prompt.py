@@ -489,7 +489,7 @@ def test_system_prompts_force_wh_target_column_projection() -> None:
 
 
 def test_system_prompts_mandate_two_verification_self_checks() -> None:
-    """verification bullet 必须给出两条强制 self-check：all-None 列 + 列数 vs 题面计数。
+    """verification bullet 必须给出强制 self-check：all-None 列 + 列数 vs 题面计数 + content-entity。
 
     回归同一个 run：模型实际 PRINT 了 verification snapshot（k_symbol/bank/account
     在 sample rows 都是 ''），但仍然提交了那 10 列。说明"仅打印"不够——必须把
@@ -501,7 +501,7 @@ def test_system_prompts_mandate_two_verification_self_checks() -> None:
     for prompt in (text_prompt, native_prompt):
         lower = prompt.lower()
         # 触发关键词：'' / None / NaN 全空列必须删
-        assert "two mandatory self-checks" in lower
+        assert "mandatory self-checks" in lower
         assert "across all sampled rows" in lower
         assert "passthrough source column" in lower
         # 给出具体例子（k_symbol/bank/account），不只是抽象描述
