@@ -5,7 +5,7 @@ agent:
   model: YOUR_MODEL_NAME                   # str (e.g. qwen3.5-35b-a3b)
   api_base: YOUR_API_BASE_URL              # str（OpenAI 兼容 chat.completions 端点）
   api_key: YOUR_API_KEY                    # str；若启用 api_keys 池则忽略此字段
-  max_steps: 28                            # int >= 1; 28 gives enough budget for complex multi-step tasks
+  max_steps: 32                            # int >= 1; 28 gives enough budget for complex multi-step tasks
   tool_protocol: native                    # Literal["native", "text"]
   allow_parallel_tool_calls: true          # bool；个别后端不支持 parallel_tool_calls 时设 false
   max_tokens: 16384                        # int >= 0；0=不下发上限走服务端默认
@@ -42,17 +42,17 @@ agent:
   # api_keys 与 rate_limit 必须 "要么都写、要么都不写"；只写其一会被 load_app_config 拒绝。
   # 启用后 runner 按 task_index % len(api_keys) 给每个任务固定 Key，
   # 单 Key 独立走 RPM+TPM 双令牌桶（filelock 保护，跨进程安全）。
-  api_keys:
-    - YOUR_API_KEY_1
-    - YOUR_API_KEY_2
-  rate_limit:
-    rpm_per_key: 600                       # int > 0
-    tpm_per_key: 1000000                   # int > 0
-    safety_factor: 0.85                    # float in (0, 1]
-    reserve_output_tokens: 16384           # int > 0；不得超过 agent.max_tokens
-    max_retries: 6                         # int >= 0
-    backoff_initial_seconds: 1.0           # float > 0
-    backoff_max_seconds: 30.0              # float >= backoff_initial_seconds
+  # api_keys:
+  #   - YOUR_API_KEY_1
+  #   - YOUR_API_KEY_2
+  # rate_limit:
+  #   rpm_per_key: 600                       # int > 0
+  #   tpm_per_key: 1000000                   # int > 0
+  #   safety_factor: 0.85                    # float in (0, 1]
+  #   reserve_output_tokens: 16384           # int > 0；不得超过 agent.max_tokens
+  #   max_retries: 6                         # int >= 0
+  #   backoff_initial_seconds: 1.0           # float > 0
+  #   backoff_max_seconds: 30.0              # float >= backoff_initial_seconds
 
 run:
   output_dir: artifacts/runs               # 相对路径以 PROJECT_ROOT 为基锚定
