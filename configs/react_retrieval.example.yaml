@@ -1,0 +1,42 @@
+dataset:
+  root_path: data/public/input
+
+agent:
+  model: YOUR_MODEL_NAME
+  api_base: YOUR_API_BASE_URL
+  api_key: YOUR_API_KEY
+  max_steps: 32
+  tool_protocol: native
+  allow_parallel_tool_calls: true
+  max_tokens: 16384
+  enable_thinking: true
+  backend_kind: vllm
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  min_p: 0.0
+  presence_penalty: 0.3
+  seed: 1024
+  enable_preact: false
+
+run:
+  output_dir: artifacts/runs
+  run_id: null
+  max_workers: 8
+  task_timeout_seconds: 600
+  retrieval_index:
+    enabled: true
+    cache_dir: artifacts/indexes
+    max_chunk_chars: 1600
+    chunk_overlap_lines: 2
+    max_results: 8
+  blocklist:
+    - task_5
+    - task_13
+    - task_14
+    - task_15
+    - task_17
+    - task_18
+    - task_19
+    - task_40
+    - task_50

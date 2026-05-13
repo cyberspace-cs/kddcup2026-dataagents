@@ -83,6 +83,7 @@ evaluation/
 # ─── Local configs (only example config is tracked) ─
 configs/*
 !configs/react_baseline.example.yaml
+!configs/react_retrieval.example.yaml
 
 # ─── Docker images / archives ───────────────────────
 *.tar

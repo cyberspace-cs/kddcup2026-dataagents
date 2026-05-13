@@ -30,6 +30,56 @@ def test_defaults_when_fields_absent(tmp_path: Path) -> None:
     assert cfg.agent.max_tokens == 16384  # 默认值
     assert cfg.agent.max_empty_tool_call_retries == 8
     assert cfg.agent.enable_thinking is None
+    assert cfg.run.retrieval_index.enabled is False
+    assert cfg.run.retrieval_index.max_chunk_chars == 1600
+    assert cfg.run.retrieval_index.chunk_overlap_lines == 2
+    assert cfg.run.retrieval_index.max_results == 8
+
+
+def test_retrieval_index_config_round_trip(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(
+        "\n".join(
+            [
+                "agent:",
+                "  model: m",
+                "  api_base: http://x",
+                "  api_key: k",
+                "run:",
+                "  retrieval_index:",
+                "    enabled: true",
+                "    cache_dir: local-indexes",
+                "    max_chunk_chars: 2000",
+                "    chunk_overlap_lines: 3",
+                "    max_results: 12",
+            ]
+        )
+    )
+    cfg = load_app_config(cfg_path)
+    assert cfg.run.retrieval_index.enabled is True
+    assert cfg.run.retrieval_index.cache_dir.name == "local-indexes"
+    assert cfg.run.retrieval_index.max_chunk_chars == 2000
+    assert cfg.run.retrieval_index.chunk_overlap_lines == 3
+    assert cfg.run.retrieval_index.max_results == 12
+
+
+def test_retrieval_index_rejects_bad_limits(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(
+        "\n".join(
+            [
+                "agent:",
+                "  model: m",
+                "  api_base: http://x",
+                "  api_key: k",
+                "run:",
+                "  retrieval_index:",
+                "    max_results: 0",
+            ]
+        )
+    )
+    with pytest.raises(ValueError, match=r"retrieval_index\.max_results"):
+        load_app_config(cfg_path)
 
 
 def test_max_tokens_int_round_trip(tmp_path: Path) -> None:

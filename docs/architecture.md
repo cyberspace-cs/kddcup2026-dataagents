@@ -42,7 +42,7 @@ Each capability has a canonical spec under `openspec/specs/<name>/spec.md`.
 | --- | --- | --- |
 | ReAct loop | [`agent-execution-loop`](../openspec/specs/agent-execution-loop/spec.md) | Bounded loop with separated protocol adapter + tool dispatcher + step recorder; typed event kinds; partial-trace observability |
 | Model I/O | [`model-adapter`](../openspec/specs/model-adapter/spec.md) | OpenAI-compatible `chat.completions` for both `text` and `native` function-calling protocols; Qwen3 `<think>` stripping; usage + latency capture |
-| Tool inventory | [`tool-registry`](../openspec/specs/tool-registry/spec.md) | Single `ToolDefinition` shape; immutable registry post-construction; 8-tool default inventory; sandboxed paths |
+| Tool inventory | [`tool-registry`](../openspec/specs/tool-registry/spec.md) | Single `ToolDefinition` shape; immutable registry post-construction; default inventory; sandboxed paths |
 | Subprocess runner | [`task-runner`](../openspec/specs/task-runner/spec.md) | Per-task subprocess with hard timeout; partial-trace recovery; deterministic key pinning; `summary.json` aggregate |
 | Rate limiting | [`rate-limited-key-pool`](../openspec/specs/rate-limited-key-pool/spec.md) | Cross-process file token bucket (RPM + TPM) with `filelock`, atomic state writes, retry-after parsing |
 

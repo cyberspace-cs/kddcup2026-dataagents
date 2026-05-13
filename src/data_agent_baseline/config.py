@@ -38,6 +38,11 @@ def _default_run_output_dir() -> Path:
     return PROJECT_ROOT / "artifacts" / "runs"
 
 
+def _default_retrieval_cache_dir() -> Path:
+    """Local Retrieval Index 的默认缓存目录。"""
+    return PROJECT_ROOT / "artifacts" / "indexes"
+
+
 # 工具协议字面量：所有调用方对此字段的取值假设都收敛到这里
 ToolProtocolLiteral = Literal["native", "text"]
 
@@ -82,6 +87,20 @@ class RateLimitConfig:
     backoff_initial_seconds: float = 1.0
     backoff_max_seconds: float = 30.0
     state_dir: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalIndexConfig:
+    """Local Retrieval Index 配置。
+
+    默认关闭，启用后 runner 在每个 task 的 ETL 之后构建本地 SQLite FTS5 索引。
+    """
+
+    enabled: bool = False
+    cache_dir: Path = field(default_factory=_default_retrieval_cache_dir)
+    max_chunk_chars: int = 1600
+    chunk_overlap_lines: int = 2
+    max_results: int = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +186,7 @@ class RunConfig:
     run_id: str | None = None  # 显式指定的 run 子目录名；None 时按 UTC 时间戳生成
     max_workers: int = 4  # 并行线程数（ThreadPoolExecutor 大小）
     task_timeout_seconds: int = 600  # 单任务硬超时，超时会 kill 子进程
+    retrieval_index: RetrievalIndexConfig = field(default_factory=RetrievalIndexConfig)
     # 跳过名单：列出的 task_<n> 不会被实际执行，runner 直接产出失败 artifact（succeeded=False）。
     # 用途：临时屏蔽已知会卡住超时桶或正在调试的任务，避免污染整次 run 的 wall-clock 与限速预算。
     blocklist: tuple[str, ...] = ()
@@ -248,6 +268,13 @@ def load_app_config(config_path: Path) -> AppConfig:
             run_id=validated.run.run_id,
             max_workers=validated.run.max_workers,
             task_timeout_seconds=validated.run.task_timeout_seconds,
+            retrieval_index=RetrievalIndexConfig(
+                enabled=validated.run.retrieval_index.enabled,
+                cache_dir=validated.run.retrieval_index.cache_dir,
+                max_chunk_chars=validated.run.retrieval_index.max_chunk_chars,
+                chunk_overlap_lines=validated.run.retrieval_index.chunk_overlap_lines,
+                max_results=validated.run.retrieval_index.max_results,
+            ),
             blocklist=validated.run.blocklist,
         ),
     )

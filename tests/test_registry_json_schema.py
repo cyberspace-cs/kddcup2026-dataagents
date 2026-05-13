@@ -26,6 +26,8 @@ EXPECTED_REQUIRED: dict[str, set[str]] = {
     "read_csv": {"path"},
     "read_json": {"path"},
     "read_doc": {"path"},
+    "search_context": {"query"},
+    "lookup_field": {"term"},
     "inspect_sqlite_schema": {"path"},
     "execute_context_sql": {"path", "sql"},
     "execute_python": {"code"},
@@ -77,6 +79,20 @@ def test_default_tool_descriptions_are_use_case_oriented(registry) -> None:
         assert any(
             phrase in description for phrase in ("use when", "use first", "use this when")
         ), f"{name} description should explain when to use the tool"
+
+
+def test_retrieval_tool_examples_are_domain_neutral(registry) -> None:
+    """Tool examples should show shape without leaking public-task domain terms."""
+    examples = [
+        registry.definitions["search_context"].input_schema,
+        registry.definitions["lookup_field"].input_schema,
+    ]
+    rendered = json.dumps(examples, sort_keys=True).lower()
+
+    for phrase in ("creatinine", "fibrinogen", "patient", "normal range"):
+        assert phrase not in rendered
+    assert "threshold phrase" in rendered
+    assert "field_name unit code label" in rendered
 
 
 def test_answer_description_explains_submission_contract(registry) -> None:

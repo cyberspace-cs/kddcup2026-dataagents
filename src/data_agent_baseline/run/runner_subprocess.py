@@ -54,8 +54,42 @@ def run_single_task_core(
         run_etl_for_task(task, app.model_adapter)
     except Exception:
         pass
+    retrieval_index: dict[str, Any] | None = None
+    try:
+        from data_agent_baseline.retrieval.index import prepare_task_retrieval_index
+
+        retrieval_index = prepare_task_retrieval_index(task, config.run.retrieval_index)
+    except Exception as exc:
+        if config.run.retrieval_index.enabled:
+            retrieval_index = {
+                "enabled": True,
+                "built": False,
+                "cache_hit": False,
+                "task_id": task.task_id,
+                "error": str(exc),
+            }
     agent = app.new_agent(step_callback=step_callback)
-    return agent.run(task).to_dict()
+    result = agent.run(task).to_dict()
+    if retrieval_index is not None:
+        result["retrieval_index"] = retrieval_index
+    return result
+
+
+def _attach_retrieval_index_payload(
+    payload: dict[str, Any], *, task_id: str, config: AppConfig
+) -> dict[str, Any]:
+    """Attach retrieval metadata to timeout/crash payloads when retrieval was enabled."""
+    if not config.run.retrieval_index.enabled or "retrieval_index" in payload:
+        return payload
+    try:
+        from data_agent_baseline.retrieval.index import load_task_index_metadata_by_id
+
+        metadata = load_task_index_metadata_by_id(task_id)
+    except Exception:
+        metadata = None
+    if isinstance(metadata, dict) and metadata.get("enabled"):
+        payload["retrieval_index"] = metadata
+    return payload
 
 
 def _run_single_task_in_subprocess(
@@ -157,10 +191,14 @@ def run_single_task_with_timeout(
         if result.get("ok"):
             # dict(...) 拷贝一次，脱离 Queue 的底层 pickle 壳
             return dict(result["run_result"])
-        return crash_payload(
-            task_id,
-            partial_trace_path,
-            f"Task failed with uncaught error: {result['error']}",
+        return _attach_retrieval_index_payload(
+            crash_payload(
+                task_id,
+                partial_trace_path,
+                f"Task failed with uncaught error: {result['error']}",
+            ),
+            task_id=task_id,
+            config=config,
         )
 
     # Case 1: 超时 —— 先 SIGTERM 给清理机会，1 秒仍不退就 SIGKILL
@@ -170,16 +208,28 @@ def run_single_task_with_timeout(
         if process.is_alive():
             process.kill()
             process.join()
-        return timeout_payload(task_id, partial_trace_path, timeout_seconds)
+        return _attach_retrieval_index_payload(
+            timeout_payload(task_id, partial_trace_path, timeout_seconds),
+            task_id=task_id,
+            config=config,
+        )
 
     # Case 2: 进程已退出但没 put 任何结果
     exit_code = process.exitcode
     if exit_code not in (None, 0):
         # 非 0 退出码一般意味着 native crash 或被 OS 干掉；尝试拿 partial trace 续命
-        return crash_payload(
-            task_id,
-            partial_trace_path,
-            f"Task exited unexpectedly with exit code {exit_code}.",
+        return _attach_retrieval_index_payload(
+            crash_payload(
+                task_id,
+                partial_trace_path,
+                f"Task exited unexpectedly with exit code {exit_code}.",
+            ),
+            task_id=task_id,
+            config=config,
         )
     # 退出码 0 但 Queue 空：逻辑异常（理论上不会发生，留个明确错误信息）
-    return crash_payload(task_id, partial_trace_path, "Task exited without returning a result.")
+    return _attach_retrieval_index_payload(
+        crash_payload(task_id, partial_trace_path, "Task exited without returning a result."),
+        task_id=task_id,
+        config=config,
+    )

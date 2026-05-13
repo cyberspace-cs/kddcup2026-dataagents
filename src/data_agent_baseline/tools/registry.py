@@ -4,12 +4,12 @@
 - 暴露 `ToolDefinition` / `ToolRegistry` 两个不可变结构 + `ToolExecutionResult`
   返回类型（最后一个从 `handlers.py` 重导出，保持历史导入路径）
 - 将工具名映射到 Pydantic 入参模型，校验失败时翻译成单行可操作的 `ValueError`
-- `create_default_tool_registry()` 按规范顺序构造默认 8 件套
+- `create_default_tool_registry()` 按规范顺序构造默认工具集
 
 实现细节按职责拆到三个邻居模块：
 - `tools/schema_normalize.py`   ← `normalize_for_vllm`（vLLM 字节稳定形态）
-- `tools/inputs.py`             ← 8 个 Pydantic 入参模型 + 字段工厂 + `*_SCHEMA` 常量
-- `tools/handlers.py`           ← 8 个 `handle_xxx` handler + `ToolExecutionResult`/`ToolHandler`
+- `tools/inputs.py`             ← Pydantic 入参模型 + 字段工厂 + `*_SCHEMA` 常量
+- `tools/handlers.py`           ← `handle_xxx` handler + `ToolExecutionResult`/`ToolHandler`
 
 `input_schema` vs `json_schema` 的区分：
 - `input_schema` 是**给文本 ReAct prompt 看的演示示例**（不是严格 JSON Schema），用于提示模型
@@ -36,9 +36,11 @@ from data_agent_baseline.tools.handlers import (
     handle_execute_python,
     handle_inspect_files,
     handle_inspect_sqlite_schema,
+    handle_lookup_field,
     handle_read_csv,
     handle_read_doc,
     handle_read_json,
+    handle_search_context,
 )
 from data_agent_baseline.tools.inputs import (
     ANSWER_SCHEMA,
@@ -47,17 +49,21 @@ from data_agent_baseline.tools.inputs import (
     EXECUTE_PYTHON_TIMEOUT_SECONDS,
     INSPECT_FILES_SCHEMA,
     INSPECT_SQLITE_SCHEMA,
+    LOOKUP_FIELD_SCHEMA,
     READ_CSV_SCHEMA,
     READ_DOC_SCHEMA,
     READ_JSON_SCHEMA,
+    SEARCH_CONTEXT_SCHEMA,
     AnswerInput,
     ExecuteContextSqlInput,
     ExecutePythonInput,
     InspectFilesInput,
     InspectSqliteSchemaInput,
+    LookupFieldInput,
     ReadCsvInput,
     ReadDocInput,
     ReadJsonInput,
+    SearchContextInput,
 )
 from data_agent_baseline.tools.schema_normalize import normalize_for_vllm
 
@@ -105,6 +111,8 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "read_csv": ReadCsvInput,
     "read_json": ReadJsonInput,
     "read_doc": ReadDocInput,
+    "search_context": SearchContextInput,
+    "lookup_field": LookupFieldInput,
     "inspect_sqlite_schema": InspectSqliteSchemaInput,
     "execute_context_sql": ExecuteContextSqlInput,
     "execute_python": ExecutePythonInput,
@@ -233,17 +241,19 @@ class ToolRegistry:
 
 
 def create_default_tool_registry() -> ToolRegistry:
-    """构造默认 8 件套工具注册表。
+    """构造默认工具注册表。
 
     注册顺序（按规范固定）：
     1. inspect_files          一次性回传所有文件的轻量 schema（首步探查的零决策入口）
     2. read_csv               预览 CSV
     3. read_doc               预览文本文档
-    4. read_json              预览 JSON
-    5. inspect_sqlite_schema  sqlite 表结构
-    6. execute_context_sql    sqlite 只读 SQL
-    7. execute_python         子进程执行任意 Python
-    8. answer                 终止 + 提交答案（唯一终止工具）
+    4. search_context         Local Retrieval Index 全文检索
+    5. lookup_field           Local Retrieval Index 字段/单位/别名检索
+    6. read_json              预览 JSON
+    7. inspect_sqlite_schema  sqlite 表结构
+    8. execute_context_sql    sqlite 只读 SQL
+    9. execute_python         子进程执行任意 Python
+    10. answer                终止 + 提交答案（唯一终止工具）
 
     `input_schema` 里的示例值是"演示"形式（不是真实 JSON Schema），模型看到
     `"columns": ["column_name"]` 会按模式填自己的数据，实测比严谨 schema 更不易出错。
@@ -292,6 +302,31 @@ def create_default_tool_registry() -> ToolRegistry:
             input_schema=ReadDocInput.example_value(),
             json_schema=READ_DOC_SCHEMA,
             handler=handle_read_doc,
+        ),
+        ToolDefinition(
+            name="search_context",
+            description=(
+                "Use when the local retrieval index is enabled and you need to find "
+                "evidence in long local documents, knowledge files, or schema summaries "
+                "by entity name, ID, phrase, or keyword. Returns path, line range, score, "
+                "and text preview. Retrieval results are evidence pointers, not final "
+                "answers; use execute_python or SQL for full computation."
+            ),
+            input_schema=SearchContextInput.example_value(),
+            json_schema=SEARCH_CONTEXT_SCHEMA,
+            handler=handle_search_context,
+        ),
+        ToolDefinition(
+            name="lookup_field",
+            description=(
+                "Use when the local retrieval index is enabled and you need to resolve "
+                "field meanings, units, code labels, aliases, thresholds, table names, "
+                "or column candidates from knowledge.md and schema summaries before "
+                "filtering or joining data."
+            ),
+            input_schema=LookupFieldInput.example_value(),
+            json_schema=LOOKUP_FIELD_SCHEMA,
+            handler=handle_lookup_field,
         ),
         ToolDefinition(
             name="read_json",

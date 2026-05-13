@@ -39,13 +39,14 @@ class TaskRunArtifacts:
     trace_path: Path
     succeeded: bool  # Agent 是否正常调用 answer 工具
     failure_reason: str | None  # 失败时的可读原因
+    retrieval_index: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """序列化进 summary.json 的任务条目。
 
         Path → str：JSON 不原生支持 Path 类型。
         """
-        return {
+        payload: dict[str, Any] = {
             "task_id": self.task_id,
             "task_output_dir": str(self.task_output_dir),
             "prediction_csv_path": str(self.prediction_csv_path)
@@ -55,6 +56,9 @@ class TaskRunArtifacts:
             "succeeded": self.succeeded,
             "failure_reason": self.failure_reason,
         }
+        if self.retrieval_index is not None:
+            payload["retrieval_index"] = self.retrieval_index
+        return payload
 
 
 _RUN_ID_COUNTER_WIDTH = 3
@@ -462,6 +466,9 @@ def write_task_outputs(
         trace_path=trace_path,
         succeeded=bool(run_result.get("succeeded")),
         failure_reason=run_result.get("failure_reason"),
+        retrieval_index=run_result.get("retrieval_index")
+        if isinstance(run_result.get("retrieval_index"), dict)
+        else None,
     )
 
 

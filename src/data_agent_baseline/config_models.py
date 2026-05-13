@@ -49,6 +49,7 @@ from data_agent_baseline.config import (
     BackendKindLiteral,
     ToolProtocolLiteral,
     _default_dataset_root,  # pyright: ignore[reportPrivateUsage]
+    _default_retrieval_cache_dir,  # pyright: ignore[reportPrivateUsage]
     _default_run_output_dir,  # pyright: ignore[reportPrivateUsage]
 )
 
@@ -351,11 +352,46 @@ class AgentConfigModel(_StrictModel):
         return self
 
 
+class RetrievalIndexConfigModel(_StrictModel):
+    enabled: StrictBool = False
+    cache_dir: Path = Field(default_factory=_default_retrieval_cache_dir)
+    max_chunk_chars: StrictInt = 1600
+    chunk_overlap_lines: StrictInt = 2
+    max_results: StrictInt = 8
+
+    @field_validator("cache_dir", mode="before")
+    @classmethod
+    def _resolve_cache_dir(cls, v: Any) -> Path:
+        return _resolve_anchor_path(v, _default_retrieval_cache_dir())
+
+    @field_validator("max_chunk_chars")
+    @classmethod
+    def _check_max_chunk_chars(cls, v: int) -> int:
+        if v < 200:
+            raise ValueError("run.retrieval_index.max_chunk_chars must be >= 200.")
+        return v
+
+    @field_validator("chunk_overlap_lines")
+    @classmethod
+    def _check_chunk_overlap_lines(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("run.retrieval_index.chunk_overlap_lines must be >= 0.")
+        return v
+
+    @field_validator("max_results")
+    @classmethod
+    def _check_max_results(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("run.retrieval_index.max_results must be >= 1.")
+        return v
+
+
 class RunConfigModel(_StrictModel):
     output_dir: Path = Field(default_factory=_default_run_output_dir)
     run_id: str | None = None
     max_workers: StrictInt = 4
     task_timeout_seconds: StrictInt = 600
+    retrieval_index: RetrievalIndexConfigModel = Field(default_factory=RetrievalIndexConfigModel)
     blocklist: tuple[str, ...] = Field(default_factory=tuple)
 
     @field_validator("output_dir", mode="before")

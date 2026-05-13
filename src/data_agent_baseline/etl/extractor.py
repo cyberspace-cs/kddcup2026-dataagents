@@ -337,7 +337,8 @@ def _compress_chunk(
         - For corrections: output the FINAL corrected value directly — e.g. \
         "label: positive", not "label: positive (placeholder)".
         - Preserve URLs, names, dates, times, categories, classifications.
-        - Strip ALL narrative filler (hobbies, catering, anecdotes, etc.).
+        - Strip only narrative filler that contains no structured field, schema field, \
+        ID, value, date, unit, label, status, or question-relevant fact.
         - Separate entries with ONE blank line. No commentary, no markdown.
 
         ---

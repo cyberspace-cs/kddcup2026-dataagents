@@ -1,4 +1,4 @@
-"""八个工具入参的 Pydantic 模型与对应严格 JSON Schema 常量。
+"""工具入参的 Pydantic 模型与对应严格 JSON Schema 常量。
 
 每个 `XxxInput` 同时承担三种角色的"单一真相源"：
 - `XxxInput.example_value()`：给文本 ReAct prompt 的演示示例（非严格 schema）
@@ -37,7 +37,7 @@ INLINE_ANSWER_CELL_LIMIT = 200
 # 所有工具的 `path` 字段共用同一条路径约定：
 # - 必须相对于任务的 context 目录
 # - **不要** 带 `context/` 前缀，哪怕 system prompt 里提到过 `context/`
-# 用常量收敛文案，后续调整只改一处，保证 8 个 schema 描述一致，减少模型的歧义。
+# 用常量收敛文案，后续调整只改一处，保证路径字段描述一致，减少模型的歧义。
 PATH_CONVENTION_NOTE = (
     "Paths are relative to the task context directory; DO NOT prepend 'context/'. "
     "For example use 'knowledge.md' or 'csv/foo.csv', not 'context/knowledge.md'."
@@ -147,6 +147,76 @@ class ReadDocInput(BaseModel):
             "line_count": 100,
             "keyword": "optional search text",
         }
+
+
+class SearchContextInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Search query for the task-local retrieval index. Use this for "
+                "entity names, IDs, phrases, or evidence in long documents."
+            ),
+        ),
+    ]
+    path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Optional exact path filter, relative to context for source files "
+                "or the absolute ETL CSV path shown by inspect_files."
+            ),
+        ),
+    ] = None
+    limit: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=1,
+            description=(
+                "Optional result cap. The runtime also caps this at the configured "
+                "run.retrieval_index.max_results."
+            ),
+        ),
+    ] = None
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {"query": "entity name threshold phrase", "path": None, "limit": 5}
+
+
+class LookupFieldInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    term: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Field, unit, code, alias, threshold, table, or column term to look up "
+                "in knowledge.md and schema summaries."
+            ),
+        ),
+    ]
+    limit: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=1,
+            description=(
+                "Optional result cap. The runtime also caps this at the configured "
+                "run.retrieval_index.max_results."
+            ),
+        ),
+    ] = None
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {"term": "field_name unit code label", "limit": 5}
 
 
 class InspectSqliteSchemaInput(BaseModel):
@@ -286,6 +356,8 @@ INSPECT_FILES_SCHEMA = normalize_for_vllm(InspectFilesInput.model_json_schema())
 READ_CSV_SCHEMA = normalize_for_vllm(ReadCsvInput.model_json_schema())
 READ_JSON_SCHEMA = normalize_for_vllm(ReadJsonInput.model_json_schema())
 READ_DOC_SCHEMA = normalize_for_vllm(ReadDocInput.model_json_schema())
+SEARCH_CONTEXT_SCHEMA = normalize_for_vllm(SearchContextInput.model_json_schema())
+LOOKUP_FIELD_SCHEMA = normalize_for_vllm(LookupFieldInput.model_json_schema())
 INSPECT_SQLITE_SCHEMA = normalize_for_vllm(InspectSqliteSchemaInput.model_json_schema())
 EXECUTE_CONTEXT_SQL_SCHEMA = normalize_for_vllm(ExecuteContextSqlInput.model_json_schema())
 EXECUTE_PYTHON_SCHEMA = normalize_for_vllm(ExecutePythonInput.model_json_schema())

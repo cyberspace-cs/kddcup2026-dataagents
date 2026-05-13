@@ -14,7 +14,7 @@ In both modes the agent strips any `<think>...</think>` block from
 `message.content` before parsing — see
 [`model-adapter` spec](../openspec/specs/model-adapter/spec.md).
 
-## Default tool inventory (8 tools)
+## Default tool inventory
 
 Registration order is fixed; `to_openai_tools()` sorts by name on output for cache
 stability. See [`tool-registry` spec](../openspec/specs/tool-registry/spec.md).
@@ -24,6 +24,8 @@ stability. See [`tool-registry` spec](../openspec/specs/tool-registry/spec.md).
 | `inspect_files` | _(none)_ | One-shot summary of every file under `context/`: columns, dtypes, row counts, table schemas. |
 | `read_csv` | `path` | CSV sample preview (schema + head 20 rows + tail 5 rows). |
 | `read_doc` | `path`, `start_line`, `line_count`, `keyword` | Paged text reader; with `keyword`, returns all matching paragraphs (capped at 20 / 8KB). |
+| `search_context` | `query`, `path`, `limit` | Search the task-local retrieval index for long-document evidence. |
+| `lookup_field` | `term`, `limit` | Search local field, unit, alias, threshold, and schema summaries. |
 | `read_json` | `path` | Structured JSON preview (kind + length/keys + sample values, 100MB load cap; >100MB returns streamed schema via ijson). |
 | `inspect_sqlite_schema` | `path` | List tables and columns of a SQLite/DB file. |
 | `execute_context_sql` | `path`, `sql`, `limit` | Read-only SQL against a SQLite/DB file in `context/`. |

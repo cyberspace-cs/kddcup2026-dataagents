@@ -27,6 +27,8 @@ _EXPECTED_ORDER = [
     "inspect_files",
     "read_csv",
     "read_doc",
+    "search_context",
+    "lookup_field",
     "read_json",
     "inspect_sqlite_schema",
     "execute_context_sql",

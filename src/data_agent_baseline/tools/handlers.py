@@ -1,4 +1,4 @@
-"""八件套工具的 handler 实现 + 统一返回结构。
+"""默认工具的 handler 实现 + 统一返回结构。
 
 每个 `handle_xxx` 接收一个已被对应 Pydantic 模型校验过的 args 实例（参见
 `tools/inputs.py` 的 `XxxInput`）；类型转换 / 必填校验 / 边界检查全部在
@@ -18,6 +18,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
+from data_agent_baseline.retrieval.index import (
+    lookup_field,
+    search_context,
+)
 from data_agent_baseline.tools.filesystem import (
     _classify_dtype,  # pyright: ignore[reportPrivateUsage]
     inspect_context_files,
@@ -33,9 +37,11 @@ from data_agent_baseline.tools.inputs import (
     ExecutePythonInput,
     InspectFilesInput,
     InspectSqliteSchemaInput,
+    LookupFieldInput,
     ReadCsvInput,
     ReadDocInput,
     ReadJsonInput,
+    SearchContextInput,
 )
 from data_agent_baseline.tools.python_exec import execute_python_code
 from data_agent_baseline.tools.sqlite import execute_read_only_sql, inspect_sqlite_schema
@@ -96,6 +102,22 @@ def handle_read_doc(task: PublicTask, args: ReadDocInput) -> ToolExecutionResult
             line_count=args.line_count,
             keyword=keyword,
         ),
+    )
+
+
+def handle_search_context(task: PublicTask, args: SearchContextInput) -> ToolExecutionResult:
+    """`search_context`: query the task-local offline retrieval index."""
+    content = search_context(task, query=args.query, path=args.path, limit=args.limit)
+    return ToolExecutionResult(
+        ok=bool(content.get("enabled")) and "error" not in content, content=content
+    )
+
+
+def handle_lookup_field(task: PublicTask, args: LookupFieldInput) -> ToolExecutionResult:
+    """`lookup_field`: query field/unit/code aliases from local index metadata."""
+    content = lookup_field(task, term=args.term, limit=args.limit)
+    return ToolExecutionResult(
+        ok=bool(content.get("enabled")) and "error" not in content, content=content
     )
 
 

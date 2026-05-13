@@ -155,9 +155,10 @@ def test_native_system_prompt_front_loads_knowledge_md() -> None:
     assert "must call `read_doc`" in lower
     # 显式禁令：不能直接跳到 execute_python
     assert "do not skip to `execute_python` first" in lower
-    # 扩充举例覆盖 unit-convention（task_13 的 MM:SS.mmm 格式）与 formula
-    # 定义两类——只有 code-label 一个例子时模型容易把规则当作"窄场景适用"忽略
-    assert "MM:SS.mmm" in prompt
+    # 保持为通用类别，避免把 public-task 里的具体 code 或时间格式写进 system prompt
+    assert "unit conventions" in lower
+    assert "vYBER".lower() not in lower
+    assert "MM:SS.mmm" not in prompt
     assert "formula definitions" in lower
 
 
@@ -373,6 +374,45 @@ def test_native_system_prompt_requires_cell_type_preservation() -> None:
 
     assert "preserve cell types" in lower
     assert "163109" in prompt and "163109.0" in prompt
+
+
+def test_system_prompts_use_runtime_clock_for_current_year() -> None:
+    """`current year` 语义必须来自 execute_python 运行时，而不是数据最大日期。"""
+    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    native_prompt = build_native_system_prompt()
+
+    for prompt in (text_prompt, native_prompt):
+        lower = prompt.lower()
+        assert "runtime date" in lower
+        assert "current year" in lower
+        assert "execute_python" in prompt
+        assert "date.today().year" in prompt
+        assert "do not infer the current year from the latest date in the dataset" in lower
+
+
+def test_native_system_prompt_avoids_hardcoded_medical_ranges() -> None:
+    """abnormal lab filters must be evidence-driven, not prompt-provided lab constants."""
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "clinical / domain" in lower
+    assert "local evidence" in lower
+    assert "last-resort fallback" in lower
+    assert "never assume both low and high values are abnormal" in lower
+
+    forbidden = [
+        "creatinine normal",
+        "wbc normal",
+        "fibrinogen/fg normal",
+        "150–400",
+        "150-400",
+        "0.7–1.3",
+        "0.7-1.3",
+        "3.5–9.0",
+        "3.5-9.0",
+    ]
+    for phrase in forbidden:
+        assert phrase not in lower
 
 
 def test_text_system_prompt_requires_source_schema_mirroring() -> None:
