@@ -605,6 +605,83 @@ def test_observation_prompt_ok_false_generic_error() -> None:
     assert "Review the error" in result
 
 
+# ---------- Disambiguation rules ----------
+
+
+def test_system_prompts_share_disambiguation_rules() -> None:
+    """`## Disambiguation` 段在两个 prompt 必须字面一致——单一真相源。
+
+    歧义检测与消解规则是跨协议的不变量，`_DISAMBIGUATION_RULES` 常量
+    被两套 prompt 引用，避免双写脱同步。
+    """
+    from data_agent_baseline.agents.prompt import _DISAMBIGUATION_RULES
+
+    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    native_prompt = build_native_system_prompt()
+
+    assert _DISAMBIGUATION_RULES in text_prompt
+    assert _DISAMBIGUATION_RULES in native_prompt
+
+
+def test_disambiguation_covers_four_ambiguity_types() -> None:
+    """Disambiguation 段必须覆盖四类歧义及其消解策略。"""
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "## disambiguation" in lower
+    assert "schema ambiguity" in lower
+    assert "value ambiguity" in lower
+    assert "vague intent" in lower
+    assert "numeric reference ambiguity" in lower
+
+
+def test_disambiguation_requires_column_first_resolution() -> None:
+    """Column-first 策略：先识别列再反推表——对属性驱动查询更高效。"""
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "column-first resolution" in lower
+    assert "identify the target column first" in lower
+    assert "join path" in lower
+
+
+def test_disambiguation_anchors_on_knowledge_md() -> None:
+    """领域知识从 knowledge.md 消解歧义，是首选来源。"""
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "domain knowledge from `knowledge.md` is the primary disambiguation source" in lower
+    assert "read it before attempting any filter" in lower
+
+
+def test_disambiguation_prefers_non_empty_result() -> None:
+    """歧义耗尽后偏好非空结果集——空结果几乎总是消解错误。"""
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "prefer the interpretation that returns a non-empty result set" in lower
+    assert "re-examine your column/value choice before submitting" in lower
+
+
+def test_text_prompt_includes_disambiguation_section() -> None:
+    """文本协议同样包含 ## Disambiguation 段。"""
+    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    lower = prompt.lower()
+
+    assert "## disambiguation" in lower
+    assert "schema ambiguity" in lower
+    assert "column-first resolution" in lower
+
+
+def test_decision_tree_phase2_includes_disambiguation_check() -> None:
+    """Phase 2 VERIFY 必须包含歧义检查步骤。"""
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "disambiguation check" in lower
+    assert "sample all candidates before choosing" in lower
+
+
 # ---------- Decision tree phase keywords ----------
 
 

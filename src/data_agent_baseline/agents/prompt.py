@@ -70,6 +70,20 @@ _PATH_CONVENTION_BLOCK = (
     "Path convention (applies to every tool `path` argument):\n" + PATH_CONVENTION_NOTE
 )
 
+# 共享：歧义检测与消解规则。自然语言问题到 SQL/pandas 的映射过程中
+# 常见四类歧义（AmbiSchema / AmbiValue / AmbiVague / 数值引用歧义），
+# 传统做法靠交互澄清，本 agent 无法交互，需在 DISCOVER/VERIFY 阶段
+# 通过 schema 采样 + knowledge.md + 多候选验证自行消解。
+_DISAMBIGUATION_RULES = """\
+- Ambiguity types to watch for:
+  (a) Schema ambiguity — a natural-language phrase maps to multiple tables or columns (e.g., "Fresno" → `City` column vs `County` column; "ranked 2" → `position` vs `rank`). Resolution: inspect ALL candidate columns via `SELECT DISTINCT col LIMIT 20` or schema comments; prefer the column whose distinct values contain the phrase or whose semantics match the question's intent. When `knowledge.md` or retrieval hits explicitly map the phrase, that mapping is authoritative.
+  (b) Value ambiguity — the question uses a term that does not literally appear in the data or appears in a non-standard form (e.g., "Vietnam War end" → `1973` vs `1975`; product names stored as codes). Resolution: search the actual data values (`SELECT DISTINCT`, `LIKE '%keyword%'`), check `knowledge.md` for code↔label mappings, and use the evidence-backed interpretation.
+  (c) Vague intent — the question under-specifies the metric or aggregation (e.g., "largest city" could mean by area or by population; "best-selling" could mean by quantity or revenue). Resolution: look for a column that most directly satisfies the adjective; if two columns are equally plausible, prefer the one that `knowledge.md` or the schema description singles out. If still ambiguous after local evidence, use the most conventional interpretation for the domain (e.g., "largest city" → population) and proceed — do not stall.
+  (d) Numeric reference ambiguity — a numeric value in the question (year, percentage, count) could match multiple columns. Resolution: sample candidate columns and compare value ranges; the column whose range contains the queried value is the match.
+- Column-first resolution: when the question hinges on an attribute (metric, date, status) rather than a table entity, identify the target column first, then trace back to its table and join path. Column names carry richer semantic signals than generic table names.
+- Domain knowledge from `knowledge.md` is the primary disambiguation source. It typically maps business terms to exact column names, value codes, and formulas. Read it BEFORE attempting any filter that involves domain-specific terms.
+- When a question's wording matches multiple valid SQL interpretations after all local evidence is exhausted, prefer the interpretation that returns a non-empty result set. An empty result from an ambiguous filter is almost always the wrong disambiguation — re-examine your column/value choice before submitting."""
+
 
 # ReAct 系统提示词基座（文本协议）：权限边界 + 输出契约。
 # 关键约束点：
@@ -91,6 +105,9 @@ You are a ReAct-style data analysis agent.
 
 ## Data conventions
 {_DATA_OUTPUT_RULES}
+
+## Disambiguation
+{_DISAMBIGUATION_RULES}
 
 ## Output format
 - Always return exactly one JSON object with keys `thought`, `action`, and `action_input`.
@@ -148,6 +165,9 @@ You are a data analysis agent.
 - Clinical / domain "normal" or "abnormal" filters: first resolve thresholds and directionality from local evidence (`knowledge.md`, retrieval hits, source prose around the field, schema summaries, and observed values). If no local threshold is explicit, search the local documents for the field together with words like normal/abnormal/high/low/elevated/reduced before filtering. Use an external domain range only as a last-resort fallback after local evidence is unavailable, and never assume both low and high values are abnormal unless the local source or an explicit range says so.
 - Step budget discipline: when you have consumed ≥70% of your step budget and already hold a computed answer (even preliminary), submit it immediately via `answer` rather than spending remaining steps on further verification. A partially-verified answer scores higher than no answer (max_steps exhaustion = score 0).
 
+## Disambiguation
+{_DISAMBIGUATION_RULES}
+
 ## Decision tree
 
 Phase 1 — DISCOVER (first 1-2 turns):
@@ -160,6 +180,7 @@ Phase 1 — DISCOVER (first 1-2 turns):
 
 Phase 2 — VERIFY (before any filter/aggregation):
 - For every column you will use in WHERE / filter / grouping: categorical/code → `SELECT DISTINCT col LIMIT 30` or `df[col].unique()`; numeric → `SELECT MIN(col), MAX(col)`.
+- Disambiguation check: if a question term could map to more than one column or value, sample ALL candidates before choosing. When `knowledge.md` resolves the ambiguity, follow it; otherwise pick the candidate whose actual values match the question's semantics.
 - Hedge words ("likely", "probably") signal an unverified guess — the very next turn MUST be verification, not a filter.
 - If you find a SQLite/database file (`.db` / `.sqlite` / `.sqlite3`), call `inspect_sqlite_schema` first, then `execute_context_sql` for queries and aggregations; these two tools open ONLY sqlite files and fail with `file is not a database` on a CSV / JSON / Markdown / text path.
 
