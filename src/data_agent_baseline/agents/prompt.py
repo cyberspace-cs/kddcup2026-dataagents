@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 from data_agent_baseline.benchmark.schema import PublicTask
 from data_agent_baseline.tools.inputs import PATH_CONVENTION_NOTE
@@ -61,7 +62,11 @@ _DATA_OUTPUT_RULES = """\
 - Relationship tables may have bidirectional entries. When counting bonds, edges, connections, or links from a relationship/junction table (e.g., `connected`, `edges`, `links`), check whether each relationship is stored as two directed rows (A→B and B→A). If so, use `COUNT(DISTINCT bond_id)` or equivalent deduplication to avoid double-counting.
 - "Tally" / "list" semantics: when the question says "tally the X" or "list the distinct X", the answer is the set of UNIQUE values of X — one column of deduplicated values, NOT a frequency table with counts, and NOT the raw non-deduplicated rows. Output each distinct value exactly once.
 - Ordinal positions require numeric sorting. When the question references the "Nth item" and IDs have numeric suffixes (e.g., `TR006_1`, `TR006_10`, `atom_2`), extract the numeric portion and sort numerically — NOT lexicographically. String sort puts `_1, _10, _11, ..., _2` which gives wrong ordinal positions. Use `key=lambda x: int(x.split('_')[-1])` or equivalent.
-- "Last time" / "most recent" for authored content: when the question asks "who posted/created/wrote X last time" or "the user who last modified X", look up the revision/history/edit log (e.g., `postHistory`, `revisions`, `edits`) and return the author of the MOST RECENT entry — not the original creator/owner."""
+- "Last time" / "most recent" for authored content: when the question asks "who posted/created/wrote X last time" or "the user who last modified X", look up the revision/history/edit log (e.g., `postHistory`, `revisions`, `edits`) and return the author of the MOST RECENT entry — not the original creator/owner.
+- Dtype-safe joins. Before any `pd.merge` / `JOIN` in pandas, verify that the join key columns share the same dtype. ID columns stored as `int64` in one table and `object`/`str` in another will raise `MergeError`. Always cast both sides to `str` first: `df1['key'] = df1['key'].astype(str)` and `df2['key'] = df2['key'].astype(str)`. The same applies to SQL `JOIN` when mixing TEXT and INTEGER columns — use `CAST(col AS TEXT)`.
+- Path discipline in `execute_python`. The subprocess CWD is already set to the context directory and a `context_root` variable is pre-injected. Use relative paths (e.g., `open('csv/data.csv')`) or `os.path.join(context_root, 'csv/data.csv')`. NEVER hard-code absolute paths from memory — the host filesystem layout is not guaranteed and typos in paths cause silent failures. For the answer artifact directory, use `os.environ['DABENCH_ANSWER_DIR']`.
+- Zero is a valid data value, not a null sentinel. Do NOT exclude rows where a numeric column equals 0 (e.g., `weight_kg == 0`, `height_cm == 0`, `amount == 0`) unless `knowledge.md` or the schema description explicitly states that 0 means "missing" or "unknown". Standard SQL `AVG`, pandas `.mean()`, and `COUNT` all include zero-valued rows; excluding them silently changes the result. If you suspect 0 might be a sentinel, verify by checking the column description or `knowledge.md` first — do not guess.
+- "List all X" = identifier column only. When the question says "list all the [entities]" (e.g., "list all the withdrawals"), the answer is the entity identifier column (e.g., `trans_id`) — NOT the entity plus every attribute column (date, amount, type, etc.). Additional attribute columns are only warranted when the question explicitly names them (e.g., "list the withdrawals and their amounts"). This is the most common source of extra-column penalties."""
 
 # 共享：path 字段约定段。`PATH_CONVENTION_NOTE` 由 tools/inputs.py 定义并
 # 被 5 个 path 字段的 schema description 复用；这里再插一份到 system prompt
@@ -82,7 +87,10 @@ _DISAMBIGUATION_RULES = """\
   (d) Numeric reference ambiguity — a numeric value in the question (year, percentage, count) could match multiple columns. Resolution: sample candidate columns and compare value ranges; the column whose range contains the queried value is the match.
 - Column-first resolution: when the question hinges on an attribute (metric, date, status) rather than a table entity, identify the target column first, then trace back to its table and join path. Column names carry richer semantic signals than generic table names.
 - Domain knowledge from `knowledge.md` is the primary disambiguation source. It typically maps business terms to exact column names, value codes, and formulas. Read it BEFORE attempting any filter that involves domain-specific terms.
-- When a question's wording matches multiple valid SQL interpretations after all local evidence is exhausted, prefer the interpretation that returns a non-empty result set. An empty result from an ambiguous filter is almost always the wrong disambiguation — re-examine your column/value choice before submitting."""
+- When a question's wording matches multiple valid SQL interpretations after all local evidence is exhausted, prefer the interpretation that returns a non-empty result set. An empty result from an ambiguous filter is almost always the wrong disambiguation — re-examine your column/value choice before submitting.
+- "How many times" phrasing: the pattern "how many times is/was A compared to B" or "how many times is/was A more than B" asks for a RATIO (A / B), NOT a count. Compute it as `CAST(A AS REAL) / B` and submit the single numeric value. Only interpret "how many times" as a count when the question describes a repeatable event (e.g., "how many times did X happen").
+- "Total / count X with Y containing Z" scoping: when the question says "total X with Y containing Z" (e.g., "total atoms with triple-bond molecules containing phosphorus"), "containing Z" restricts the counted items (atoms) to those that ARE Z, not all items in the qualifying group. Count only rows where the attribute matches Z AND the group condition holds. Example: "total atoms with triple-bond molecules containing element phosphorus" → count atoms WHERE element = 'p' AND molecule has triple bond, NOT count ALL atoms in those molecules.
+- Compound filter verification: when the question applies two or more filters in sequence (e.g., "withdrawals in cash transactions"), verify each filter independently first (`SELECT DISTINCT type`, `SELECT DISTINCT operation`) and confirm which column each filter word maps to. Do not assume a filter maps to a particular column without checking. If one filter yields zero results, re-examine whether you mapped the term to the wrong column."""
 
 
 # ReAct 系统提示词基座（文本协议）：权限边界 + 输出契约。
@@ -273,7 +281,11 @@ def build_task_prompt(task: PublicTask) -> str:
 def _recovery_hint(observation: dict[str, object]) -> str | None:
     """根据 observation 中的 error 信息生成定向恢复提示。"""
     error_text = str(observation.get("error", "")).lower()
-    if not error_text:
+    raw_content = observation.get("content")
+    if isinstance(raw_content, dict):
+        inner = str(cast(dict[str, object], raw_content).get("error", ""))
+        error_text = f"{error_text} {inner.lower()}"
+    if not error_text.strip():
         return None
     if "no such column" in error_text or "no such table" in error_text:
         return "Re-check schema via inspect_sqlite_schema."
@@ -281,6 +293,18 @@ def _recovery_hint(observation: dict[str, object]) -> str | None:
         return "Fix the syntax and retry."
     if "timeout" in error_text or "timed out" in error_text:
         return "Simplify: use SQL aggregation or add WHERE."
+    if "mergeerror" in error_text or "merge on" in error_text:
+        return (
+            "Merge/join key dtype mismatch. Cast both sides to str before merging: "
+            "df1['key'] = df1['key'].astype(str); df2['key'] = df2['key'].astype(str)."
+        )
+    if "keyerror" in error_text or "not in index" in error_text:
+        return "Column name not found. Print df.columns.tolist() to verify exact names."
+    if "no such file" in error_text or "filenotfounderror" in error_text:
+        return (
+            "File not found. Use relative paths from the context directory (CWD) or "
+            "os.path.join(context_root, 'subdir/file.csv'). Never hard-code absolute paths."
+        )
     return "Review the error and adjust."
 
 
