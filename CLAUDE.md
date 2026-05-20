@@ -38,7 +38,12 @@ uv run dabench run-benchmark         --config <cfg> [--limit N] [--range S-E]
 
 **Do not** invoke via `uv run python -m data_agent_baseline.cli ...` — the Typer + module-runner interaction produces no output in this project.
 
-## 3. Code contribution rules — see [`CONTRIBUTING.md`](CONTRIBUTING.md)
+## 3. Shell tools: use `rg` and `fd` instead of `grep` and `find`
+
+- `rg` (ripgrep) replaces `grep` — faster and respects `.gitignore` by default.
+- `fd` replaces `find` — same benefits.
+
+## 4. Code contribution rules — see [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 That file is the canonical source for:
 
