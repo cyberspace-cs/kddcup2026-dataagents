@@ -125,8 +125,7 @@ def test_native_protocol_passes_through_tool_calls() -> None:
     assert turn.reasoning_draft is None
 
 
-def test_native_protocol_empty_calls_extracts_known_draft() -> None:
-    # 用 read_doc 测 XML draft 的 parameter 解析（inspect_files 无参数无法验证此路径）
+def test_native_protocol_empty_calls_recovers_from_reasoning() -> None:
     reasoning = (
         "<tool_call>\n"
         "<function=read_doc>\n"
@@ -143,12 +142,55 @@ def test_native_protocol_empty_calls_extracts_known_draft() -> None:
         allowed_tool_names=("read_doc", "answer"),
     )
 
-    assert turn.calls == ()
     assert turn.parse_error is None
-    assert turn.reasoning_draft is not None
-    assert turn.reasoning_draft["function"] == "read_doc"
-    assert turn.reasoning_draft["arguments"] == {"path": "knowledge.md"}
-    assert turn.reasoning_draft["executed"] is False
+    assert len(turn.calls) == 1
+    assert turn.calls[0].id == "recovered:1"
+    assert turn.calls[0].name == "read_doc"
+    assert turn.calls[0].arguments == {"path": "knowledge.md"}
+
+
+def test_native_protocol_empty_calls_recovers_from_content() -> None:
+    content = (
+        "<tool_call><function=execute_python>"
+        "<parameter=code>print(1)</parameter>"
+        "</function></tool_call>"
+    )
+    response = _resp(content=content, reasoning="")
+
+    turn = adapt_model_response(
+        response,
+        protocol="native",
+        turn_index=5,
+        allowed_tool_names=("execute_python", "answer"),
+    )
+
+    assert turn.parse_error is None
+    assert len(turn.calls) == 1
+    assert turn.calls[0].id == "recovered:5"
+    assert turn.calls[0].name == "execute_python"
+    assert turn.calls[0].arguments == {"code": "print(1)"}
+
+
+def test_native_protocol_content_takes_priority_over_reasoning() -> None:
+    content = (
+        "<tool_call><function=inspect_files><parameter=path>.</parameter></function></tool_call>"
+    )
+    reasoning = (
+        "<tool_call><function=execute_python>"
+        "<parameter=code>print(1)</parameter>"
+        "</function></tool_call>"
+    )
+    response = _resp(content=content, reasoning=reasoning)
+
+    turn = adapt_model_response(
+        response,
+        protocol="native",
+        turn_index=2,
+        allowed_tool_names=("inspect_files", "execute_python", "answer"),
+    )
+
+    assert len(turn.calls) == 1
+    assert turn.calls[0].name == "inspect_files"
 
 
 def test_native_protocol_empty_calls_skips_unknown_tool_draft() -> None:

@@ -175,20 +175,19 @@ def _parse_reasoning_parameter_value(name: str, value: str) -> Any:
     return stripped
 
 
-def extract_reasoning_tool_call_draft(
-    reasoning: str,
+def _parse_tool_call_tags(
+    text: str,
     allowed_tool_names: Collection[str],
-) -> dict[str, Any] | None:
-    """Extract the first complete Qwen-style tool-call draft from reasoning.
+) -> tuple[str, dict[str, Any]] | None:
+    """从文本中解析 Qwen 风格 <tool_call> 标签，返回 (function_name, arguments)。
 
-    This is deliberately best-effort and non-authoritative: it only helps the next
-    model turn recover from a reasoning-only draft. The returned draft must never
-    be executed by the runner.
+    校验：函数名必须在 allowed_tool_names 中，参数必须全部由 <parameter> 标签覆盖
+    （无残余文本）。解析失败返回 None。
     """
-    if not reasoning:
+    if not text:
         return None
 
-    tool_call_match = _REASONING_TOOL_CALL_PATTERN.search(reasoning)
+    tool_call_match = _REASONING_TOOL_CALL_PATTERN.search(text)
     if tool_call_match is None:
         return None
 
@@ -216,6 +215,23 @@ def extract_reasoning_tool_call_draft(
     if unparsed_body:
         return None
 
+    return function_name, arguments
+
+
+def extract_reasoning_tool_call_draft(
+    reasoning: str,
+    allowed_tool_names: Collection[str],
+) -> dict[str, Any] | None:
+    """Extract the first complete Qwen-style tool-call draft from reasoning.
+
+    This is deliberately best-effort and non-authoritative: it only helps the next
+    model turn recover from a reasoning-only draft. The returned draft must never
+    be executed by the runner.
+    """
+    parsed = _parse_tool_call_tags(reasoning, allowed_tool_names)
+    if parsed is None:
+        return None
+    function_name, arguments = parsed
     return {
         "function": function_name,
         "arguments": arguments,
@@ -242,6 +258,16 @@ def adapt_model_response(
     if protocol == "native":
         calls = tuple(response.tool_calls)
         if not calls:
+            for source in (response.content, response.reasoning_content):
+                parsed = _parse_tool_call_tags(source, allowed_tool_names)
+                if parsed is not None:
+                    fn_name, fn_args = parsed
+                    recovered = ModelToolCall(
+                        id=f"recovered:{turn_index}",
+                        name=fn_name,
+                        arguments=fn_args,
+                    )
+                    return ProtocolTurn(calls=(recovered,), thought=response.content)
             draft = extract_reasoning_tool_call_draft(
                 response.reasoning_content,
                 allowed_tool_names,

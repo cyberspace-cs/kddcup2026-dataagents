@@ -434,20 +434,10 @@ def test_native_empty_tool_calls_records_error(task: PublicTask) -> None:
     assert answer_step.action == "answer"
 
 
-def test_native_reasoning_tool_call_draft_is_observed_but_not_executed(
+def test_native_reasoning_tool_call_recovered_and_executed(
     task: PublicTask,
 ) -> None:
-    structured_call, structured_raw = _build_tool_call(
-        call_id="real_run",
-        name="execute_python",
-        arguments={
-            "code": (
-                "from pathlib import Path\n"
-                "Path('structured_executed.txt').write_text('yes')\n"
-                "print('structured ran')"
-            )
-        },
-    )
+    """reasoning 中的 tool call 草稿被恢复为可执行调用并直接运行。"""
     answer_call, answer_raw = _build_tool_call(
         call_id="final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
     )
@@ -457,7 +447,8 @@ I know the Python I want to run.
 <function=execute_python>
 <parameter=code>
 from pathlib import Path
-Path('draft_executed.txt').write_text('bad')
+Path('recovered_executed.txt').write_text('yes')
+print('recovered ran')
 </parameter>
 </function>
 </tool_call>
@@ -470,12 +461,6 @@ Path('draft_executed.txt').write_text('bad')
                 raw_response="",
                 raw_tool_calls=[],
                 reasoning_content=reasoning_draft,
-            ),
-            ModelResponse(
-                content="",
-                tool_calls=[structured_call],
-                raw_response="",
-                raw_tool_calls=[structured_raw],
             ),
             ModelResponse(
                 content="",
@@ -495,36 +480,61 @@ Path('draft_executed.txt').write_text('bad')
     result = agent.run(task)
 
     assert result.succeeded is True
-    assert [step.action for step in result.steps] == ["__error__", "execute_python", "answer"]
-    error_step = result.steps[0]
-    assert error_step.reasoning == reasoning_draft
-    assert error_step.observation["error"] == (
-        "Your previous turn did not produce an executable tool call."
-    )
-    assert error_step.observation["drafted_tool_call"] == {
-        "function": "execute_python",
-        "arguments": {
-            "code": ("from pathlib import Path\nPath('draft_executed.txt').write_text('bad')")
-        },
-        "source": "reasoning_content",
-        "executed": False,
-    }
-    instruction = error_step.observation["instruction"].lower()
-    assert "reasoning drafts are not executable" in instruction
-    assert "real structured tool_call" in instruction
-    assert not (task.context_dir / "draft_executed.txt").exists()
-    assert (task.context_dir / "structured_executed.txt").read_text() == "yes"
+    assert [step.action for step in result.steps] == ["execute_python", "answer"]
+    assert result.steps[0].tool_call_id == "recovered:1"
+    assert (task.context_dir / "recovered_executed.txt").read_text() == "yes"
 
 
-def test_native_reasoning_tool_call_drafts_use_empty_retry_budget(
+def test_native_content_tool_call_recovered_and_executed(
     task: PublicTask,
 ) -> None:
-    reasoning_draft = """
-<tool_call>
-<function=inspect_files>
-</function>
-</tool_call>
-"""
+    """content 中的 tool call 标签被恢复为可执行调用并直接运行。"""
+    answer_call, answer_raw = _build_tool_call(
+        call_id="final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
+    )
+    content_with_tool_call = (
+        "<tool_call><function=execute_python>"
+        "<parameter=code>print('from content')</parameter>"
+        "</function></tool_call>"
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content=content_with_tool_call,
+                tool_calls=[],
+                raw_response=content_with_tool_call,
+                raw_tool_calls=[],
+            ),
+            ModelResponse(
+                content="",
+                tool_calls=[answer_call],
+                raw_response="",
+                raw_tool_calls=[answer_raw],
+            ),
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+        protocol="native",
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert [step.action for step in result.steps] == ["execute_python", "answer"]
+    assert result.steps[0].tool_call_id == "recovered:1"
+
+
+def test_native_recovered_call_synthesizes_raw_tool_calls(
+    task: PublicTask,
+) -> None:
+    """recovered tool call 合成 raw_tool_calls 以保证 native 消息回放正确。"""
+    answer_call, answer_raw = _build_tool_call(
+        call_id="final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
+    )
+    reasoning = "<tool_call><function=inspect_files></function></tool_call>"
     adapter = ScriptedNativeModelAdapter(
         [
             ModelResponse(
@@ -532,32 +542,32 @@ def test_native_reasoning_tool_call_drafts_use_empty_retry_budget(
                 tool_calls=[],
                 raw_response="",
                 raw_tool_calls=[],
-                reasoning_content=reasoning_draft,
+                reasoning_content=reasoning,
             ),
             ModelResponse(
                 content="",
-                tool_calls=[],
+                tool_calls=[answer_call],
                 raw_response="",
-                raw_tool_calls=[],
-                reasoning_content=reasoning_draft,
+                raw_tool_calls=[answer_raw],
             ),
         ]
     )
     agent = ReActAgent(
         model=adapter,
         tools=create_default_tool_registry(),
-        # N=2：第一次空轮记录但不终止；第二次（>=N）触发 max_empty_tool_call_retries 失败
-        config=ReActAgentConfig(max_steps=4, max_empty_tool_call_retries=2),
+        config=ReActAgentConfig(max_steps=4),
         protocol="native",
     )
 
     result = agent.run(task)
 
-    assert result.succeeded is False
-    assert len(result.steps) == 2
-    assert all("drafted_tool_call" in step.observation for step in result.steps)
-    assert result.failure_reason is not None
-    assert "max_empty_tool_call_retries" in result.failure_reason
+    assert result.succeeded is True
+    recovered_step = result.steps[0]
+    assert recovered_step.action == "inspect_files"
+    assert recovered_step.raw_tool_calls is not None
+    assert len(recovered_step.raw_tool_calls) == 1
+    assert recovered_step.raw_tool_calls[0]["id"] == "recovered:1"
+    assert recovered_step.raw_tool_calls[0]["function"]["name"] == "inspect_files"
 
 
 def test_native_empty_tool_calls_do_not_consume_max_steps(task: PublicTask) -> None:

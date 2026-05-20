@@ -462,6 +462,21 @@ class ReActAgent:
             # text 协议下 StepRecord 不承载原生调用 id / 原始 tool_calls（语义上它们都是
             # 合成的占位值），保持 None 可让 trace.json 读者清楚区分两种协议。
             is_native = self.protocol == "native"
+            # recovered tool call（从 content/reasoning 解析）没有原始 raw_tool_calls，
+            # 需要合成以便 native 协议 message 回放时 assistant.tool_calls 与 tool.tool_call_id 匹配
+            effective_raw_tool_calls: list[dict[str, object]] = response.raw_tool_calls or []
+            if is_native and not effective_raw_tool_calls and turn.calls:
+                effective_raw_tool_calls = [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                        },
+                    }
+                    for call in turn.calls
+                ]
             for call_idx, tool_call in enumerate(turn.calls):
                 step_counter += 1
                 is_lead = call_idx == 0
@@ -469,7 +484,7 @@ class ReActAgent:
                 if is_native:
                     step_tool_call_id: str | None = tool_call.id or None
                     step_raw_tool_calls: list[dict[str, object]] | None = (
-                        response.raw_tool_calls if is_lead else None
+                        effective_raw_tool_calls if is_lead else None
                     )
                 else:
                     step_tool_call_id = None
