@@ -5,7 +5,7 @@ agent:
   model: YOUR_MODEL_NAME                   # str (e.g. qwen3.5-35b-a3b)
   api_base: YOUR_API_BASE_URL              # str（OpenAI 兼容 chat.completions 端点）
   api_key: YOUR_API_KEY                    # str；若启用 api_keys 池则忽略此字段
-  max_steps: 64                            # int >= 1; 28 gives enough budget for complex multi-step tasks
+  max_steps: 32                            # int >= 1; 28 gives enough budget for complex multi-step tasks
   tool_protocol: native                    # Literal["native", "text"]
   allow_parallel_tool_calls: true          # bool；个别后端不支持 parallel_tool_calls 时设 false
   max_tokens: 16384                        # int >= 0；0=不下发上限走服务端默认
@@ -57,8 +57,8 @@ agent:
 run:
   output_dir: artifacts/runs               # 相对路径以 PROJECT_ROOT 为基锚定
   run_id: null                             # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`
-  max_workers: 8                           # int >= 1; 8 with dual-key keeps throughput high
-  task_timeout_seconds: 600                # int；<= 0 关闭单任务超时
+  max_workers: 4                           # int >= 1; 8 with dual-key keeps throughput high
+  task_timeout_seconds: 900                # int；<= 0 关闭单任务超时
   retrieval_index:
     enabled: true                          # bool；启用后 runner 在 ETL 后构建 SQLite FTS5 索引
     cache_dir: artifacts/indexes           # 相对路径以 PROJECT_ROOT 为基锚定
@@ -68,12 +68,8 @@ run:
 
   # 跳过名单：问题歧义 / gold 错误 / 数据缺失的题，提交时移除不影响评分。
   blocklist:
-    - task_5  # 问题歧义
-    - task_13 # gold 错误：raceId=903 的 number 列不含 5
-    - task_14 # 问题歧义："track number" 未在 knowledge.md 映射到列
-    - task_15 # 问题歧义
-    - task_17 # "type of expenses" 双绑定 (event.type vs expense_description)
-    - task_18 # 公式冲突：knowledge.md vs gold SQL 语义不一致
-    - task_19 # 数据失配：context 仅 1k 行采样，无 gold 所需记录
-    - task_40 # 数据不完整：patient_sex.csv 仅 92/302 人，context 不足以复现 gold=4
-    - task_50 # 文档联查，复杂度超出当前 agent 能力
+    # - task_5  # 问题歧义
+    # - task_13 # gold 错误：raceId=903 的 number 列不含 5 超时
+    # - task_15 # 问题歧义
+    # - task_17 # "type of expenses" 双绑定 (event.type vs expense_description)
+    # - task_18 # 公式冲突：knowledge.md vs gold SQL 语义不一致
