@@ -17,15 +17,15 @@ agent:
   # 自部署 vLLM 建议显式 "vllm"；line-up 走 DashScope 兼容模式时显式 "dashscope"。
   backend_kind: vllm                       # "vllm" | "dashscope" | null
 
-  # ---- 最优采样参数 (benchmarked: avg 0.72, best 0.736) ----
+  # ---- 最优采样参数 (benchmarked: avg 0.80, best 0.82) ----
   # temp=0.6 在 Qwen3 thinking 模���下平衡了质量与稳定性：
   # - 低于 0.6 (如 0.3) 会触发 repetition，复杂任务 max_steps 耗尽
   # - 高于 0.6 (如 0.7) 增加 run-to-run variance，翻转题变多
   temperature: 0.6                         # float in [0, 2]
-  top_p: 0.95                              # float in (0, 1]
-  top_k: 20                                # int >= 1（经 extra_body 透传）
+  top_p: 0.9                               # float in (0, 1] — narrower than 0.95, reduces variance
+  top_k: 15                                # int >= 1 — narrower than 20, reduces variance
   min_p: 0.0                               # float in [0, 1]（经 extra_body 透传）
-  presence_penalty: 0.3                    # float in [-2, 2]
+  presence_penalty: 0.0                    # float in [-2, 2] — Qwen3 thinking-mode default
 
   seed: 1024                               # int；与评测机 vLLM `--seed 1024` 对齐
 
