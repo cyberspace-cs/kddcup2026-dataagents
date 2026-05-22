@@ -226,6 +226,7 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
     if not model or not api_base or not api_key:
         raise RuntimeError("Cannot extract model credentials from adapter for ETL.")
 
+    has_rate_limiter = rate_limit_cfg is not None and rate_limit_key
     inner: ModelAdapter = OpenAIModelAdapter(
         model=model,
         api_base=api_base,
@@ -233,7 +234,7 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
         temperature=0.1,
         enable_thinking=False,
         backend_kind=backend_kind,
-        max_retries=2,
+        max_retries=0 if has_rate_limiter else 2,
         timeout=_ETL_HTTP_TIMEOUT,
     )
 

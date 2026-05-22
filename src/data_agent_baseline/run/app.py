@@ -102,10 +102,11 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
     """
     sampling = _resolve_sampling_defaults(config.agent)
 
+    has_rate_limiter = config.agent.rate_limit is not None and config.agent.api_key
+
     inner: NativeToolsOpenAIAdapter | OpenAIModelAdapter
     if config.agent.tool_protocol == "native":
         if tools is None:
-            # 给一个防御性错误：native 协议必须提供 tools
             raise ValueError("NativeToolsOpenAIAdapter requires a ToolRegistry; pass `tools=...`.")
         inner = NativeToolsOpenAIAdapter(
             model=config.agent.model,
@@ -116,6 +117,7 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
             max_tokens=config.agent.max_tokens,
             enable_thinking=config.agent.enable_thinking,
             backend_kind=config.agent.backend_kind,
+            max_retries=0 if has_rate_limiter else 2,
             **sampling,
         )
     else:
@@ -126,10 +128,10 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
             max_tokens=config.agent.max_tokens,
             enable_thinking=config.agent.enable_thinking,
             backend_kind=config.agent.backend_kind,
+            max_retries=0 if has_rate_limiter else 2,
             **sampling,
         )
 
-    # PR-2：有 rate_limit 就包一层限速壳；没有就返回裸 adapter（线上路径不变）
     if config.agent.rate_limit is not None and config.agent.api_key:
         return RateLimitedAdapter(
             inner=inner,

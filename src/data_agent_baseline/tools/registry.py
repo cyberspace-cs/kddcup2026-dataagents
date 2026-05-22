@@ -415,7 +415,7 @@ def create_default_tool_registry() -> ToolRegistry:
         ToolDefinition(
             name="validate_answer",
             description=(
-                "Use BEFORE calling `answer` to sanity-check the answer table. "
+                "Use first to sanity-check the answer table before calling `answer`. "
                 "Returns warnings (e.g., leaked ID columns, constant-value columns, "
                 "empty table) so you can fix issues before final submission. "
                 "Pass the same `columns`/`rows` you plan to submit, or "
