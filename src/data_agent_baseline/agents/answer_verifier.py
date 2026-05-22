@@ -56,11 +56,18 @@ Check 3 — ROW COUNT sanity:
   for the") — those naturally expect 1 row.
 - When in doubt about expected plurality, say "ok".
 
-Check 4 — VALUE sanity (only flag when clearly wrong):
-- A percentage expressed as 0-100 should not exceed 100 or be negative.
-- A count should be a non-negative integer.
-- A ratio "X times" should be ≥ 0.
-Only flag extreme implausibility, not borderline cases.
+Check 4 — VALUE sanity (only flag MATHEMATICAL impossibilities):
+- A percentage that clearly represents a share/proportion of a whole
+  must be in [0, 100] (0% and 100% are valid).
+- Growth rates / change-rate percentages may be negative or exceed 100%;
+  when unsure whether a percentage is a proportion or a change rate, say "ok".
+- A count that clearly represents a discrete item total is impossible
+  if negative or fractional.
+- A ratio "X times" is impossible if negative.
+NEVER judge whether a value is "too high", "too low", or "unlikely"
+based on domain knowledge or common sense — you do not have access to
+the data.  Values like 100%, 0%, or 99.95% are perfectly valid.
+Only flag values that are MATHEMATICALLY impossible for the requested measure.
 
 Reply with a JSON object (no markdown fence):
 {"verdict": "ok"} — all checks pass.
@@ -68,7 +75,9 @@ Reply with a JSON object (no markdown fence):
 "reason": "one-sentence diagnosis with concrete fix instruction"}
 
 Be conservative: when in doubt, say "ok".  Only reject when you are
-confident the answer is wrong."""
+confident the answer violates one of the checks above: extra/missing
+columns, row-count expectations, or mathematical value constraints.
+Never reject merely because a value seems surprising, high, low, or unlikely."""
 
 _MAX_SAMPLE_ROWS = 5
 
