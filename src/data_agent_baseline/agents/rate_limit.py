@@ -177,7 +177,7 @@ class RateLimitedAdapter:
 
         self.inner = inner
         self.api_key = api_key
-        self._rl = rate_limit
+        self.rate_limit_config = rate_limit
         # 透传 inner 的 `enable_thinking` 元数据。本壳不参与 thinking 行为本身——
         # `complete` 只把 messages 转交给 inner——但 `ReActAgent._system_message`
         # 会 introspect `model.enable_thinking` 决定是否注入 `<think>` 警告段
@@ -200,15 +200,17 @@ class RateLimitedAdapter:
 
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         """预扣 → 调 inner → 对账 → 返回；429/5xx 走内部重试，其他异常原样上抛。"""
-        reserved_tpm = estimate_prompt_tokens(messages) + self._rl.reserve_output_tokens
+        reserved_tpm = (
+            estimate_prompt_tokens(messages) + self.rate_limit_config.reserve_output_tokens
+        )
 
         # Step 1: 预扣 (1 RPM, reserved_tpm)；循环直到拿到令牌
         self._acquire_or_sleep(need_rpm=1, need_tpm=reserved_tpm)
 
         # Step 2: 调用内层；遇 429/5xx 退避重试，其他异常直抛
-        backoff = self._rl.backoff_initial_seconds
+        backoff = self.rate_limit_config.backoff_initial_seconds
         # 循环 max_retries+1 次（初次 + 最多 max_retries 次重试）
-        for attempt in range(self._rl.max_retries + 1):
+        for attempt in range(self.rate_limit_config.max_retries + 1):
             try:
                 response = self.inner.complete(messages)
             except RuntimeError as exc:
@@ -216,7 +218,7 @@ class RateLimitedAdapter:
                     # 不可重试错误：退回预扣的 TPM（没真正生成 token），RPM 不退（请求已打到服务端）
                     self.bucket.refund(rpm=0, tpm=reserved_tpm)
                     raise
-                if attempt == self._rl.max_retries:
+                if attempt == self.rate_limit_config.max_retries:
                     self.bucket.refund(rpm=0, tpm=reserved_tpm)
                     raise RateLimitExhausted(
                         f"Rate limit retries exhausted after {attempt + 1} attempts: {exc}"
@@ -225,7 +227,7 @@ class RateLimitedAdapter:
                 if retry_after is not None:
                     sleep_s = retry_after
                 else:
-                    sleep_s = min(backoff, self._rl.backoff_max_seconds)
+                    sleep_s = min(backoff, self.rate_limit_config.backoff_max_seconds)
                 # 抖动：避免多 worker 同步重试造成雪崩
                 time.sleep(sleep_s + random.uniform(0.0, 0.5))
                 backoff *= 2

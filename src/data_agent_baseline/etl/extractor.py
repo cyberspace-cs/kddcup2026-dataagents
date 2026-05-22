@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from data_agent_baseline._constants import ETL_SCRATCH_ROOT
 from data_agent_baseline.agents.model import (
+    ModelAdapter,
     ModelMessage,
     ModelResponse,
     OpenAIModelAdapter,
@@ -112,7 +113,7 @@ def _detect_prose_files(task: PublicTask) -> list[Path]:
 
 
 def _parse_knowledge_schema(
-    task: PublicTask, prose_path: Path, adapter: OpenAIModelAdapter
+    task: PublicTask, prose_path: Path, adapter: ModelAdapter
 ) -> tuple[list[str], str] | None:
     """Use LLM to extract column names and primary key from knowledge.md.
 
@@ -200,33 +201,49 @@ def _parse_knowledge_schema(
     return columns, pk
 
 
-def _make_text_adapter(model_adapter: Any) -> OpenAIModelAdapter:
-    """Build a plain-text adapter (no tools) from the existing adapter's credentials."""
-    model: str | None = getattr(model_adapter, "model", None)
-    api_base: str | None = getattr(model_adapter, "api_base", None)
-    api_key: str | None = getattr(model_adapter, "api_key", None)
-    backend_kind: Any = getattr(model_adapter, "backend_kind", None)
+def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
+    """Build a plain-text adapter (no tools) from the existing adapter's credentials.
 
-    if hasattr(model_adapter, "inner"):
-        inner = model_adapter.inner
-        model = model or getattr(inner, "model", None)
-        api_base = api_base or getattr(inner, "api_base", None)
-        api_key = api_key or getattr(inner, "api_key", None)
-        backend_kind = backend_kind or getattr(inner, "backend_kind", None)
+    When *model_adapter* is a ``RateLimitedAdapter``, the returned adapter is
+    also rate-limited — sharing the same token-bucket state files so ETL and
+    agent calls compete for the same RPM/TPM budget.
+    """
+    from data_agent_baseline.agents.rate_limit import RateLimitedAdapter
+
+    source = model_adapter
+    rate_limit_cfg: Any = None
+    rate_limit_key: str | None = None
+    if isinstance(model_adapter, RateLimitedAdapter):
+        source = model_adapter.inner
+        rate_limit_cfg = model_adapter.rate_limit_config
+        rate_limit_key = model_adapter.api_key
+
+    model: str | None = getattr(source, "model", None)
+    api_base: str | None = getattr(source, "api_base", None)
+    api_key: str | None = getattr(source, "api_key", None)
+    backend_kind: Any = getattr(source, "backend_kind", None)
 
     if not model or not api_base or not api_key:
         raise RuntimeError("Cannot extract model credentials from adapter for ETL.")
 
-    return OpenAIModelAdapter(
+    inner: ModelAdapter = OpenAIModelAdapter(
         model=model,
         api_base=api_base,
         api_key=api_key,
         temperature=0.1,
         enable_thinking=False,
         backend_kind=backend_kind,
-        max_retries=0,
+        max_retries=2,
         timeout=_ETL_HTTP_TIMEOUT,
     )
+
+    if rate_limit_cfg is not None and rate_limit_key:
+        return RateLimitedAdapter(
+            inner=inner,
+            api_key=rate_limit_key,
+            rate_limit=rate_limit_cfg,
+        )
+    return inner
 
 
 def _extract_code_block(text: str) -> str:
@@ -287,7 +304,7 @@ def _sample_paragraphs_by_section(text: str, per_section: int = 1) -> str:
 
 
 def _compress_chunk(
-    adapter: OpenAIModelAdapter,
+    adapter: ModelAdapter,
     chunk_text: str,
     schema_columns: list[str] | None = None,
     primary_key: str | None = None,
@@ -366,7 +383,7 @@ def _compress_chunk(
 
 
 def _compress_prose(
-    adapter: OpenAIModelAdapter,
+    adapter: ModelAdapter,
     text: str,
     schema_columns: list[str] | None = None,
     primary_key: str | None = None,
@@ -422,7 +439,7 @@ def _compress_prose(
 
 
 def _extract_csv_from_text(
-    adapter: OpenAIModelAdapter,
+    adapter: ModelAdapter,
     text: str,
     schema_columns: list[str] | None,
     question: str,
@@ -510,7 +527,7 @@ def _split_entity_chunks(
 
 
 def _direct_extract_csv(
-    adapter: OpenAIModelAdapter,
+    adapter: ModelAdapter,
     compressed_text: str,
     schema_columns: list[str] | None,
     question: str,
@@ -643,7 +660,7 @@ def _build_retry_prompt(code: str, error: str) -> str:
         Output ONLY the corrected Python code in a ```python``` block. No explanation.""")
 
 
-def _call_llm(adapter: OpenAIModelAdapter, prompt: str) -> str:
+def _call_llm(adapter: ModelAdapter, prompt: str) -> str:
     """Single LLM call."""
     messages = [
         ModelMessage(
@@ -928,7 +945,7 @@ def _validate_csv(csv_path: Path) -> tuple[list[str], int] | None:
 
 
 def extract_prose_file(
-    adapter: OpenAIModelAdapter,
+    adapter: ModelAdapter,
     path: Path,
     task: PublicTask,
     schema_columns: list[str] | None = None,
