@@ -174,6 +174,32 @@ def test_inspect_files_markdown_head(task_with_mixed_context: PublicTask) -> Non
     schema = md_entry["schema"]
     assert schema["line_count"] == 4
     assert schema["head"] == ["# Topic", "line 2", "line 3"]
+    # knowledge.md < 32KB → full_text preloaded
+    assert schema["knowledge_preloaded"] is True
+    assert "# Topic" in schema["full_text"]
+
+
+def test_inspect_files_non_knowledge_md_no_fulltext(tmp_path: Path) -> None:
+    """Non-knowledge .md files do not get full_text preloaded."""
+    task = _make_task(tmp_path)
+    (task.context_dir / "notes.md").write_text("some notes")
+    result = inspect_context_files(task)
+    entry = next(e for e in result["files"] if e["path"] == "notes.md")
+    assert "full_text" not in entry["schema"]
+    assert "knowledge_preloaded" not in entry["schema"]
+
+
+def test_inspect_files_oversized_knowledge_md_no_fulltext(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """knowledge.md exceeding size limit does not get preloaded."""
+    monkeypatch.setattr(filesystem, "_KNOWLEDGE_MD_PRELOAD_LIMIT", 10)
+    task = _make_task(tmp_path)
+    (task.context_dir / "knowledge.md").write_text("x" * 100)
+    result = inspect_context_files(task)
+    entry = next(e for e in result["files"] if e["path"] == "knowledge.md")
+    assert "full_text" not in entry["schema"]
+    assert "knowledge_preloaded" not in entry["schema"]
 
 
 def test_inspect_files_truncates_when_above_limit(tmp_path: Path) -> None:

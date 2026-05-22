@@ -59,6 +59,9 @@ _READ_DOC_KEYWORD_PARAGRAPH_BYTES = 2 * 1024
 _READ_DOC_KEYWORD_TOTAL_BYTES = 8 * 1024
 # 文档类（md/txt）保留的预览行数。
 _INSPECT_FILES_DOC_HEAD_LINES = 3
+# knowledge.md 全文预注入：小于此字节上限时直接嵌入 inspect_files 输出，
+# 省掉 agent 额外一步 read_doc 调用。
+_KNOWLEDGE_MD_PRELOAD_LIMIT = 32 * 1024
 # SQLite profiling: 超过此列数的表跳过 profiling（避免宽表 overhead）。
 _SQLITE_PROFILE_MAX_COLUMNS = 50
 # inspect_files 识别的 sqlite 扩展名集合。
@@ -881,10 +884,15 @@ def _format_for_inspect(rel_path: str, abs_path: Path) -> dict[str, Any]:
         base["schema"] = _summarize_sqlite(abs_path)
         return base
     if suffix in _DOC_EXTS:
-        # md/txt 用同一个 summarizer；format 字段保留具体扩展，方便模型选 read_doc 时直观
         base["format"] = "markdown" if suffix == ".md" else "text"
         base["supported"] = True
         base["schema"] = _summarize_doc(abs_path)
+        if abs_path.name.lower() == "knowledge.md" and size <= _KNOWLEDGE_MD_PRELOAD_LIMIT:
+            try:
+                base["schema"]["full_text"] = abs_path.read_text(errors="replace")
+                base["schema"]["knowledge_preloaded"] = True
+            except OSError:
+                pass
         return base
     base["format"] = suffix.lstrip(".") or "unknown"
     base["supported"] = False
