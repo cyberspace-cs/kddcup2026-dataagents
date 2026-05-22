@@ -28,6 +28,7 @@ from data_agent_baseline.agents.react import (
 )
 from data_agent_baseline.agents.runtime import AgentRuntimeState, StepRecord
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from data_agent_baseline.tools import handlers as _handlers
 from data_agent_baseline.tools.registry import create_default_tool_registry
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
@@ -427,6 +428,144 @@ def test_native_answer_verifier_rejection_stops_same_turn_tool_calls(
         "next_turn_answer",
     ]
     assert result.steps[0].raw_tool_calls == [inspect_raw, rejected_raw]
+
+
+def test_native_answer_verifier_fallback_uses_latest_valid_rejection(
+    task: PublicTask,
+) -> None:
+    first_call, first_raw = _build_tool_call(
+        call_id="first_answer",
+        name="answer",
+        arguments={"columns": ["result"], "rows": [["first"]]},
+    )
+    second_call, second_raw = _build_tool_call(
+        call_id="second_answer",
+        name="answer",
+        arguments={"columns": ["result"], "rows": [["second"]]},
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="submit first",
+                tool_calls=[first_call],
+                raw_response="submit first",
+                raw_tool_calls=[first_raw],
+            ),
+            ModelResponse(
+                content="submit second",
+                tool_calls=[second_call],
+                raw_response="submit second",
+                raw_tool_calls=[second_raw],
+            ),
+        ]
+    )
+    verifier_adapter = _ScriptedVerifierAdapter(
+        [
+            '{"verdict": "reject", "check": "row_count", "reason": "try again"}',
+            '{"verdict": "reject", "check": "row_count", "reason": "still suspicious"}',
+        ]
+    )
+    verifier = AnswerVerifier(model=verifier_adapter, max_rejections=2)
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+        protocol="native",
+        answer_verifier=verifier,
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert result.answer is not None
+    assert result.answer.rows == [["second"]]
+
+
+def test_native_answer_verifier_fallback_ignores_invalid_rejection(
+    task: PublicTask,
+) -> None:
+    bad_call, bad_raw = _build_tool_call(
+        call_id="bad_answer",
+        name="answer",
+        arguments={"columns": ["result"], "rows": [["too", "wide"]]},
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="submit malformed",
+                tool_calls=[bad_call],
+                raw_response="submit malformed",
+                raw_tool_calls=[bad_raw],
+            ),
+        ]
+    )
+    verifier_adapter = _ScriptedVerifierAdapter(
+        ['{"verdict": "reject", "check": "missing", "reason": "malformed"}']
+    )
+    verifier = AnswerVerifier(model=verifier_adapter, max_rejections=1)
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=3),
+        protocol="native",
+        answer_verifier=verifier,
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is False
+    assert result.answer is None
+    assert result.failure_reason == "Agent did not submit an answer within max_steps."
+
+
+def test_native_answer_verifier_fallback_from_csv_cleans_artifacts(
+    task: PublicTask,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_handlers, "_ANSWER_SCRATCH_ROOT", tmp_path)
+    answer_dir = tmp_path / task.task_id / "_answer"
+    csv_path = answer_dir / "answer.csv"
+    draft_path = answer_dir / "draft.csv"
+    answer_dir.mkdir(parents=True)
+    csv_path.write_text("result\nkept\n", encoding="utf-8")
+    draft_path.write_text("tmp\nignored\n", encoding="utf-8")
+
+    answer_call, answer_raw = _build_tool_call(
+        call_id="csv_answer",
+        name="answer",
+        arguments={"from_csv": str(csv_path)},
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="submit csv",
+                tool_calls=[answer_call],
+                raw_response="submit csv",
+                raw_tool_calls=[answer_raw],
+            ),
+        ]
+    )
+    verifier_adapter = _ScriptedVerifierAdapter(
+        ['{"verdict": "reject", "check": "row_count", "reason": "try again"}']
+    )
+    verifier = AnswerVerifier(model=verifier_adapter, max_rejections=1)
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=2),
+        protocol="native",
+        answer_verifier=verifier,
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert result.answer is not None
+    assert result.answer.rows == [["kept"]]
+    assert not csv_path.exists()
+    assert not draft_path.exists()
+    assert not answer_dir.exists()
 
 
 def test_native_answer_verifier_invalid_from_csv_type_falls_through_to_tool_error(

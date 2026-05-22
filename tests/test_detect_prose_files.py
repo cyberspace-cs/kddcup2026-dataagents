@@ -65,6 +65,19 @@ def test_short_file_excluded(tmp_path: Path) -> None:
     assert result == []
 
 
+def test_force_includes_short_non_empty_but_excludes_empty(tmp_path: Path) -> None:
+    task = _make_task(tmp_path)
+    short = task.context_dir / "short.md"
+    empty = task.context_dir / "empty.md"
+    _write_lines(short, 1)
+    _write_lines(empty, 0)
+
+    result = _detect_prose_files(task, force=True)
+
+    assert short in result
+    assert empty not in result
+
+
 def test_no_duplicates_when_file_in_both(tmp_path: Path) -> None:
     """doc/ takes priority; same file should not appear twice."""
     task = _make_task(tmp_path)

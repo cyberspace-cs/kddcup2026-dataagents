@@ -15,8 +15,11 @@ import pathlib
 import re
 import shutil
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
+
+from pydantic import ValidationError
 
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
 from data_agent_baseline.retrieval.index import (
@@ -426,3 +429,63 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
         is_terminal=True,
         answer=answer,
     )
+
+
+def build_answer_table_without_side_effects(
+    task: PublicTask,
+    arguments: dict[str, Any],
+) -> AnswerTable | None:
+    """Validate and normalize raw answer arguments without committing the answer.
+
+    This mirrors the structural checks and table normalization in ``handle_answer``,
+    but intentionally skips artifact cleanup and terminal result construction.  It
+    is used only as a last-chance fallback for verifier-rejected submissions.
+    """
+    try:
+        args = AnswerInput.model_validate(arguments)
+    except ValidationError:
+        return None
+
+    if args.from_csv is not None:
+        path = pathlib.Path(args.from_csv).expanduser()
+        if not path.is_absolute():
+            return None
+        try:
+            columns, rows, _dtypes = parse_answer_csv(path)
+        except (ValueError, OSError):
+            return None
+        columns, rows, _pruned_cols = _prune_null_columns(columns, rows)
+        return AnswerTable(columns=columns, rows=rows)
+
+    artifact_path = _answer_dir_for(task) / "answer.csv"
+    try:
+        if artifact_path.exists() and artifact_path.stat().st_size > 0:
+            return None
+    except OSError:
+        return None
+
+    columns = list(args.columns)
+    rows = [list(row) for row in args.rows]
+    columns, rows, _pruned_cols = _prune_null_columns(columns, rows)
+    return AnswerTable(columns=columns, rows=rows)
+
+
+def cleanup_answer_artifacts(task: PublicTask, arguments: dict[str, Any]) -> None:
+    """Best-effort cleanup after promoting a fallback answer.
+
+    A fallback answer skips ``handle_answer`` by design, so mirror its successful
+    submission cleanup here: remove the submitted CSV when present and clear the
+    task answer scratch directory.
+    """
+    try:
+        args = AnswerInput.model_validate(arguments)
+    except ValidationError:
+        return
+
+    if args.from_csv is not None:
+        path = pathlib.Path(args.from_csv).expanduser()
+        if path.is_absolute():
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
+
+    shutil.rmtree(_answer_dir_for(task), ignore_errors=True)

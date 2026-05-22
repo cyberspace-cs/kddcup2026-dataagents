@@ -82,8 +82,12 @@ class ETLResult:
     row_count: int
 
 
-def _detect_prose_files(task: PublicTask) -> list[Path]:
-    """Find .md/.txt files in context/doc/ and context/ root that exceed _MIN_LINES."""
+def _detect_prose_files(task: PublicTask, *, force: bool = False) -> list[Path]:
+    """Find .md/.txt files in context/doc/ and context/ root that exceed _MIN_LINES.
+
+    When *force* is True the line-count threshold is skipped — any non-empty
+    prose file qualifies.
+    """
     seen: set[Path] = set()
     results: list[Path] = []
 
@@ -104,8 +108,11 @@ def _detect_prose_files(task: PublicTask) -> list[Path]:
                     line_count = sum(1 for _ in handle)
             except OSError:
                 continue
-            if line_count >= _MIN_LINES:
-                results.append(f)
+            if line_count == 0:
+                continue
+            if not force and line_count < _MIN_LINES:
+                continue
+            results.append(f)
 
     _scan_dir(task.context_dir / "doc")
     _scan_dir(task.context_dir)
@@ -1108,7 +1115,8 @@ def run_etl_for_task(
     Returns None if no large prose files found. Non-fatal: callers should
     catch exceptions and fall back to manual parsing.
     """
-    prose_files = _detect_prose_files(task)
+    force_etl = task.difficulty.lower() in {"hard", "extreme"}
+    prose_files = _detect_prose_files(task, force=force_etl)
     if not prose_files:
         return None
 

@@ -46,12 +46,15 @@ things the question asks you to output and compare with the submitted
 column count.
 
 Check 3 — ROW COUNT sanity:
+- Empty result (0 rows) → always flag.
 - "How many" / "what percentage" / "what is the average/ratio/count"
   → expect exactly 1 row.  Flag if row_count != 1.
-- "Who is the …" / "which … is the most" (singular) → expect 1 row.
-- "List all" / "who are the" (plural) → expect multiple rows.
-  Flag if row_count == 1 when the question clearly expects many.
-- Empty result (0 rows) → always flag.
+- Only flag row_count == 1 as too few when the question EXPLICITLY
+  uses plural list language ("list all", "who are the", "which ones").
+  Do NOT flag single-row answers when the question uses singular
+  phrasing ("the player's", "which driver", "who is the", "calculate
+  for the") — those naturally expect 1 row.
+- When in doubt about expected plurality, say "ok".
 
 Check 4 — VALUE sanity (only flag when clearly wrong):
 - A percentage expressed as 0-100 should not exceed 100 or be negative.
@@ -84,10 +87,10 @@ class AnswerVerifier:
 
     def verify(self, question: str, arguments: dict[str, Any]) -> str | None:
         """Return a rejection message for this answer tool call, or None."""
-        preview = preview_answer_table(arguments)
-        if preview is None:
+        result = preview_answer_table(arguments)
+        if result is None:
             return None
-        columns, rows = preview
+        columns, rows = result
         return verify_answer(self.model, question, columns, rows)
 
 

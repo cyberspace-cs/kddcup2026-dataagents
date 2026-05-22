@@ -49,7 +49,11 @@ from data_agent_baseline.agents.recorder import (
     record_step_event,
 )
 from data_agent_baseline.agents.runtime import AgentRunResult, AgentRuntimeState, StepRecord
-from data_agent_baseline.benchmark.schema import PublicTask
+from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
+from data_agent_baseline.tools.handlers import (
+    build_answer_table_without_side_effects,
+    cleanup_answer_artifacts,
+)
 from data_agent_baseline.tools.registry import ToolExecutionResult, ToolRegistry
 
 # 公开再导出（向后兼容现有 tests/agents/__init__ 的 import 路径）
@@ -309,6 +313,8 @@ class ReActAgent:
         budget_warning_fired = False
         last_step_retries = 0
         verifier_rejections_used = 0
+        fallback_answer: AnswerTable | None = None
+        fallback_answer_arguments: dict[str, Any] | None = None
 
         while effective_turns < self.config.max_steps:
             turn_index += 1
@@ -516,6 +522,13 @@ class ReActAgent:
                     rejection = self.answer_verifier.verify(task.question, tool_call.arguments)
                     if rejection is not None:
                         verifier_rejections_used += 1
+                        candidate = build_answer_table_without_side_effects(
+                            task,
+                            tool_call.arguments,
+                        )
+                        if candidate is not None and candidate.columns and candidate.rows:
+                            fallback_answer = candidate
+                            fallback_answer_arguments = dict(tool_call.arguments)
                         if is_native:
                             # Native replay requires one tool message for every assistant
                             # tool_call. If a rejection cuts the turn short, omit later
@@ -616,6 +629,13 @@ class ReActAgent:
         # 循环正常结束但没拿到 answer：判为 max_steps 耗尽
         if state.answer is None and state.failure_reason is None:
             state.failure_reason = "Agent did not submit an answer within max_steps."
+
+        # Fallback: use the latest valid verifier-rejected answer rather than scoring 0.
+        if state.answer is None and fallback_answer is not None:
+            if fallback_answer_arguments is not None:
+                cleanup_answer_artifacts(task, fallback_answer_arguments)
+            state.answer = fallback_answer
+            state.failure_reason = None
 
         return AgentRunResult(
             task_id=task.task_id,
