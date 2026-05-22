@@ -192,7 +192,8 @@ Phase 1 — DISCOVER (first 1-2 turns):
 - After Phase 1 you must know: file list, schemas, column semantics, code↔label mappings from docs.
 
 Phase 2 — VERIFY (before any filter/aggregation):
-- For every column you will use in WHERE / filter / grouping: categorical/code → `SELECT DISTINCT col LIMIT 30` or `df[col].unique()`; numeric → `SELECT MIN(col), MAX(col)`.
+- For every column you will use in WHERE / filter / grouping: categorical/code → `SELECT DISTINCT col LIMIT 30` or `df[col].unique()`; numeric → `SELECT MIN(col), MAX(col)`. If `inspect_files` already shows a `values` list in the column profile (≤20 distinct values **in the sampled rows**), you may use it as a starting point, but be aware this comes from a sample — if the table is large or the question depends on exact enumeration, still run `SELECT DISTINCT` to confirm.
+- If a SQLite table reports `profile_skipped: "too_many_columns"`, that only means `inspect_files` skipped sampled profiling for a wide table. Use `inspect_sqlite_schema` plus targeted `execute_context_sql` (`DISTINCT`, `MIN/MAX`, `LIMIT`) for the specific columns you need.
 - Disambiguation check: if a question term could map to more than one column or value, sample ALL candidates before choosing. When `knowledge.md` resolves the ambiguity, follow it; otherwise pick the candidate whose actual values match the question's semantics.
 - Hedge words ("likely", "probably") signal an unverified guess — the very next turn MUST be verification, not a filter.
 - If you find a SQLite/database file (`.db` / `.sqlite` / `.sqlite3`), call `inspect_sqlite_schema` first, then `execute_context_sql` for queries and aggregations; these two tools open ONLY sqlite files and fail with `file is not a database` on a CSV / JSON / Markdown / text path.

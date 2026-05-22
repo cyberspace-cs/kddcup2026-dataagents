@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
 import sqlite3
@@ -40,7 +41,7 @@ def _write_csv(path: Path, header: list[str], rows: list[list[str]]) -> None:
 
 
 def _write_sqlite(path: Path) -> None:
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn:
         conn.execute("CREATE TABLE patients (id INTEGER PRIMARY KEY, name TEXT)")
         conn.execute("CREATE TABLE visits (id INTEGER, patient_id INTEGER, date TEXT)")
         conn.execute("INSERT INTO patients (id, name) VALUES (1, 'a')")
@@ -126,8 +127,15 @@ def test_inspect_files_sqlite_tables(task_with_mixed_context: PublicTask) -> Non
     assert set(tables.keys()) == {"patients", "visits"}
     assert tables["patients"]["columns"] == ["id", "name"]
     assert tables["patients"]["row_count"] == 1
+    # patients has rows → profiling present
+    assert tables["patients"]["dtypes"] == ["int", "str"]
+    assert "profile" in tables["patients"]
+    assert tables["patients"]["profile_sample_rows"] == 1
+    # visits has 0 rows → no profiling
     assert tables["visits"]["columns"] == ["id", "patient_id", "date"]
     assert tables["visits"]["row_count"] == 0
+    assert "dtypes" not in tables["visits"]
+    assert "profile" not in tables["visits"]
 
 
 def test_inspect_files_xlsx_marked_unsupported(task_with_mixed_context: PublicTask) -> None:
@@ -185,6 +193,44 @@ def test_inspect_files_empty_context(tmp_path: Path) -> None:
     assert result["files"] == []
     assert result["unsupported_formats"] == []
     assert result["truncated"] is False
+
+
+def test_inspect_files_sqlite_profile_values(tmp_path: Path) -> None:
+    """SQLite profiling: multi-row table gets min/max for int, values for categorical."""
+    task = _make_task(tmp_path)
+    db_path = task.context_dir / "test.db"
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("CREATE TABLE items (id INTEGER, category TEXT, price REAL)")
+        conn.executemany(
+            "INSERT INTO items VALUES (?, ?, ?)",
+            [(1, "A", 10.5), (2, "B", 20.0), (3, "A", 15.5)],
+        )
+        conn.commit()
+    result = inspect_context_files(task)
+    entry = next(e for e in result["files"] if e["path"] == "test.db")
+    tbl = entry["schema"]["tables"]["items"]
+    assert tbl["dtypes"] == ["int", "str", "float"]
+    assert tbl["profile_sample_rows"] == 3
+    assert tbl["profile"][0]["min"] == 1
+    assert tbl["profile"][0]["max"] == 3
+    assert tbl["profile"][1]["values"] == ["A", "B"]
+    assert tbl["profile"][2]["min"] == 10.5
+    assert tbl["profile"][2]["max"] == 20.0
+
+
+def test_inspect_files_sqlite_zero_rows_no_profile(tmp_path: Path) -> None:
+    """Empty table: no dtypes/profile keys."""
+    task = _make_task(tmp_path)
+    db_path = task.context_dir / "empty.sqlite"
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("CREATE TABLE t (a INTEGER, b TEXT)")
+        conn.commit()
+    result = inspect_context_files(task)
+    entry = next(e for e in result["files"] if e["path"] == "empty.sqlite")
+    tbl = entry["schema"]["tables"]["t"]
+    assert tbl["row_count"] == 0
+    assert "dtypes" not in tbl
+    assert "profile" not in tbl
 
 
 def test_inspect_files_oversized_json_via_streaming(

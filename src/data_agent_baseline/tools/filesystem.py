@@ -59,6 +59,8 @@ _READ_DOC_KEYWORD_PARAGRAPH_BYTES = 2 * 1024
 _READ_DOC_KEYWORD_TOTAL_BYTES = 8 * 1024
 # 文档类（md/txt）保留的预览行数。
 _INSPECT_FILES_DOC_HEAD_LINES = 3
+# SQLite profiling: 超过此列数的表跳过 profiling（避免宽表 overhead）。
+_SQLITE_PROFILE_MAX_COLUMNS = 50
 # inspect_files 识别的 sqlite 扩展名集合。
 _SQLITE_EXTS = frozenset({".sqlite", ".sqlite3", ".db"})
 # 直接走 read_csv 流的 CSV 扩展。
@@ -673,50 +675,26 @@ def _classify_dtype(values: list[str]) -> str:
     return "str"
 
 
-def _summarize_csv(path: Path) -> dict[str, Any]:
-    """流式读取 CSV：拿 header + 前 N 行做 dtype 推断 + 列级 profiling + 累加总行数。
-
-    用 `csv.reader` 逐行迭代，避免一次性 list(reader) 撑爆内存——
-    inspect_files 会被一次性扫描整个 context，单文件大小不可控。
-    """
-    with path.open(newline="") as handle:
-        reader = csv.reader(handle)
-        try:
-            header = next(reader)
-        except StopIteration:
-            return {
-                "columns": [],
-                "dtypes": [],
-                "row_count": 0,
-                "dtypes_confidence": "approx",
-            }
-        sample_rows: list[list[str]] = []
-        profile_rows: list[list[str]] = []
-        row_count = 0
-        for row in reader:
-            row_count += 1
-            if len(sample_rows) < _INSPECT_FILES_DTYPE_SAMPLE:
-                sample_rows.append(row)
-            if len(profile_rows) < _INSPECT_FILES_PROFILE_SAMPLE:
-                profile_rows.append(row)
-    # 按列重组样本：每列取前 N 个值，长度不齐时缺位用空串
-    column_count = len(header)
+def _profile_columns(
+    columns: list[str],
+    sample_rows: list[list[str]],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """从字符串化的样本行推断 dtypes 和列级 profile。返回 (dtypes, profile)。"""
+    column_count = len(columns)
+    dtype_sample = sample_rows[:_INSPECT_FILES_DTYPE_SAMPLE]
     dtypes: list[str] = []
-    for column_index in range(column_count):
-        column_values = [
-            row[column_index] if column_index < len(row) else "" for row in sample_rows
-        ]
-        dtypes.append(_classify_dtype(column_values))
+    for col_idx in range(column_count):
+        col_vals = [row[col_idx] if col_idx < len(row) else "" for row in dtype_sample]
+        dtypes.append(_classify_dtype(col_vals))
 
-    # 列级 profiling：基于 profile_rows 生成值域/枚举/null 率
     profile: list[dict[str, Any]] = []
-    profile_count = len(profile_rows)
-    for column_index in range(column_count):
-        col_values = [row[column_index] if column_index < len(row) else "" for row in profile_rows]
+    profile_count = len(sample_rows)
+    for col_idx in range(column_count):
+        col_values = [row[col_idx] if col_idx < len(row) else "" for row in sample_rows]
         null_count = sum(1 for v in col_values if v.strip() == "")
         null_rate = round(null_count / profile_count, 3) if profile_count > 0 else 0.0
         col_profile: dict[str, Any] = {"null_rate": null_rate}
-        col_dtype = dtypes[column_index] if column_index < len(dtypes) else "str"
+        col_dtype = dtypes[col_idx] if col_idx < len(dtypes) else "str"
 
         if col_dtype in ("int", "float"):
             numeric_vals: list[float] = []
@@ -742,13 +720,41 @@ def _summarize_csv(path: Path) -> dict[str, Any]:
 
         profile.append(col_profile)
 
+    return dtypes, profile
+
+
+def _summarize_csv(path: Path) -> dict[str, Any]:
+    """流式读取 CSV：拿 header + 前 N 行做 dtype 推断 + 列级 profiling + 累加总行数。
+
+    用 `csv.reader` 逐行迭代，避免一次性 list(reader) 撑爆内存——
+    inspect_files 会被一次性扫描整个 context，单文件大小不可控。
+    """
+    with path.open(newline="") as handle:
+        reader = csv.reader(handle)
+        try:
+            header = next(reader)
+        except StopIteration:
+            return {
+                "columns": [],
+                "dtypes": [],
+                "row_count": 0,
+                "dtypes_confidence": "approx",
+            }
+        sample_rows: list[list[str]] = []
+        row_count = 0
+        for row in reader:
+            row_count += 1
+            if len(sample_rows) < _INSPECT_FILES_PROFILE_SAMPLE:
+                sample_rows.append(row)
+    dtypes, profile = _profile_columns(header, sample_rows)
+
     return {
         "columns": header,
         "dtypes": dtypes,
         "row_count": row_count,
         "dtypes_confidence": "approx",
         "profile": profile,
-        "profile_sample_rows": min(profile_count, row_count),
+        "profile_sample_rows": min(len(sample_rows), row_count),
     }
 
 
@@ -803,11 +809,10 @@ def _summarize_doc(path: Path) -> dict[str, Any]:
 
 
 def _summarize_sqlite(path: Path) -> dict[str, Any]:
-    """sqlite/db：返回 `{"tables": {table_name: {"columns": [...], "row_count": N}}}` 形态。
+    """sqlite/db：返回每张表的 columns + row_count + 列级 profile。
 
-    `inspect_sqlite_schema` 会回传完整 CREATE SQL，inspect_files 全量扫描时太
-    费 token。这里单连接直接走 sqlite_master + PRAGMA table_info 抽列名，
-    显式 close 连接避免 ResourceWarning。
+    profiling 与 CSV 共享 `_profile_columns` helper：采样前 N 行，
+    每个 cell 转 str 后走同一套 null_rate / min+max / distinct values 逻辑。
     """
     import sqlite3
 
@@ -828,7 +833,24 @@ def _summarize_sqlite(path: Path) -> dict[str, Any]:
             columns = [row[1] for row in cursor.fetchall()]
             count_cursor = conn.execute(f'SELECT COUNT(*) FROM "{quoted}"')
             row_count = count_cursor.fetchone()[0]
-            tables[name] = {"columns": columns, "row_count": row_count}
+            table_info: dict[str, Any] = {"columns": columns, "row_count": row_count}
+
+            if row_count == 0 or len(columns) > _SQLITE_PROFILE_MAX_COLUMNS:
+                if len(columns) > _SQLITE_PROFILE_MAX_COLUMNS:
+                    table_info["profile_skipped"] = "too_many_columns"
+                tables[name] = table_info
+                continue
+
+            sample_cursor = conn.execute(
+                f'SELECT * FROM "{quoted}" LIMIT {_INSPECT_FILES_PROFILE_SAMPLE}'
+            )
+            raw_rows = sample_cursor.fetchall()
+            sample_rows = [[str(v) if v is not None else "" for v in row] for row in raw_rows]
+            dtypes, profile = _profile_columns(columns, sample_rows)
+            table_info["dtypes"] = dtypes
+            table_info["profile"] = profile
+            table_info["profile_sample_rows"] = len(sample_rows)
+            tables[name] = table_info
     finally:
         conn.close()
     return {"tables": tables}
