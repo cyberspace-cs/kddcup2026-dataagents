@@ -41,6 +41,7 @@ from data_agent_baseline.tools.handlers import (
     handle_read_doc,
     handle_read_json,
     handle_search_context,
+    handle_validate_answer,
 )
 from data_agent_baseline.tools.inputs import (
     ANSWER_SCHEMA,
@@ -54,6 +55,7 @@ from data_agent_baseline.tools.inputs import (
     READ_DOC_SCHEMA,
     READ_JSON_SCHEMA,
     SEARCH_CONTEXT_SCHEMA,
+    VALIDATE_ANSWER_SCHEMA,
     AnswerInput,
     ExecuteContextSqlInput,
     ExecutePythonInput,
@@ -64,6 +66,7 @@ from data_agent_baseline.tools.inputs import (
     ReadDocInput,
     ReadJsonInput,
     SearchContextInput,
+    ValidateAnswerInput,
 )
 from data_agent_baseline.tools.schema_normalize import normalize_for_vllm
 
@@ -116,6 +119,7 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "inspect_sqlite_schema": InspectSqliteSchemaInput,
     "execute_context_sql": ExecuteContextSqlInput,
     "execute_python": ExecutePythonInput,
+    "validate_answer": ValidateAnswerInput,
     "answer": AnswerInput,
 }
 
@@ -253,7 +257,8 @@ def create_default_tool_registry() -> ToolRegistry:
     7. inspect_sqlite_schema  sqlite 表结构
     8. execute_context_sql    sqlite 只读 SQL
     9. execute_python         子进程执行任意 Python
-    10. answer                终止 + 提交答案（唯一终止工具）
+    10. validate_answer       提交前 sanity check（非终止）
+    11. answer                终止 + 提交答案（唯一终止工具）
 
     `input_schema` 里的示例值是"演示"形式（不是真实 JSON Schema），模型看到
     `"columns": ["column_name"]` 会按模式填自己的数据，实测比严谨 schema 更不易出错。
@@ -406,6 +411,19 @@ def create_default_tool_registry() -> ToolRegistry:
             input_schema=ExecutePythonInput.example_value(),
             json_schema=EXECUTE_PYTHON_SCHEMA,
             handler=handle_execute_python,
+        ),
+        ToolDefinition(
+            name="validate_answer",
+            description=(
+                "Use BEFORE calling `answer` to sanity-check the answer table. "
+                "Returns warnings (e.g., leaked ID columns, constant-value columns, "
+                "empty table) so you can fix issues before final submission. "
+                "Pass the same `columns`/`rows` you plan to submit, or "
+                "`from_csv` pointing at the artifact CSV."
+            ),
+            input_schema=ValidateAnswerInput.example_value(),
+            json_schema=VALIDATE_ANSWER_SCHEMA,
+            handler=handle_validate_answer,
         ),
         ToolDefinition(
             name="answer",
