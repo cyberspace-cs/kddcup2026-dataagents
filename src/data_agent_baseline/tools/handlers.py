@@ -206,7 +206,7 @@ def _coerce_row(row: list[str], dtypes: list[str]) -> list[Any]:
     return out
 
 
-def _parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], list[str]]:
+def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], list[str]]:
     """读取并类型化一份 answer artifact CSV。
 
     设计意图：模型若用 `pandas.to_csv` 写 artifact，所有 cell 都会被序列化为字符串。
@@ -328,7 +328,7 @@ def handle_validate_answer(task: PublicTask, args: ValidateAnswerInput) -> ToolE
                 f"from_csv must be an absolute path, got '{args.from_csv}' "
                 "(hint: use os.environ['DABENCH_ANSWER_DIR'] to build the path)"
             )
-        columns, rows, _dtypes = _parse_answer_csv(path)
+        columns, rows, _dtypes = parse_answer_csv(path)
     else:
         columns = list(args.columns)
         rows = [list(row) for row in args.rows]
@@ -354,7 +354,7 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
       `ToolErrorEvent`，ReAct 循环续跑让模型 retry
 
     提交成功路径上会清理整个 `_answer/` 目录：模型在 `execute_python` 里写出的
-    artifact 此时已被 `_parse_answer_csv` 全量读入内存（或 inline 路径压根没用到），
+    artifact 此时已被 `parse_answer_csv` 全量读入内存（或 inline 路径压根没用到），
     保留磁盘文件只会污染输入树（曾被误读为参考答案）。`DABENCH_ANSWER_DIR` 还可能
     存放草稿/备份/日志等非 answer.csv 文件，单独 unlink 主文件不够，整个目录 rmtree。
 
@@ -375,7 +375,7 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
                 f"from_csv must be an absolute path, got '{args.from_csv}' "
                 "(hint: use os.environ['DABENCH_ANSWER_DIR'] to build the path)"
             )
-        columns, rows, dtypes = _parse_answer_csv(path)
+        columns, rows, dtypes = parse_answer_csv(path)
         columns, rows, pruned_cols = _prune_null_columns(columns, rows)
         answer = AnswerTable(columns=columns, rows=rows)
         path.unlink(missing_ok=True)

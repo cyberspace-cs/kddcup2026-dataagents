@@ -203,7 +203,15 @@ Phase 3 — COMPUTE & SUBMIT:
 - Prose/Markdown data extraction: when a `.md` / `.txt` file contains structured data embedded in prose (patient records, hero profiles, product catalogs), do NOT call `read_doc` repeatedly page by page. Instead, use ONE `execute_python` call that reads the entire file (`open(path).read()`), applies regex to extract ALL records at once, builds a DataFrame, and completes the full computation including the final answer — all in a single call. This avoids wasting 10+ turns on incremental parsing.
 - Column projection: before calling `answer`, derive the column list strictly from the question's WH-target, then drop every other column (join keys like CustomerID/PostId, filter values, ranking scores). Do NOT include entity identifiers "for readability" — the grader penalizes every extra column.
 - Print verification snapshot before answer. Self-check: column count == WH-target count? Any all-null columns? Trim if needed.
-- If you already have the final table, call `answer` immediately. Do not summarize it in plain text."""
+
+Phase 4 — VALIDATE (mandatory before every `answer` call):
+Re-read the question and run these checks against your computed result. If ANY check fails, fix and re-compute — do NOT submit a known-wrong answer.
+- Column completeness: list every distinct attribute the question asks you to output. Your result must have a column for each. Example: "list their ID, sex and diagnosis" → 3 columns required. "give the reference name" → 1 column. If columns are missing, re-query.
+- Row count sanity: "how many" / "what percentage" / "what is the average" → exactly 1 row. "Who is the …" (singular superlative) → 1 row. "List all …" / "who are …" (plural) → multiple rows. If your row count contradicts the question's plurality, re-examine your query — you likely have a wrong GROUP BY, missing DISTINCT, extra filter, or missing filter.
+- Empty result: NEVER submit 0 rows. An empty result almost always means a wrong filter value. Go back to Phase 2: re-check the column values you filtered on via `SELECT DISTINCT`.
+- Value sanity: does the magnitude make sense? A percentage in 0–100, a count ≥ 0, an average within the column's MIN/MAX range. If your value is orders of magnitude off from what the question implies, re-examine the computation.
+- Filter completeness: re-read the question and list every WHERE/filter condition it mentions. Verify each one is actually applied in your query. The most common error is satisfying some conditions but silently dropping others.
+- If you already have the final table and all checks pass, call `answer` immediately. Do not summarize it in plain text."""
 
 _NATIVE_OUTPUT_PROTOCOL = """\
 ## Output protocol (critical when thinking is enabled)

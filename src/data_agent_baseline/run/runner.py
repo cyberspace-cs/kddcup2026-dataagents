@@ -47,6 +47,7 @@ from data_agent_baseline.run.runner_subprocess import (
 )
 
 if TYPE_CHECKING:
+    from data_agent_baseline.agents.answer_verifier import AnswerVerifier
     from data_agent_baseline.agents.model import ModelAdapter
     from data_agent_baseline.tools.registry import ToolRegistry
 
@@ -76,11 +77,12 @@ def run_single_task(
     run_output_dir: Path,
     model: ModelAdapter | None = None,
     tools: ToolRegistry | None = None,
+    answer_verifier: AnswerVerifier | None = None,
 ) -> TaskRunArtifacts:
     """对外：跑单个任务并落盘产物。
 
-    model/tools 的注入决定了隔离强度：
-    - 两者都为 None（默认）：走 `run_single_task_with_timeout`（子进程 + 硬超时）
+    model/tools/answer_verifier 的注入决定了隔离强度：
+    - 全部为 None（默认）：走 `run_single_task_with_timeout`（子进程 + 硬超时）
     - 任一不为 None：走 `run_single_task_core`（当前进程，复用共享资源；
       用于 workers=1 或测试场景）
 
@@ -110,7 +112,7 @@ def run_single_task(
         config = pin_key_on_config(config, task_index=0, effective_run_id=effective_run_id)
 
     started_at = perf_counter()
-    if model is None and tools is None:
+    if model is None and tools is None and answer_verifier is None:
         # 子进程路径：预先确定 trace.json 位置，供子进程增量写 + 父进程超时时读
         partial_trace_path = run_output_dir / task_id / "trace.json"
         run_result = run_single_task_with_timeout(
@@ -119,7 +121,13 @@ def run_single_task(
             partial_trace_path=partial_trace_path,
         )
     else:
-        run_result = run_single_task_core(task_id=task_id, config=config, model=model, tools=tools)
+        run_result = run_single_task_core(
+            task_id=task_id,
+            config=config,
+            model=model,
+            tools=tools,
+            answer_verifier=answer_verifier,
+        )
     # end-to-end 耗时给 trace.json 记一笔，便于后续做性能分析
     run_result["e2e_elapsed_seconds"] = round(perf_counter() - started_at, 3)
     return write_task_outputs(task_id, run_output_dir, run_result)
@@ -212,6 +220,7 @@ def run_benchmark(
                     run_output_dir=run_output_dir,
                     model=base_app.model_adapter,
                     tools=base_app.registry,
+                    answer_verifier=base_app.answer_verifier,
                 )
                 task_artifacts.append(artifact)
                 if progress_callback is not None:

@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from data_agent_baseline.agents.answer_verifier import AnswerVerifier
 from data_agent_baseline.agents.model import (
+    ModelMessage,
     ModelResponse,
     ModelToolCall,
     TokenUsage,
@@ -63,6 +65,19 @@ def _build_tool_call(
 
 def _default_tool_names() -> set[str]:
     return set(create_default_tool_registry().definitions)
+
+
+class _ScriptedVerifierAdapter:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+        self.messages: list[list[ModelMessage]] = []
+
+    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+        self.messages.append(messages)
+        if not self.responses:
+            raise RuntimeError("No verifier responses remaining.")
+        text = self.responses.pop(0)
+        return ModelResponse(content=text, raw_response=text)
 
 
 def test_reasoning_tool_call_draft_parser_handles_multiline_python() -> None:
@@ -292,6 +307,176 @@ def test_native_answer_short_circuits_same_turn(task: PublicTask) -> None:
     assert len(result.steps) == 1
     assert result.steps[0].action == "answer"
     assert result.steps[0].tool_call_id == "first_answer"
+
+
+def test_native_answer_verifier_rejects_once_then_allows_resubmit(task: PublicTask) -> None:
+    first_answer_call, first_answer_raw = _build_tool_call(
+        call_id="first_answer",
+        name="answer",
+        arguments={"columns": ["result", "extra"], "rows": [["v", "leak"]]},
+    )
+    second_answer_call, second_answer_raw = _build_tool_call(
+        call_id="second_answer",
+        name="answer",
+        arguments={"columns": ["result", "extra"], "rows": [["v", "leak"]]},
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="submit first",
+                tool_calls=[first_answer_call],
+                raw_response="submit first",
+                raw_tool_calls=[first_answer_raw],
+            ),
+            ModelResponse(
+                content="submit again",
+                tool_calls=[second_answer_call],
+                raw_response="submit again",
+                raw_tool_calls=[second_answer_raw],
+            ),
+        ]
+    )
+    verifier_adapter = _ScriptedVerifierAdapter(
+        [('{"verdict": "reject", "check": "extra", "reason": "extra column should be removed"}')]
+    )
+    verifier = AnswerVerifier(model=verifier_adapter, max_rejections=1)
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+        protocol="native",
+        answer_verifier=verifier,
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert len(verifier_adapter.messages) == 1
+    verifier_user_message = verifier_adapter.messages[0][1].content
+    assert task.question in verifier_user_message
+    assert 'COLUMNS: ["result", "extra"]' in verifier_user_message
+    assert "TOTAL ROWS: 1" in verifier_user_message
+    assert len(result.steps) == 2
+    rejected_step, submitted_step = result.steps
+    assert rejected_step.action == "answer"
+    assert "answer_rejected" in rejected_step.observation["content"]
+    assert submitted_step.action == "answer"
+    assert result.answer is not None
+    assert result.answer.columns == ["result", "extra"]
+
+
+def test_native_answer_verifier_rejection_stops_same_turn_tool_calls(
+    task: PublicTask,
+) -> None:
+    inspect_call, inspect_raw = _build_tool_call(
+        call_id="inspect_first",
+        name="inspect_files",
+        arguments={},
+    )
+    rejected_call, rejected_raw = _build_tool_call(
+        call_id="rejected_answer",
+        name="answer",
+        arguments={"columns": ["result", "extra"], "rows": [["bad", "leak"]]},
+    )
+    same_turn_call, same_turn_raw = _build_tool_call(
+        call_id="same_turn_answer",
+        name="answer",
+        arguments={"columns": ["result"], "rows": [["same_turn_should_not_submit"]]},
+    )
+    next_turn_call, next_turn_raw = _build_tool_call(
+        call_id="next_turn_answer",
+        name="answer",
+        arguments={"columns": ["result"], "rows": [["fresh_turn_submit"]]},
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="submit twice",
+                tool_calls=[inspect_call, rejected_call, same_turn_call],
+                raw_response="submit twice",
+                raw_tool_calls=[inspect_raw, rejected_raw, same_turn_raw],
+            ),
+            ModelResponse(
+                content="submit after feedback",
+                tool_calls=[next_turn_call],
+                raw_response="submit after feedback",
+                raw_tool_calls=[next_turn_raw],
+            ),
+        ]
+    )
+    verifier_adapter = _ScriptedVerifierAdapter(
+        [('{"verdict": "reject", "check": "extra", "reason": "extra column should be removed"}')]
+    )
+    verifier = AnswerVerifier(model=verifier_adapter, max_rejections=1)
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+        protocol="native",
+        answer_verifier=verifier,
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert result.answer is not None
+    assert result.answer.rows == [["fresh_turn_submit"]]
+    assert [step.tool_call_id for step in result.steps] == [
+        "inspect_first",
+        "rejected_answer",
+        "next_turn_answer",
+    ]
+    assert result.steps[0].raw_tool_calls == [inspect_raw, rejected_raw]
+
+
+def test_native_answer_verifier_invalid_from_csv_type_falls_through_to_tool_error(
+    task: PublicTask,
+) -> None:
+    bad_call, bad_raw = _build_tool_call(
+        call_id="bad_answer",
+        name="answer",
+        arguments={"from_csv": []},
+    )
+    good_call, good_raw = _build_tool_call(
+        call_id="good_answer",
+        name="answer",
+        arguments={"columns": ["result"], "rows": [["ok"]]},
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="bad submit",
+                tool_calls=[bad_call],
+                raw_response="bad submit",
+                raw_tool_calls=[bad_raw],
+            ),
+            ModelResponse(
+                content="good submit",
+                tool_calls=[good_call],
+                raw_response="good submit",
+                raw_tool_calls=[good_raw],
+            ),
+        ]
+    )
+    verifier_adapter = _ScriptedVerifierAdapter([])
+    verifier = AnswerVerifier(model=verifier_adapter, max_rejections=1)
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+        protocol="native",
+        answer_verifier=verifier,
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert len(verifier_adapter.messages) == 1
+    assert 'COLUMNS: ["result"]' in verifier_adapter.messages[0][1].content
+    assert result.steps[0].action == "__error__"
+    assert "from_csv" in result.steps[0].observation["error"]
+    assert result.answer is not None
+    assert result.answer.rows == [["ok"]]
 
 
 def test_native_build_messages_uses_tool_role(task: PublicTask) -> None:

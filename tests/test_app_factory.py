@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from data_agent_baseline.agents.answer_verifier import AnswerVerifier
+from data_agent_baseline.agents.model import OpenAIModelAdapter
+from data_agent_baseline.agents.rate_limit import RateLimitedAdapter
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import (
@@ -21,7 +24,7 @@ from data_agent_baseline.config import (
     RateLimitConfig,
     RunConfig,
 )
-from data_agent_baseline.run.app import AgentApp, build_application
+from data_agent_baseline.run.app import AgentApp, build_application, build_no_tools_model_adapter
 from data_agent_baseline.tools.registry import ToolRegistry, create_default_tool_registry
 from tests.helpers.scripted_adapters import ScriptedModelAdapter
 
@@ -71,6 +74,7 @@ def test_build_application_populates_all_fields(tmp_path: Path) -> None:
     assert app.protocol == "native"
     # model_adapter 实现 ModelAdapter 协议（鸭子类型）：有 complete 方法
     assert hasattr(app.model_adapter, "complete")
+    assert isinstance(app.answer_verifier, AnswerVerifier)
 
 
 def test_build_application_text_protocol(tmp_path: Path) -> None:
@@ -96,6 +100,7 @@ def test_new_agent_returns_fresh_instance_per_call(tmp_path: Path) -> None:
     assert agent_a.model is agent_b.model
     assert agent_a.tools is agent_b.tools
     assert agent_a.config is agent_b.config
+    assert agent_a.answer_verifier is agent_b.answer_verifier
 
 
 def test_new_agent_wires_step_callback(tmp_path: Path) -> None:
@@ -120,6 +125,30 @@ def test_build_application_model_override_skips_real_adapter(tmp_path: Path) -> 
     app = build_application(cfg, model=scripted)
     # 注入的 model 直接被用作 model_adapter，不再被 RateLimitedAdapter / OpenAIModelAdapter 包裹
     assert app.model_adapter is scripted
+    assert app.answer_verifier is None
+
+
+def test_build_no_tools_model_adapter_uses_plain_openai_adapter(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path=tmp_path, tool_protocol="native")
+
+    adapter = build_no_tools_model_adapter(cfg)
+
+    assert isinstance(adapter, OpenAIModelAdapter)
+    assert adapter.enable_thinking is False
+    assert not hasattr(adapter, "_openai_tools")
+
+
+def test_build_no_tools_model_adapter_preserves_rate_limit_wrapper(tmp_path: Path) -> None:
+    cfg = _make_config(
+        tmp_path=tmp_path,
+        rate_limit=RateLimitConfig(state_dir=tmp_path / "rl"),
+    )
+
+    adapter = build_no_tools_model_adapter(cfg)
+
+    assert isinstance(adapter, RateLimitedAdapter)
+    assert isinstance(adapter.inner, OpenAIModelAdapter)
+    assert adapter.inner.enable_thinking is False
 
 
 def test_build_application_tools_override(tmp_path: Path) -> None:

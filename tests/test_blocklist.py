@@ -205,8 +205,9 @@ class _CapturingRunSingleTask:
         run_output_dir: Path,
         model: Any = None,
         tools: Any = None,
+        answer_verifier: Any = None,
     ) -> TaskRunArtifacts:
-        del model, tools
+        del model, tools, answer_verifier
         # 模拟 run_single_task 内部的 blocklist 短路：保留行为以便 summary 统计正确
         if task_id in config.run.blocklist:
             return write_task_outputs(task_id, run_output_dir, blocklist_payload(task_id))

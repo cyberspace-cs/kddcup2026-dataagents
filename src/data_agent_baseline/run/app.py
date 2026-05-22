@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from data_agent_baseline.agents.answer_verifier import AnswerVerifier
 from data_agent_baseline.agents.model import (
     ModelAdapter,
     NativeToolsOpenAIAdapter,
@@ -56,6 +57,7 @@ _SAMPLING_FIELDS: tuple[str, ...] = (
     "presence_penalty",
     "seed",
 )
+_ANSWER_VERIFIER_MAX_TOKENS = 512
 
 
 def _resolve_sampling_defaults(agent_config: AgentConfig) -> dict[str, Any]:
@@ -84,6 +86,23 @@ def _resolve_sampling_defaults(agent_config: AgentConfig) -> dict[str, Any]:
     return resolved
 
 
+def _has_rate_limiter(config: AppConfig) -> bool:
+    """Return whether model calls for this pinned config should use the rate limiter."""
+    return config.agent.rate_limit is not None and bool(config.agent.api_key)
+
+
+def _maybe_wrap_rate_limiter(config: AppConfig, inner: ModelAdapter) -> ModelAdapter:
+    """Apply the shared rate-limit wrapper to any adapter that calls the model API."""
+    rate_limit = config.agent.rate_limit
+    if rate_limit is None or not config.agent.api_key:
+        return inner
+    return RateLimitedAdapter(
+        inner=inner,
+        api_key=config.agent.api_key,
+        rate_limit=rate_limit,
+    )
+
+
 def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) -> ModelAdapter:
     """根据 `config.agent` 构造模型适配器。
 
@@ -102,7 +121,7 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
     """
     sampling = _resolve_sampling_defaults(config.agent)
 
-    has_rate_limiter = config.agent.rate_limit is not None and config.agent.api_key
+    has_rate_limiter = _has_rate_limiter(config)
 
     inner: NativeToolsOpenAIAdapter | OpenAIModelAdapter
     if config.agent.tool_protocol == "native":
@@ -132,23 +151,45 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
             **sampling,
         )
 
-    if config.agent.rate_limit is not None and config.agent.api_key:
-        return RateLimitedAdapter(
-            inner=inner,
-            api_key=config.agent.api_key,
-            rate_limit=config.agent.rate_limit,
-        )
-    return inner
+    return _maybe_wrap_rate_limiter(config, inner)
+
+
+def build_no_tools_model_adapter(config: AppConfig) -> ModelAdapter:
+    """Build a plain chat-completion adapter for verifier-style sub-agents.
+
+    This deliberately ignores ``agent.tool_protocol`` and never attaches tool schemas.
+    It still uses the shared rate limiter so verifier calls consume the configured
+    RPM/TPM budget.
+    """
+    has_rate_limiter = _has_rate_limiter(config)
+    inner = OpenAIModelAdapter(
+        model=config.agent.model,
+        api_base=config.agent.api_base,
+        api_key=config.agent.api_key,
+        temperature=0.0,
+        max_tokens=_ANSWER_VERIFIER_MAX_TOKENS,
+        enable_thinking=False,
+        backend_kind=config.agent.backend_kind,
+        seed=config.agent.seed,
+        max_retries=0 if has_rate_limiter else 2,
+    )
+    return _maybe_wrap_rate_limiter(config, inner)
+
+
+def build_answer_verifier(config: AppConfig) -> AnswerVerifier:
+    """Build the no-tools answer verifier used by online application wiring."""
+    return AnswerVerifier(model=build_no_tools_model_adapter(config), max_rejections=1)
 
 
 @dataclass(frozen=True, slots=True)
 class AgentApp:
     """ReAct 循环运行所需的全部依赖集合。
 
-    五个字段都是构造完毕的实例：
+    字段都是构造完毕的实例：
     - dataset:        从 `config.dataset.root_path` 加载的只读 task 集合
     - registry:       不可变工具注册表（默认 8 工具）
     - model_adapter:  按 tool_protocol + rate_limit 包装好的模型适配器
+    - answer_verifier: 提交前 answer 形态检查器；测试 override 路径可为 None
     - agent_config:   ReAct 循环预算（max_steps / empty retry）
     - protocol:       字面量 "native" | "text"，决定消息构造策略
 
@@ -159,6 +200,7 @@ class AgentApp:
     dataset: DABenchPublicDataset
     registry: ToolRegistry
     model_adapter: ModelAdapter
+    answer_verifier: AnswerVerifier | None
     agent_config: ReActAgentConfig
     protocol: ToolProtocol
 
@@ -174,6 +216,7 @@ class AgentApp:
             config=self.agent_config,
             protocol=self.protocol,
             step_callback=step_callback,
+            answer_verifier=self.answer_verifier,
         )
 
 
@@ -182,14 +225,16 @@ def build_application(
     *,
     model: ModelAdapter | None = None,
     tools: ToolRegistry | None = None,
+    answer_verifier: AnswerVerifier | None = None,
 ) -> AgentApp:
     """从 `AppConfig` 一次性构造 ReAct 运行所需的全部依赖。
 
-    `model` / `tools` 是给测试预留的 override：
+    `model` / `tools` / `answer_verifier` 是给测试预留的 override：
     - 传 `model=ScriptedModelAdapter(...)` 跳过真实 OpenAI 客户端构造
     - 传 `tools=mock_registry`（或一个裁剪过的 ToolRegistry）跳过默认 8 工具
+    - 传 `answer_verifier=...` 可覆盖线上默认 verifier；`model` override 默认不建 verifier
 
-    线上路径两个参数都为 None，走完整的 build_model_adapter + create_default_tool_registry。
+    线上路径 override 参数都为 None，走完整的默认 wiring。
 
     注意：`AgentApp` 实例不可 pickle（`OpenAI` 客户端含线程锁），所以本函数必须在
     子进程内调用——主进程只跨进程传递 `AppConfig`。
@@ -197,6 +242,9 @@ def build_application(
     dataset = DABenchPublicDataset(config.dataset.root_path)
     registry = tools if tools is not None else create_default_tool_registry()
     model_adapter = model if model is not None else build_model_adapter(config, tools=registry)
+    verifier = answer_verifier
+    if verifier is None and model is None:
+        verifier = build_answer_verifier(config)
     agent_config = ReActAgentConfig(
         max_steps=config.agent.max_steps,
         max_empty_tool_call_retries=config.agent.max_empty_tool_call_retries,
@@ -206,6 +254,7 @@ def build_application(
         dataset=dataset,
         registry=registry,
         model_adapter=model_adapter,
+        answer_verifier=verifier,
         agent_config=agent_config,
         protocol=config.agent.tool_protocol,
     )
@@ -213,8 +262,10 @@ def build_application(
 
 __all__ = [
     "AgentApp",
+    "build_answer_verifier",
     "build_application",
     "build_model_adapter",
+    "build_no_tools_model_adapter",
 ]
 
 # `_resolve_sampling_defaults` 故意不进 __all__：保持私有 API，但允许测试 import。

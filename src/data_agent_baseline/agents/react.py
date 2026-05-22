@@ -14,9 +14,10 @@ _extract_reasoning_tool_call_draft`），保留薄薄的再导出层。
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
+from data_agent_baseline.agents.answer_verifier import AnswerVerifier
 from data_agent_baseline.agents.dispatcher import dispatch_tool_call
 from data_agent_baseline.agents.model import (
     ModelAdapter,
@@ -49,7 +50,7 @@ from data_agent_baseline.agents.recorder import (
 )
 from data_agent_baseline.agents.runtime import AgentRunResult, AgentRuntimeState, StepRecord
 from data_agent_baseline.benchmark.schema import PublicTask
-from data_agent_baseline.tools.registry import ToolRegistry
+from data_agent_baseline.tools.registry import ToolExecutionResult, ToolRegistry
 
 # 公开再导出（向后兼容现有 tests/agents/__init__ 的 import 路径）
 __all__ = [
@@ -137,6 +138,7 @@ class ReActAgent:
         system_prompt: str | None = None,
         protocol: ToolProtocol = "native",
         step_callback: StepCallback | None = None,
+        answer_verifier: AnswerVerifier | None = None,
     ) -> None:
         self.model = model
         self.tools = tools
@@ -148,6 +150,7 @@ class ReActAgent:
         # 每步回调：runner 在子进程里会注入 "把 state 落到 trace.json" 的 writer，
         # 这样即便子进程因超时被硬 kill，磁盘上仍保留最后一次 append 后的部分 trace
         self.step_callback = step_callback
+        self.answer_verifier = answer_verifier
 
     # ----------------------------- 消息构造 -----------------------------
 
@@ -305,6 +308,7 @@ class ReActAgent:
         terminated = False
         budget_warning_fired = False
         last_step_retries = 0
+        verifier_rejections_used = 0
 
         while effective_turns < self.config.max_steps:
             turn_index += 1
@@ -477,6 +481,9 @@ class ReActAgent:
                     }
                     for call in turn.calls
                 ]
+            replay_raw_tool_calls = effective_raw_tool_calls
+            verifier_rejected_this_turn = False
+            turn_first_state_index = len(state.steps)
             for call_idx, tool_call in enumerate(turn.calls):
                 step_counter += 1
                 is_lead = call_idx == 0
@@ -484,7 +491,7 @@ class ReActAgent:
                 if is_native:
                     step_tool_call_id: str | None = tool_call.id or None
                     step_raw_tool_calls: list[dict[str, object]] | None = (
-                        effective_raw_tool_calls if is_lead else None
+                        replay_raw_tool_calls if is_lead else None
                     )
                 else:
                     step_tool_call_id = None
@@ -496,10 +503,62 @@ class ReActAgent:
                 step_prompt_messages = serialized_prompt if is_lead else None
                 step_response_message = serialized_response if is_lead else None
 
+                # 终止工具预验证：在 handler 执行（会删 CSV artifact）之前跑 verifier
+                defn = self.tools.definitions.get(tool_call.name)
+                if (
+                    self.answer_verifier is not None
+                    and defn is not None
+                    and defn.is_terminal
+                    and verifier_rejections_used < self.answer_verifier.max_rejections
+                    # On the last remaining step, rejecting would leave no model turn to fix it.
+                    and remaining > 1
+                ):
+                    rejection = self.answer_verifier.verify(task.question, tool_call.arguments)
+                    if rejection is not None:
+                        verifier_rejections_used += 1
+                        if is_native:
+                            # Native replay requires one tool message for every assistant
+                            # tool_call. If a rejection cuts the turn short, omit later
+                            # unexecuted tool calls from replay metadata.
+                            replay_raw_tool_calls = effective_raw_tool_calls[: call_idx + 1]
+                            if is_lead:
+                                step_raw_tool_calls = replay_raw_tool_calls
+                            elif turn_first_state_index < len(state.steps):
+                                lead_step = state.steps[turn_first_state_index]
+                                state.steps[turn_first_state_index] = replace(
+                                    lead_step,
+                                    raw_tool_calls=replay_raw_tool_calls,
+                                )
+                        result = ToolExecutionResult(
+                            ok=True,
+                            content={"answer_rejected": rejection},
+                        )
+                        record_step_event(
+                            state,
+                            ObservationEvent(
+                                thought=turn.thought,
+                                tool_name=tool_call.name,
+                                arguments=tool_call.arguments,
+                                content=result.content,
+                                ok=result.ok,
+                                raw_response=response.raw_response,
+                                tool_call_id=step_tool_call_id,
+                                raw_tool_calls=step_raw_tool_calls,
+                                reasoning=step_reasoning,
+                                usage=step_usage,
+                                prompt_messages=step_prompt_messages,
+                                response_message=step_response_message,
+                            ),
+                            step_index=step_counter,
+                            turn_index=turn_index,
+                            callback=self.step_callback,
+                        )
+                        verifier_rejected_this_turn = True
+                        break
+
                 try:
                     result, should_terminate = dispatch_tool_call(task, tool_call, self.tools)
                 except Exception as exc:
-                    # 工具执行异常：未知工具名 / 参数非法 / handler 抛错等
                     record_step_event(
                         state,
                         ToolErrorEvent(
@@ -520,7 +579,6 @@ class ReActAgent:
                     )
                     continue
 
-                # 终止工具（目前仅 answer）：先把答案存好，再落记录，最后短路
                 if should_terminate:
                     state.answer = result.answer
                 record_step_event(
@@ -549,6 +607,8 @@ class ReActAgent:
 
             if terminated:
                 break
+            if verifier_rejected_this_turn:
+                continue
 
         if not terminated and effective_turns >= self.config.max_steps:
             state.failure_reason = "Agent did not submit an answer within max_steps."

@@ -27,6 +27,7 @@ from data_agent_baseline.run.runner_artifacts import (
 
 if TYPE_CHECKING:
     # 仅作类型注解用——所有实例化都收敛到 build_application。
+    from data_agent_baseline.agents.answer_verifier import AnswerVerifier
     from data_agent_baseline.agents.model import ModelAdapter
     from data_agent_baseline.agents.recorder import StepCallback
     from data_agent_baseline.tools.registry import ToolRegistry
@@ -38,15 +39,21 @@ def run_single_task_core(
     config: AppConfig,
     model: ModelAdapter | None = None,
     tools: ToolRegistry | None = None,
+    answer_verifier: AnswerVerifier | None = None,
     step_callback: StepCallback | None = None,
 ) -> dict[str, Any]:
     """纯业务逻辑：构造 AgentApp → 拿任务 → 跑循环 → 返回 dict。
 
-    `model` / `tools` 不为 None 时透传给 `build_application` 作为 override，
+    `model` / `tools` / `answer_verifier` 不为 None 时透传给 `build_application` 作为 override，
     让测试无需真的初始化 OpenAI 客户端；线上 None 时走默认 wiring。
     `step_callback` 由 runner 在子进程里注入，用于增量 trace 落盘。
     """
-    app = build_application(config, model=model, tools=tools)
+    app = build_application(
+        config,
+        model=model,
+        tools=tools,
+        answer_verifier=answer_verifier,
+    )
     task = app.dataset.get_task(task_id)
     try:
         from data_agent_baseline.etl.extractor import run_etl_for_task

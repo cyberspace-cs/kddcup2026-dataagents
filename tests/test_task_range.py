@@ -95,8 +95,9 @@ class _CapturingSingleTask:
         run_output_dir: Path,
         model: Any = None,
         tools: Any = None,
+        answer_verifier: Any = None,
     ) -> TaskRunArtifacts:
-        del config, model, tools
+        del config, model, tools, answer_verifier
         self.calls.append(task_id)
         task_output_dir = run_output_dir / task_id
         task_output_dir.mkdir(parents=True, exist_ok=True)
