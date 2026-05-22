@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from data_agent_baseline.benchmark.schema import PublicTask
-from data_agent_baseline.config import AppConfig, load_app_config
+from data_agent_baseline.config import AppConfig, RateLimitConfig, load_app_config
 from data_agent_baseline.run.app import AgentApp, build_application
 
 REQUIRED_ENV = ("MODEL_API_URL", "MODEL_API_KEY", "MODEL_NAME")
@@ -130,9 +130,10 @@ def _build_config(input_root: Path) -> AppConfig:
     Forced overrides:
     - `dataset.root_path` → `/input` (§3.4 mount)
     - `agent.{model, api_base, api_key}` → §3.5 injected env vars
-    - `agent.{api_keys, rate_limit}` → cleared. The judge gives exactly one
-      key and the eval network owns QPS shaping; pure-version's pool-mode
-      requires `len(api_keys) > 0`, so leaving a stale list would mis-route.
+    - `agent.{api_keys}` → single-element tuple with the env key
+    - `agent.rate_limit` → config value or RateLimitConfig defaults;
+      state_dir resolved to /logs/ratelimit/. Prevents 500 concurrency
+      errors from consuming agent steps.
     - `agent.max_steps` ← `MAX_STEPS` env when set (smoke-test escape hatch)
     """
     config_path = Path(os.environ.get("CONFIG_PATH", DEFAULT_CONFIG))
@@ -149,12 +150,18 @@ def _build_config(input_root: Path) -> AppConfig:
         raise SystemExit(78)
     base = load_app_config(config_path)
 
+    api_key = os.environ["MODEL_API_KEY"]
+    rl = base.agent.rate_limit or RateLimitConfig()
+    state_dir = Path(os.environ.get("LOGS_ROOT", DEFAULT_LOGS)) / "ratelimit"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    rl = replace(rl, state_dir=state_dir)
+
     agent_overrides: dict[str, Any] = {
         "model": os.environ["MODEL_NAME"],
         "api_base": os.environ["MODEL_API_URL"],
-        "api_key": os.environ["MODEL_API_KEY"],
-        "api_keys": (),
-        "rate_limit": None,
+        "api_key": api_key,
+        "api_keys": (api_key,),
+        "rate_limit": rl,
     }
     if max_steps := os.environ.get("MAX_STEPS"):
         agent_overrides["max_steps"] = int(max_steps)
