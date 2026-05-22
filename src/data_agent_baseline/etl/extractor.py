@@ -49,6 +49,7 @@ _LLM_CALL_TIMEOUT = 180
 _ETL_HTTP_TIMEOUT = 300.0
 _EXTRACT_CHUNK_LINES = 30
 _ENTITY_LINE = re.compile(r"^ID:\s*", re.MULTILINE)
+_PROSE_EXTS = frozenset({".md", ".txt"})
 
 
 def _detect_sections(text: str) -> list[dict[str, Any]]:
@@ -81,20 +82,32 @@ class ETLResult:
 
 
 def _detect_prose_files(task: PublicTask) -> list[Path]:
-    """Find .md files in context/doc/ (excluding knowledge.md) that exceed _MIN_LINES."""
-    doc_dir = task.context_dir / "doc"
-    if not doc_dir.is_dir():
-        return []
+    """Find .md/.txt files in context/doc/ and context/ root that exceed _MIN_LINES."""
+    seen: set[Path] = set()
     results: list[Path] = []
-    for md_file in sorted(doc_dir.glob("*.md")):
-        if md_file.name.lower() == "knowledge.md":
-            continue
-        try:
-            line_count = sum(1 for _ in md_file.open(encoding="utf-8"))
-        except OSError:
-            continue
-        if line_count >= _MIN_LINES:
-            results.append(md_file)
+
+    def _scan_dir(directory: Path) -> None:
+        if not directory.is_dir():
+            return
+        for f in sorted(directory.iterdir()):
+            if not f.is_file() or f.suffix.lower() not in _PROSE_EXTS:
+                continue
+            if f.name.lower() == "knowledge.md":
+                continue
+            resolved = f.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                with f.open(encoding="utf-8", errors="replace") as handle:
+                    line_count = sum(1 for _ in handle)
+            except OSError:
+                continue
+            if line_count >= _MIN_LINES:
+                results.append(f)
+
+    _scan_dir(task.context_dir / "doc")
+    _scan_dir(task.context_dir)
     return results
 
 
