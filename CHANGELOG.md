@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Scoped superlative answer-shape checks.** Agent self-checks and the
+  answer verifier now treat global singular superlatives as one-row
+  answers while preserving grouped extrema such as "for each" or "per
+  category" as one row per group. The native prompt also tells the agent
+  to print and verify intermediate aggregation results before embedding
+  them in outer queries.
+- **Native answer tool-call JSON parse recovery.** Malformed native
+  `answer` arguments now keep the partial model response in `trace.json`
+  (`raw_tool_calls`, reasoning, usage, and response payload) and feed back
+  a targeted recovery hint to resubmit large answer tables via
+  `answer({"from_csv": ...})` instead of losing the response as a generic
+  model error.
 - **`enable_thinking` now reaches the chat template on self-hosted vLLM.**
   Previously the flag rode `extra_body.enable_thinking` at the top level,
   which the vLLM OpenAI server silently drops as an unknown field — the

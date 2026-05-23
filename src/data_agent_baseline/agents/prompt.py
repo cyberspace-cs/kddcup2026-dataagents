@@ -209,13 +209,14 @@ Phase 3 — COMPUTE & SUBMIT:
 - For any work beyond a preview — filtering, aggregation, joins, lookups by key, scanning every row, computation, cleaning, cross-file joins, large-file handling, or structured processing — call `execute_python` (it is also the route for full CSV/JSON scans, since `read_csv` / `read_json` only return samples).
 - `execute_python` runs each call in a FRESH subprocess — imports, DataFrames, and variables are NOT carried over; combine read + filter + projection + verification into ONE call.
 - Prose/Markdown data extraction: when a `.md` / `.txt` file contains structured data embedded in prose (patient records, hero profiles, product catalogs), do NOT call `read_doc` repeatedly page by page. Instead, use ONE `execute_python` call that reads the entire file (`open(path).read()`), applies regex to extract ALL records at once, builds a DataFrame, and completes the full computation including the final answer — all in a single call. This avoids wasting 10+ turns on incremental parsing.
+- Subquery / intermediate aggregation verification: when your query uses a nested aggregation to find "the entity with the most/highest/lowest X" (e.g., the district with the most inhabitants, the user with the highest score), ALWAYS print the intermediate aggregation result (e.g., `GROUP BY district ORDER BY SUM(inhabitants) DESC`) and confirm the top candidate before using it in an outer query. Subqueries that silently pick the wrong entity are a common source of wrong answers. Run the inner query standalone first, verify, then embed it; doing both inside the same `execute_python` call is fine.
 - Column projection: before calling `answer`, derive the column list strictly from the question's WH-target, then drop every other column (join keys like CustomerID/PostId, filter values, ranking scores). Do NOT include entity identifiers "for readability" — the grader penalizes every extra column.
 - Print verification snapshot before answer. Self-check: column count == WH-target count? Any all-null columns? Trim if needed.
 
 Phase 4 — VALIDATE (mandatory before every `answer` call):
 Re-read the question and run these checks against your computed result. If ANY check fails, fix and re-compute — do NOT submit a known-wrong answer.
 - Column completeness: list every distinct attribute the question asks you to output. Your result must have a column for each. Example: "list their ID, sex and diagnosis" → 3 columns required. "give the reference name" → 1 column. If columns are missing, re-query.
-- Row count sanity: "how many" / "what percentage" / "what is the average" → exactly 1 row. "Who is the …" (singular superlative) → 1 row. "List all …" / "who are …" (plural) → multiple rows. If your row count contradicts the question's plurality, re-examine your query — you likely have a wrong GROUP BY, missing DISTINCT, extra filter, or missing filter.
+- Row count sanity: "how many" / "what percentage" / "what is the average" → exactly 1 row. "Who is the …" (global singular superlative) → 1 row, unless the question asks for one extreme per group ("for each", "in each", "per group/category/region", "by category/group"), which expects one row per group. "List all …" / "who are …" (plural) → multiple rows. If your row count contradicts the question's plurality, re-examine your query — you likely have a wrong GROUP BY, missing DISTINCT, extra filter, or missing filter.
 - Empty result: NEVER submit 0 rows. An empty result almost always means a wrong filter value. Go back to Phase 2: re-check the column values you filtered on via `SELECT DISTINCT`.
 - Value sanity: does the magnitude make sense? A percentage in 0–100, a count ≥ 0, an average within the column's MIN/MAX range. If your value is orders of magnitude off from what the question implies, re-examine the computation.
 - Filter completeness: re-read the question and list every WHERE/filter condition it mentions. Verify each one is actually applied in your query. The most common error is satisfying some conditions but silently dropping others.
@@ -325,6 +326,15 @@ def _recovery_hint(observation: dict[str, object]) -> str | None:
         return (
             "File not found. Use relative paths from the context directory (CWD) or "
             "os.path.join(context_root, 'subdir/file.csv'). Never hard-code absolute paths."
+        )
+    if "failed to parse tool_call arguments for 'answer'" in error_text:
+        return (
+            "The answer tool_call arguments contained malformed JSON — "
+            "inline columns/rows is too large or malformed to serialize reliably. "
+            "Switch to the artifact path: in execute_python, write the answer "
+            "DataFrame to os.path.join(os.environ['DABENCH_ANSWER_DIR'], 'answer.csv') "
+            "via df.to_csv(..., index=False), then call "
+            'answer({"from_csv": "<that absolute path>"}).'
         )
     return "Review the error and adjust."
 

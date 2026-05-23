@@ -23,6 +23,7 @@ from data_agent_baseline.agents.model import (
     NativeToolsOpenAIAdapter,
     OpenAIModelAdapter,
     TokenUsage,
+    ToolCallParseError,
     _extract_reasoning_content,
     _extract_usage,
 )
@@ -358,6 +359,44 @@ def test_native_adapter_captures_reasoning_and_usage(monkeypatch: pytest.MonkeyP
     assert result.reasoning_content == "I should call inspect_files"
     assert result.usage == TokenUsage(500, 80, 580, 200, 60)
     assert result.latency_ms >= 0
+
+
+def test_native_adapter_malformed_tool_arguments_preserve_partial_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_tool_call = {
+        "id": "bad_answer",
+        "type": "function",
+        "function": {
+            "name": "answer",
+            "arguments": '{"columns": ["x"], "rows": [["unterminated"]',
+        },
+    }
+    fake_tool_call = types.SimpleNamespace(model_dump=lambda **_: raw_tool_call)
+    message = types.SimpleNamespace(
+        content="submitting answer",
+        reasoning_content="answer json got truncated",
+        tool_calls=[fake_tool_call],
+    )
+    response = types.SimpleNamespace(
+        choices=[types.SimpleNamespace(message=message)],
+        usage=_make_usage(prompt=10, completion=5, total=15, cached=3, reasoning=2),
+    )
+    _install_fake_openai(monkeypatch, response)
+    adapter = _native_adapter()
+
+    with pytest.raises(ToolCallParseError) as exc_info:
+        adapter.complete([ModelMessage(role="user", content="hello")])
+
+    partial = exc_info.value.partial_response
+    assert "Failed to parse tool_call arguments for 'answer'" in str(exc_info.value)
+    assert partial.content == "submitting answer"
+    assert partial.raw_response == "submitting answer"
+    assert partial.raw_tool_calls == [raw_tool_call]
+    assert partial.reasoning_content == "answer json got truncated"
+    assert partial.usage == TokenUsage(10, 5, 15, 3, 2)
+    assert partial.tool_calls == []
+    assert partial.latency_ms >= 0
 
 
 def test_native_adapter_omits_temperature_when_none(monkeypatch: pytest.MonkeyPatch) -> None:

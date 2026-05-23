@@ -20,6 +20,7 @@ from data_agent_baseline.agents.model import (
     ModelResponse,
     ModelToolCall,
     TokenUsage,
+    ToolCallParseError,
 )
 from data_agent_baseline.agents.react import (
     ReActAgent,
@@ -931,6 +932,73 @@ def test_native_empty_tool_calls_do_not_consume_max_steps(task: PublicTask) -> N
     assert error_step.action == "__error__"
     assert answer_step.action == "answer"
     assert answer_step.turn_index == 2
+
+
+def test_native_tool_call_parse_error_preserves_partial_trace_and_recovers(
+    task: PublicTask,
+) -> None:
+    """Native adapter JSON parse failures keep partial response metadata in trace."""
+    bad_raw = {
+        "id": "bad_answer",
+        "type": "function",
+        "function": {
+            "name": "answer",
+            "arguments": '{"columns": ["x"], "rows": [["unterminated"]',
+        },
+    }
+    answer_call, answer_raw = _build_tool_call(
+        call_id="good_answer",
+        name="answer",
+        arguments={"columns": ["x"], "rows": [["fixed"]]},
+    )
+
+    class ParseThenAnswerAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages: list[list[ModelMessage]] = []
+
+        def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+            self.messages.append(messages)
+            self.calls += 1
+            if self.calls == 1:
+                raise ToolCallParseError(
+                    "Failed to parse tool_call arguments for 'answer': bad json",
+                    partial_response=ModelResponse(
+                        content="",
+                        raw_response="",
+                        raw_tool_calls=[bad_raw],
+                        reasoning_content="bad reasoning",
+                        usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+                        latency_ms=123,
+                    ),
+                )
+            return ModelResponse(
+                content="submit fixed answer",
+                tool_calls=[answer_call],
+                raw_response="submit fixed answer",
+                raw_tool_calls=[answer_raw],
+            )
+
+    adapter = ParseThenAnswerAdapter()
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=3),
+        protocol="native",
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert len(result.steps) == 2
+    parse_step, answer_step = result.steps
+    assert parse_step.action == "__error__"
+    assert parse_step.reasoning == "bad reasoning"
+    assert parse_step.usage.total_tokens == 15
+    assert parse_step.response_message is not None
+    assert parse_step.response_message["raw_tool_calls"] == [bad_raw]
+    assert "from_csv" in adapter.messages[1][-1].content
+    assert answer_step.action == "answer"
 
 
 def test_native_empty_tool_calls_have_independent_retry_limit(task: PublicTask) -> None:

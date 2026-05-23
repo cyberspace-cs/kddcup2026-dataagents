@@ -262,6 +262,14 @@ def _extract_usage(response: Any) -> TokenUsage:
     )
 
 
+class ToolCallParseError(RuntimeError):
+    """tool_call arguments JSON 解析失败，携带部分响应供 trace 保留。"""
+
+    def __init__(self, message: str, *, partial_response: ModelResponse) -> None:
+        super().__init__(message)
+        self.partial_response = partial_response
+
+
 class OpenAIModelAdapter:
     """对 OpenAI 兼容 chat.completions 接口的包装（文本协议）。
 
@@ -535,10 +543,21 @@ class NativeToolsOpenAIAdapter:
                     try:
                         parsed = json.loads(arg_str)
                     except json.JSONDecodeError as exc:
-                        # 解析失败抛错，让 Agent 层记录为一条 __error__ 步并继续
-                        raise RuntimeError(
-                            f"Failed to parse tool_call arguments for {name!r}: {exc}"
-                        ) from exc
+                        # 解析失败：构造携带部分响应的异常，让 react.py
+                        # 能把 raw_tool_calls / usage / reasoning 落进 trace
+                        err = ToolCallParseError(
+                            f"Failed to parse tool_call arguments for {name!r}: {exc}",
+                            partial_response=ModelResponse(
+                                content=cleaned_content,
+                                tool_calls=[],
+                                raw_response=cleaned_content,
+                                raw_tool_calls=raw_tool_calls_payload,
+                                reasoning_content=_extract_reasoning_content(message),
+                                usage=_extract_usage(response),
+                                latency_ms=latency_ms,
+                            ),
+                        )
+                        raise err from exc
                     if not isinstance(parsed, dict):
                         raise RuntimeError(
                             f"tool_call arguments for {name!r} must decode to an object."

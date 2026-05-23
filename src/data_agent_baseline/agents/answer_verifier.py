@@ -56,6 +56,15 @@ Check 3 — ROW COUNT sanity:
 - Empty result (0 rows) → always flag.
 - "How many" / "what percentage" / "what is the average/ratio/count"
   → expect exactly 1 row.  Flag if row_count != 1.
+- Global singular superlative questions → expect exactly 1 row.  Flag
+  if row_count != 1.  Patterns: "who/what/which is the most/least/best/
+  worst/dumbest/fastest/tallest/shortest/oldest/youngest/highest/
+  lowest/…", "the most X", "the Nth …" (ordinal).  These ask for
+  ONE entity at the global extreme — the answer must be a single row.
+  Do NOT apply this rule when the question asks for one extreme per
+  group, such as "for each", "in each", "per group/category/region",
+  "by category/group", or "which X has the highest Y for each Z"; those
+  expect one row per group.
 - Only flag row_count == 1 as too few when the question EXPLICITLY
   uses plural list language ("list all", "who are the", "which ones").
   Do NOT flag single-row answers when the question uses singular

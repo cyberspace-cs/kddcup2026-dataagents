@@ -638,6 +638,17 @@ def test_observation_prompt_ok_false_timeout() -> None:
     assert "Simplify" in result
 
 
+def test_observation_prompt_ok_false_answer_tool_call_json_parse_error() -> None:
+    obs: dict[str, object] = {
+        "error": "model.complete failed: Failed to parse tool_call arguments for 'answer': bad json"
+    }
+    result = build_observation_prompt(obs, ok=False)
+    assert "Recovery hint:" in result
+    assert "too large or malformed" in result
+    assert "DABENCH_ANSWER_DIR" in result
+    assert "from_csv" in result
+
+
 def test_observation_prompt_ok_false_generic_error() -> None:
     obs: dict[str, object] = {"error": "some unexpected failure"}
     result = build_observation_prompt(obs, ok=False)
@@ -745,3 +756,30 @@ def test_verifier_distinguishes_output_from_ranking_columns() -> None:
     assert "filter/ranking criterion" in lower
     assert "which event has the highest cost" in lower
     assert "only count attributes the question asks\nyou to return" in lower
+
+
+def test_prompts_scope_superlative_row_count_to_global_questions() -> None:
+    """Global superlative row-count rules must not reject grouped extrema."""
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "global singular superlative" in lower
+    assert "one row per group" in lower
+    assert "for each" in lower
+    assert "per group/category/region" in lower
+    assert "by category/group" in lower
+
+    from data_agent_baseline.agents.answer_verifier import _VERIFIER_SYSTEM
+
+    verifier_lower = _VERIFIER_SYSTEM.lower()
+    assert "global singular superlative" in verifier_lower
+    assert "one row per" in verifier_lower
+    assert "for each" in verifier_lower
+
+
+def test_native_prompt_allows_single_call_subquery_verification() -> None:
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "subquery / intermediate aggregation verification" in lower
+    assert "doing both inside the same `execute_python` call is fine" in lower

@@ -24,6 +24,7 @@ from data_agent_baseline.agents.model import (
     ModelMessage,
     ModelResponse,
     TokenUsage,
+    ToolCallParseError,
 )
 from data_agent_baseline.agents.prompt import (
     build_native_system_prompt,
@@ -357,6 +358,27 @@ class ReActAgent:
             serialized_prompt = [_serialize_message(message) for message in messages]
             try:
                 response = self.model.complete(messages)
+            except ToolCallParseError as exc:
+                # tool_call arguments JSON 解析失败：携带部分响应，保留
+                # raw_tool_calls / usage / reasoning 供 trace 和回放
+                partial = exc.partial_response
+                effective_turns += 1
+                step_counter += 1
+                record_step_event(
+                    state,
+                    ParseErrorEvent(
+                        error=f"model.complete failed: {exc}",
+                        raw_response=partial.raw_response,
+                        reasoning=partial.reasoning_content,
+                        usage=partial.usage,
+                        prompt_messages=serialized_prompt,
+                        response_message=_serialize_response(partial),
+                    ),
+                    step_index=step_counter,
+                    turn_index=turn_index,
+                    callback=self.step_callback,
+                )
+                continue
             except Exception as exc:
                 # 网络错误 / API 失败：记一条 model_error，让循环在下一轮重试
                 effective_turns += 1
