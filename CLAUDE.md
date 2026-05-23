@@ -1,33 +1,25 @@
 # CLAUDE.md
 
-Project conventions for AI coding assistants (Claude Code, Cursor, etc.) working in this repository. Human contributors should follow the same rules.
+Project conventions for AI coding assistants (Claude Code, Codex, Cursor, etc.) and human contributors.
 
-## 1. Python execution: always use `uv run`
+## Python execution: always use `uv run`
 
-This project is managed by **uv** (`uv.lock`, `pyproject.toml`). All Python invocations must go through `uv run` so the project's locked environment is used.
-
-**Do:**
+This project is managed by **uv** (`uv.lock`, `pyproject.toml`). All Python invocations must go through `uv run`.
 
 ```bash
+# Do
 uv run python -c "..."
 uv run pytest
 uv run ruff format src/
-```
 
-**Don't:**
-
-```bash
+# Don't
 .venv/bin/python ...   # bypasses uv sync state
 python3 ...            # may hit a different interpreter
-python ...
+python ...             # same issue as python3
 pip install ...        # use `uv add` or `uv sync --extra dev` instead
 ```
 
-Dev dependencies live under `[project.optional-dependencies].dev` — install them with `uv sync --extra dev`.
-
-## 2. Benchmark CLI: drive via `dabench`, not `python -m ...`
-
-The project exposes a Typer CLI through the `dabench` entrypoint (declared in `pyproject.toml` under `[project.scripts]`). Always invoke by the script name:
+## Benchmark CLI: drive via `dabench`
 
 ```bash
 uv run dabench status        --config configs/react_baseline.example.yaml
@@ -36,18 +28,46 @@ uv run dabench run-task     <task_id> --config <cfg>
 uv run dabench run-benchmark         --config <cfg> [--limit N] [--range S-E]
 ```
 
-**Do not** invoke via `uv run python -m data_agent_baseline.cli ...` — the Typer + module-runner interaction produces no output in this project.
+Do not invoke via `uv run python -m data_agent_baseline.cli`.
 
-## 3. Shell tools: use `rg` and `fd` instead of `grep` and `find`
+## Code contribution rules
 
-- `rg` (ripgrep) replaces `grep` — faster and respects `.gitignore` by default.
-- `fd` replaces `find` — same benefits.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) — canonical source for commit messages, CHANGELOG policy, and contribution rules. It takes precedence over this file.
 
-## 4. Code contribution rules — see [`CONTRIBUTING.md`](CONTRIBUTING.md)
+## KDD Cup 2026 constraints
 
-That file is the canonical source for:
+- Heterogeneous data analysis (SQL + PDF + image/dashboard + docs). Not pure text-to-SQL.
+- Inference-time only — no model training.
+- Target model: `qwen3.5-35b-a3b` (judge-required model string; ~3B active params). See `scripts/eval_local.sh`.
+- Prefer workflow engines, tool use, multi-agent decomposition, and deterministic post-processing.
+- Constrain tool I/O and use structured intermediate files rather than dumping large state into conversation history.
 
-- **Git commit messages** — Conventional Commits + 50/72, English-only, one logical change per commit.
-- **CHANGELOG maintenance** — what to record, what to skip, how to format entries, when releases promote `[Unreleased]`.
+## Fix and optimization policy
 
-The rules apply identically to human contributors and AI assistants. If a discrepancy ever arises between this file and `CONTRIBUTING.md`, the latter wins.
+- Fix root causes. No workarounds, threshold tweaks, skip flags, or symptom masking.
+- Every optimization must generalize — no rules, guards, or heuristics that only fit one known task.
+- Larger refactors are acceptable when they produce a more robust architecture.
+- Do not validate changes exclusively on the task that motivated the fix.
+
+## Evaluation
+
+Run results are stored under `artifacts/runs/<run_id>/`, each task producing `<task_id>/prediction.csv` and `<task_id>/trace.json`. Score with:
+
+```bash
+uv run python scripts/score_predictions.py \
+    --pred artifacts/runs/<run_id> \
+    --gold <gold_dir> \
+    --lambda 0.1 \
+    --output artifacts/runs/<run_id>/scores.json \
+    --verbose
+```
+
+- The grader ignores column names, column order, and row order.
+- Each column is normalized (numbers quantized to 2 decimal places, dates standardized, nulls unified) then hashed.
+- Columns are matched greedily across prediction and gold; extra predicted columns incur a penalty.
+
+See `scripts/score_predictions.py` for details.
+
+## Claims and evidence
+
+Cite file:line or trace fields for mechanism-level claims. State correlation as correlation, not as causation. Re-check evidence when challenged.
