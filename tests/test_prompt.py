@@ -474,6 +474,45 @@ def test_text_system_prompt_requires_full_numeric_precision() -> None:
     assert "round only when the question explicitly asks" in lower
 
 
+def test_system_prompts_keep_distinct_separate_from_group_by() -> None:
+    """DISTINCT 默认不加，但正常分组聚合仍然允许 GROUP BY。"""
+    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    native_prompt = build_native_system_prompt()
+
+    for prompt in (text_prompt, native_prompt):
+        lower = prompt.lower()
+        assert "do not add distinct or deduplicate unless asked" in lower
+        assert "only add distinct when" in lower
+        assert "only add distinct or group by" not in lower
+        assert "group by is for grouped aggregates, not deduplication" in lower
+        assert '"by", "per", "for each"' in lower
+        assert "do not use group by solely to remove duplicate rows" in lower
+        assert 'see the "tally" rule below' in lower
+
+
+def test_system_prompts_prefer_null_safe_anti_join_patterns() -> None:
+    """不存在记录的过滤应避开裸 NOT IN 的 NULL 陷阱。"""
+    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    native_prompt = build_native_system_prompt()
+
+    for prompt in (text_prompt, native_prompt):
+        lower = prompt.lower()
+        assert '"does not have x" / "no x" filter semantics' in lower
+        assert "prefer `not exists` or `left join ... where right.key is null`" in lower
+        assert "use `not in` only after filtering null keys from the subquery" in lower
+
+
+def test_native_system_prompt_clarifies_knowledge_md_conflict_precedence() -> None:
+    """knowledge.md 的公式/映射优先，但必须能套到观测到的 schema/data。"""
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "`knowledge.md` is authoritative where it explicitly defines a field" in lower
+    assert "observed data wins on conflict" in lower
+    assert "use that exact formula/mapping if it applies to the observed schema/data" in lower
+    assert "if sampling proves the mapping cannot apply or conflicts with actual values" in lower
+
+
 def test_system_prompts_advertise_artifact_handoff() -> None:
     """两套 system prompt 都必须告知模型 from_csv artifact 协议 + DABENCH_ANSWER_DIR。
 
