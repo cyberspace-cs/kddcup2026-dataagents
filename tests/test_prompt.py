@@ -475,19 +475,20 @@ def test_text_system_prompt_requires_full_numeric_precision() -> None:
 
 
 def test_system_prompts_keep_distinct_separate_from_group_by() -> None:
-    """DISTINCT 默认不加，但正常分组聚合仍然允许 GROUP BY。"""
+    """DISTINCT depends on entity vs record; GROUP BY is for aggregates only."""
     text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     native_prompt = build_native_system_prompt()
 
     for prompt in (text_prompt, native_prompt):
         lower = prompt.lower()
-        assert "do not add distinct or deduplicate unless asked" in lower
-        assert "only add distinct when" in lower
-        assert "only add distinct or group by" not in lower
+        assert "distinct depends on what the question asks about" in lower
+        assert "deduplicate by entity identity" in lower
+        assert "each log entry" in lower
+        assert "do not add distinct" in lower
         assert "group by is for grouped aggregates, not deduplication" in lower
         assert '"by", "per", "for each"' in lower
         assert "do not use group by solely to remove duplicate rows" in lower
-        assert 'see the "tally" rule below' in lower
+        assert '"tally" rule below' in lower
 
 
 def test_system_prompts_prefer_null_safe_anti_join_patterns() -> None:
@@ -733,3 +734,14 @@ def test_native_system_prompt_has_phase_keywords() -> None:
     assert "phase 3" in lower
     assert "discover" in lower
     assert "verify" in lower
+
+
+def test_verifier_distinguishes_output_from_ranking_columns() -> None:
+    """Verifier Check 2 must not flag ranking/filter criteria as missing columns."""
+    from data_agent_baseline.agents.answer_verifier import _VERIFIER_SYSTEM
+
+    lower = _VERIFIER_SYSTEM.lower()
+    assert "ranking criterion, not a requested output" in lower
+    assert "filter/ranking criterion" in lower
+    assert "which event has the highest cost" in lower
+    assert "only count attributes the question asks\nyou to return" in lower

@@ -39,11 +39,18 @@ Is any column NOT requested by the question?  Common mistakes:
 - Join-key columns needed for computation but not for the answer.
 
 Check 2 — MISSING columns:
-Does the question ask for attributes the answer does NOT include?
-Examples: "list their ID, sex and diagnosis" needs 3 columns;
-"give the name and reference" needs 2 columns.  Count the distinct
-things the question asks you to output and compare with the submitted
-column count.
+Does the question EXPLICITLY ask the user to output attributes that
+the answer does NOT include?  Only count attributes the question asks
+you to RETURN, not values used solely to filter or rank.
+Examples:
+  "list their ID, sex and diagnosis" → 3 output columns required.
+  "give the name and reference" → 2 output columns required.
+  "which event has the highest cost" → 1 column (the event); the cost
+    is a ranking criterion, NOT a requested output — do NOT flag it
+    as missing.
+  "who is the fastest driver" → 1 column (the driver name).
+When in doubt about whether a value is a requested output or just a
+filter/ranking criterion, say "ok".
 
 Check 3 — ROW COUNT sanity:
 - Empty result (0 rows) → always flag.
