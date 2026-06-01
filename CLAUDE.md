@@ -38,7 +38,8 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) — canonical source for commit message
 
 - Heterogeneous data analysis (SQL + PDF + image/dashboard + docs). Not pure text-to-SQL.
 - Inference-time only — no model training.
-- Target model: `qwen3.5-35b-a3b` (judge-required model string; ~3B active params). See `scripts/eval_local.sh`.
+- Target model: `qwen3.5-35b-a3b` (judge-required model string; ~3B active params, supports video). See `scripts/eval_local.sh`.
+- Online evaluation deploys via vLLM (`--tensor-parallel-size 8 --max-model-len 262144 --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder`). Video input uses base64 data URI inline (no URL reference — local deployment has no external fetch path).
 - Prefer workflow engines, tool use, multi-agent decomposition, and deterministic post-processing.
 - Constrain tool I/O and use structured intermediate files rather than dumping large state into conversation history.
 
