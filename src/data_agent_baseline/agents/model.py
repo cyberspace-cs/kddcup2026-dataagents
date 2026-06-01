@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass, field
 from time import perf_counter
@@ -22,6 +23,8 @@ from openai.types.chat import ChatCompletion
 
 if TYPE_CHECKING:
     from data_agent_baseline.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class _ToolCallFunctionDump(TypedDict, total=False):
@@ -96,7 +99,7 @@ class ModelMessage:
     """
 
     role: str
-    content: str
+    content: str | list[dict[str, Any]]
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str | None = None
 
@@ -190,11 +193,18 @@ def _message_to_payload(message: ModelMessage) -> dict[str, Any]:
     - tool 角色必须带 tool_call_id
     - assistant 角色若带 tool_calls，则 content 可为空串
     - 其他角色只保留 role+content
+
+    content 可以是 str 或 list[dict]（含 video_url block）。video_url 是
+    DashScope / Qwen-VL 扩展，非 OpenAI 标准；换后端时需适配。
     """
     if message.role == "tool":
+        content = message.content
+        if not isinstance(content, str):
+            logger.warning("tool message content is not str, serializing to JSON")
+            content = json.dumps(content, ensure_ascii=False)
         return {
             "role": "tool",
-            "content": message.content,
+            "content": content,
             "tool_call_id": message.tool_call_id or "",
         }
     payload: dict[str, Any] = {"role": message.role, "content": message.content}
@@ -294,7 +304,7 @@ class OpenAIModelAdapter:
         presence_penalty: float | None = None,
         seed: int | None = None,
         max_retries: int = 2,
-        timeout: float = 120.0,
+        timeout: float = 600.0,
     ) -> None:
         self.model = model
         # 去掉尾部斜杠：OpenAI SDK 会自行拼 `/chat/completions`，重复的 `/` 在部分
@@ -419,6 +429,7 @@ class NativeToolsOpenAIAdapter:
         presence_penalty: float | None = None,
         seed: int | None = None,
         max_retries: int = 2,
+        timeout: float = 600.0,
     ) -> None:
         self.model = model
         self.api_base = api_base.rstrip("/")
@@ -440,6 +451,7 @@ class NativeToolsOpenAIAdapter:
         # 显式优先；未指定则按 self.api_base 自动推断（含 aliyuncs.com/dashscope → dashscope）。
         self.backend_kind: BackendKind = _resolve_backend_kind(backend_kind, self.api_base)
         self.max_retries = max_retries
+        self.timeout = timeout
         # 预先把不可变 ToolRegistry 的 definitions 转成 OpenAI tools 数组并缓存：
         # registry 在构造后无法增删工具，因此该缓存在适配器生命周期内永远有效，
         # 也保证了重复请求的 tools 字段字节稳定（prompt cache 命中）。
@@ -453,7 +465,7 @@ class NativeToolsOpenAIAdapter:
         client = OpenAI(
             api_key=self.api_key,
             base_url=self.api_base,
-            timeout=120.0,
+            timeout=self.timeout,
             max_retries=self.max_retries,
         )
 

@@ -33,24 +33,23 @@ def task_id_number(task_id: str) -> int:
 
 
 def _load_task_record(task_json_path: Path) -> TaskRecord:
-    """解析单个 `task.json`，严格校验字段集。
+    """解析单个 `task.json`，校验必填字段。
 
-    字段集必须恰好等于 {task_id, difficulty, question}。任何多余或缺失
-    字段都视为数据异常——宁可早失败，也不要让下游 Agent 看到残缺的任务。
+    必填：{task_id, question}。difficulty 缺失时默认 "unknown"。
     """
     payload = json.loads(task_json_path.read_text())
-    expected_keys = {"task_id", "difficulty", "question"}
-    actual_keys = set(payload)
-    if actual_keys != expected_keys:
+    required_keys = {"task_id", "question"}
+    missing_keys = required_keys - set(payload)
+    if missing_keys:
         raise ValueError(
-            f"Unexpected task.json keys for {task_json_path.parent.name}: "
-            f"expected {sorted(expected_keys)}, got {sorted(actual_keys)}"
+            f"Missing required task.json keys for {task_json_path.parent.name}: "
+            f"{sorted(missing_keys)}"
         )
 
     # 全部显式 str() 转换，防止 YAML/JSON 把数字型 task_id 解析成 int
     return TaskRecord(
         task_id=str(payload["task_id"]),
-        difficulty=str(payload["difficulty"]),
+        difficulty=str(payload.get("difficulty", "unknown")),
         question=str(payload["question"]),
     )
 
