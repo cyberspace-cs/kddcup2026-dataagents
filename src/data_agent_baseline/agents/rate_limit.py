@@ -68,7 +68,17 @@ def estimate_prompt_tokens(messages: list[ModelMessage]) -> int:
     for message in messages:
         total_bytes += len(message.role.encode("utf-8")) + 4  # role + 小量格式符开销
         if message.content:
-            total_bytes += len(message.content.encode("utf-8"))
+            if isinstance(message.content, str):
+                total_bytes += len(message.content.encode("utf-8"))
+            else:
+                for block in message.content:
+                    if block.get("type") == "text":
+                        total_bytes += len(str(block.get("text", "")).encode("utf-8"))
+                    elif block.get("type") == "video_url":
+                        # Qwen-VL caps at ~16 384 visual tokens per video; use that as
+                        # a conservative upper bound (bytes = tokens × 2.5 to undo the
+                        # division at the end of this function).
+                        total_bytes += 40_960
         if message.tool_call_id:
             total_bytes += len(message.tool_call_id.encode("utf-8"))
         for tool_call in message.tool_calls or []:

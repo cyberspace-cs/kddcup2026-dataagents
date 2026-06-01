@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import json
 import random
@@ -62,6 +63,7 @@ def load_records(json_path: Path) -> list[BirdRecord]:
 
 # --------------------------------------------------------------------- sampling
 
+
 def sql_signature(sql: str) -> tuple[bool, ...]:
     """Coarse fingerprint over SQL features, used to spread picks within a db."""
     s = sql.upper()
@@ -94,9 +96,7 @@ def stratified_sample(
     rng = random.Random(seed)
     dbs = sorted(by_db.keys())
     rng.shuffle(dbs)
-    shuffled: dict[str, list[BirdRecord]] = {
-        d: rng.sample(by_db[d], k=len(by_db[d])) for d in dbs
-    }
+    shuffled: dict[str, list[BirdRecord]] = {d: rng.sample(by_db[d], k=len(by_db[d])) for d in dbs}
     used_sigs: dict[str, set[tuple[bool, ...]]] = defaultdict(set)
     cursors = dict.fromkeys(dbs, 0)
     chosen: list[BirdRecord] = []
@@ -128,9 +128,7 @@ def stratified_sample(
 # ------------------------------------------------------------------- DB slimming
 
 _IDENT = r"[`\"\[]?([A-Za-z_][\w]*)[`\"\]]?"
-_TABLE_REF_RE = re.compile(
-    rf"(?i)\b(?:FROM|JOIN)\s+{_IDENT}(?:\s*\.\s*{_IDENT})?"
-)
+_TABLE_REF_RE = re.compile(rf"(?i)\b(?:FROM|JOIN)\s+{_IDENT}(?:\s*\.\s*{_IDENT})?")
 
 
 def extract_tables(sql: str) -> list[str]:
@@ -169,9 +167,7 @@ def slim_sqlite(
     src = sqlite3.connect(f"file:{src_db}?mode=ro", uri=True)
     src.text_factory = bytes  # avoid decode errors on legacy BIRD blobs
     try:
-        rows = src.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        rows = src.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         existing = {r[0].decode("utf-8", errors="replace"): r[0] for r in rows}
         existing_lc = {k.lower(): k for k in existing}
 
@@ -209,16 +205,12 @@ def slim_sqlite(
                 # decode bytes->str for non-blob cells while preserving NULLs
                 decoded_rows = [
                     tuple(
-                        cell.decode("utf-8", errors="replace")
-                        if isinstance(cell, bytes)
-                        else cell
+                        cell.decode("utf-8", errors="replace") if isinstance(cell, bytes) else cell
                         for cell in row
                     )
                     for row in src_rows
                 ]
-                dst.executemany(
-                    f'INSERT INTO "{t}" VALUES ({placeholders})', decoded_rows
-                )
+                dst.executemany(f'INSERT INTO "{t}" VALUES ({placeholders})', decoded_rows)
 
             for t in resolved:
                 idx_rows = src.execute(
@@ -228,12 +220,8 @@ def slim_sqlite(
                 for (idx_sql_bytes,) in idx_rows:
                     if not idx_sql_bytes:
                         continue
-                    try:
-                        dst.execute(
-                            idx_sql_bytes.decode("utf-8", errors="replace")
-                        )
-                    except sqlite3.OperationalError:
-                        pass
+                    with contextlib.suppress(sqlite3.OperationalError):
+                        dst.execute(idx_sql_bytes.decode("utf-8", errors="replace"))
             dst.commit()
         finally:
             dst.close()
@@ -243,6 +231,7 @@ def slim_sqlite(
 
 
 # ----------------------------------------------------------- gold answer & docs
+
 
 def run_gold(db_path: Path, sql: str) -> tuple[list[str], list[tuple]]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -354,7 +343,7 @@ def build_subset(
         try:
             tables, ddl_pairs = slim_sqlite(src_db, slim_db, rec.sql)
             header, rows = run_gold(slim_db, rec.sql)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             failures.append(
                 {
                     "task_id": task_id,

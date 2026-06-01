@@ -42,23 +42,23 @@ agent:
   # api_keys 与 rate_limit 必须 "要么都写、要么都不写"；只写其一会被 load_app_config 拒绝。
   # 启用后 runner 按 task_index % len(api_keys) 给每个任务固定 Key，
   # 单 Key 独立走 RPM+TPM 双令牌桶（filelock 保护，跨进程安全）。
-  # api_keys:
-  #   - YOUR_API_KEY_1
-  #   - YOUR_API_KEY_2
-  # rate_limit:
-  #   rpm_per_key: 600                       # int > 0
-  #   tpm_per_key: 1000000                   # int > 0
-  #   safety_factor: 0.85                    # float in (0, 1]
-  #   reserve_output_tokens: 16384           # int > 0；不得超过 agent.max_tokens
-  #   max_retries: 6                         # int >= 0
-  #   backoff_initial_seconds: 1.0           # float > 0
-  #   backoff_max_seconds: 30.0              # float >= backoff_initial_seconds
+  api_keys:
+    - YOUR_API_KEY_1
+    - YOUR_API_KEY_2
+  rate_limit:
+    rpm_per_key: 600                       # int > 0
+    tpm_per_key: 1000000                   # int > 0
+    safety_factor: 0.85                    # float in (0, 1]
+    reserve_output_tokens: 16384           # int > 0；不得超过 agent.max_tokens
+    max_retries: 6                         # int >= 0
+    backoff_initial_seconds: 1.0           # float > 0
+    backoff_max_seconds: 30.0              # float >= backoff_initial_seconds
 
 run:
   output_dir: artifacts/runs               # 相对路径以 PROJECT_ROOT 为基锚定
   run_id: null                             # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`
   max_workers: 4                           # int >= 1; 8 with dual-key keeps throughput high
-  task_timeout_seconds: 900                # int；<= 0 关闭单任务超时
+  task_timeout_seconds: 1200                # int；<= 0 关闭单任务超时
   retrieval_index:
     enabled: true                          # bool；启用后 runner 在 ETL 后构建 SQLite FTS5 索引
     cache_dir: artifacts/indexes           # 相对路径以 PROJECT_ROOT 为基锚定

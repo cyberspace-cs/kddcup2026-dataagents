@@ -22,6 +22,7 @@ from data_agent_baseline.agents.model import (
     TokenUsage,
     ToolCallParseError,
 )
+from data_agent_baseline.agents.prompt import build_task_prompt
 from data_agent_baseline.agents.react import (
     ReActAgent,
     ReActAgentConfig,
@@ -673,7 +674,7 @@ def test_native_build_messages_uses_tool_role(task: PublicTask) -> None:
         )
     )
 
-    messages = agent._build_messages(task, state)
+    messages = agent._build_messages(task, state, build_task_prompt(task))
 
     # 期望顺序：system, user(task), assistant(tool_calls=...), tool(tc1), tool(tc2)
     assert messages[0].role == "system"

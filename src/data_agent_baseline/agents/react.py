@@ -13,8 +13,12 @@ _extract_reasoning_tool_call_draft`），保留薄薄的再导出层。
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
+import mimetypes
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from data_agent_baseline.agents.answer_verifier import AnswerVerifier
@@ -57,6 +61,8 @@ from data_agent_baseline.tools.handlers import (
 )
 from data_agent_baseline.tools.registry import ToolExecutionResult, ToolRegistry
 
+logger = logging.getLogger(__name__)
+
 # 公开再导出（向后兼容现有 tests/agents/__init__ 的 import 路径）
 __all__ = [
     "ReActAgent",
@@ -67,6 +73,57 @@ __all__ = [
     "parse_model_step",
 ]
 
+VIDEO_EXTENSIONS = {".mp4", ".m4v", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv"}
+
+
+def _find_first_video(context_dir: Path) -> Path | None:
+    """Recurse into ``context/`` and return the first video file (sorted for determinism)."""
+    candidates = sorted(
+        p for p in context_dir.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
+    )
+    if len(candidates) > 1:
+        logger.warning(
+            "Multiple videos in %s; using %s, ignoring %s",
+            context_dir.name,
+            candidates[0].name,
+            [c.name for c in candidates[1:]],
+        )
+    return candidates[0] if candidates else None
+
+
+_VIDEO_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def _build_initial_user_content(task: PublicTask) -> str | list[dict[str, Any]]:
+    """Build the initial user message content, attaching a video if one exists."""
+    text = build_task_prompt(task)
+    video_path = _find_first_video(task.context_dir)
+    if video_path is None:
+        return text
+    size = video_path.stat().st_size
+    if size > _VIDEO_MAX_BYTES:
+        logger.warning(
+            "Video %s skipped: %d bytes exceeds %d byte limit",
+            video_path.name,
+            size,
+            _VIDEO_MAX_BYTES,
+        )
+        return text
+    mime_type = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
+    video_b64 = base64.standard_b64encode(video_path.read_bytes()).decode("ascii")
+    data_url = f"data:{mime_type};base64,{video_b64}"
+    try:
+        relative_video_path = video_path.relative_to(task.context_dir)
+    except ValueError:
+        relative_video_path = video_path.name
+    return [
+        {
+            "type": "text",
+            "text": f"{text}\n\nA video file from the task context is attached: {relative_video_path}.",
+        },
+        {"type": "video_url", "video_url": {"url": data_url}},
+    ]
+
 
 def _serialize_message(message: ModelMessage) -> dict[str, Any]:
     """把 `ModelMessage` 序列化成 JSON 友好的 dict（保留 role/content/tool_calls/tool_call_id）。
@@ -75,7 +132,15 @@ def _serialize_message(message: ModelMessage) -> dict[str, Any]:
     非 None 字段，便于离线调试时完整还原"当时发给 LLM 的请求"；payload 那边则是
     专门给 OpenAI SDK 看的，会按角色裁剪字段。
     """
-    payload: dict[str, Any] = {"role": message.role, "content": message.content}
+    content: str | list[dict[str, Any]] = message.content
+    if isinstance(content, list):
+        content = [
+            {**block, "video_url": {"url": "<base64-stripped>"}}
+            if block.get("type") == "video_url"
+            else block
+            for block in content
+        ]
+    payload: dict[str, Any] = {"role": message.role, "content": content}
     if message.tool_calls is not None:
         payload["tool_calls"] = message.tool_calls
     if message.tool_call_id is not None:
@@ -182,7 +247,10 @@ class ReActAgent:
         return ModelMessage(role="system", content=content)
 
     def _build_messages_text(
-        self, task: PublicTask, state: AgentRuntimeState
+        self,
+        task: PublicTask,
+        state: AgentRuntimeState,
+        initial_content: str | list[dict[str, Any]],
     ) -> list[ModelMessage]:
         """text 协议的消息拼装：回放 assistant 原始响应 + user observation。
 
@@ -194,7 +262,7 @@ class ReActAgent:
            - user:      observation（工具返回）
         """
         messages = [self._system_message()]
-        messages.append(ModelMessage(role="user", content=build_task_prompt(task)))
+        messages.append(ModelMessage(role="user", content=initial_content))
         if self.config.enable_preact and not state.steps:
             messages.append(
                 ModelMessage(
@@ -219,7 +287,10 @@ class ReActAgent:
         return messages
 
     def _build_messages_native(
-        self, task: PublicTask, state: AgentRuntimeState
+        self,
+        task: PublicTask,
+        state: AgentRuntimeState,
+        initial_content: str | list[dict[str, Any]],
     ) -> list[ModelMessage]:
         """native 协议的消息拼装：把同一 turn 的并行 tool_calls 合并成一条 assistant 消息。
 
@@ -231,7 +302,7 @@ class ReActAgent:
            - tool(tool_call_id=..., content=observation_json)       ← N 条（N = 并行数）
         """
         messages = [self._system_message()]
-        messages.append(ModelMessage(role="user", content=build_task_prompt(task)))
+        messages.append(ModelMessage(role="user", content=initial_content))
 
         if self.config.enable_preact and not state.steps:
             messages.append(
@@ -288,11 +359,16 @@ class ReActAgent:
                 )
         return messages
 
-    def _build_messages(self, task: PublicTask, state: AgentRuntimeState) -> list[ModelMessage]:
+    def _build_messages(
+        self,
+        task: PublicTask,
+        state: AgentRuntimeState,
+        initial_content: str | list[dict[str, Any]],
+    ) -> list[ModelMessage]:
         """按协议分派具体的消息构造策略。"""
         if self.protocol == "native":
-            return self._build_messages_native(task, state)
-        return self._build_messages_text(task, state)
+            return self._build_messages_native(task, state, initial_content)
+        return self._build_messages_text(task, state, initial_content)
 
     # ----------------------------- 主循环 -----------------------------
 
@@ -306,6 +382,7 @@ class ReActAgent:
         - 达到 max_steps 未 answer 时，写入 failure_reason 并正常返回
         """
         state = AgentRuntimeState()
+        initial_content = _build_initial_user_content(task)
         step_counter = 0
         effective_turns = 0
         empty_tool_call_retries = 0
@@ -321,7 +398,7 @@ class ReActAgent:
             turn_index += 1
 
             # ---- 1. 调用模型 ----
-            messages = self._build_messages(task, state)
+            messages = self._build_messages(task, state, initial_content)
 
             budget_ratio = (
                 effective_turns / self.config.max_steps if self.config.max_steps > 0 else 0

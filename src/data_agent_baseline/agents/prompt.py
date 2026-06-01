@@ -32,8 +32,10 @@ from data_agent_baseline.tools.inputs import PATH_CONVENTION_NOTE
 # 才有"为什么这么写"的语境锚点。两常量同时被两套 prompt 引用，单一真相源。
 _TASK_PROFILE = (
     "For each task you receive one question and a `context/` directory of "
-    "CSV / JSON / SQLite / Markdown files; you inspect them through the "
+    "CSV / JSON / SQLite / Markdown / video files; you inspect them through the "
     "provided tools, compute the answer, and submit via the `answer` tool. "
+    "When a video file is present, it is attached to the initial message; "
+    "use the video content together with any other context files to answer the question. "
     "You may only read files inside that `context/` directory."
 )
 
