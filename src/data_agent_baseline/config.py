@@ -53,6 +53,21 @@ ToolProtocolLiteral = Literal["native", "text"]
 BackendKindLiteral = Literal["vllm", "dashscope"]
 
 
+def is_placeholder_api_key(api_key: str) -> bool:
+    """Return whether *api_key* is one of the checked-in example placeholders."""
+    normalized = api_key.strip().upper()
+    return normalized == "YOUR_API_KEY" or normalized.startswith("YOUR_API_KEY_")
+
+
+def reject_placeholder_api_key(api_key: str, *, field: str) -> None:
+    """Fail before a placeholder key can be pinned or passed to an adapter."""
+    if is_placeholder_api_key(api_key):
+        raise ValueError(
+            f"{field} contains placeholder {api_key!r}; replace it with a real API key "
+            "before running, or remove agent.api_keys/rate_limit to use agent.api_key."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class DatasetConfig:
     """数据集相关配置。

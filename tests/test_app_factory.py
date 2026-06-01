@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from data_agent_baseline.agents.answer_verifier import AnswerVerifier
 from data_agent_baseline.agents.model import OpenAIModelAdapter
 from data_agent_baseline.agents.rate_limit import RateLimitedAdapter
@@ -32,6 +34,7 @@ from tests.helpers.scripted_adapters import ScriptedModelAdapter
 def _make_config(
     *,
     tmp_path: Path,
+    api_key: str = "primary-key",
     tool_protocol: str = "native",
     max_steps: int = 13,
     max_empty_tool_call_retries: int = 5,
@@ -43,7 +46,7 @@ def _make_config(
         agent=AgentConfig(
             model="m",
             api_base="http://x",
-            api_key="primary-key",
+            api_key=api_key,
             tool_protocol=tool_protocol,  # type: ignore[arg-type]
             max_steps=max_steps,
             max_empty_tool_call_retries=max_empty_tool_call_retries,
@@ -83,6 +86,13 @@ def test_build_application_text_protocol(tmp_path: Path) -> None:
     app = build_application(cfg)
     assert app.protocol == "text"
     assert hasattr(app.model_adapter, "complete")
+
+
+def test_build_application_rejects_placeholder_api_key(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path=tmp_path, api_key="YOUR_API_KEY")
+
+    with pytest.raises(ValueError, match=r"agent\.api_key.*placeholder"):
+        build_application(cfg)
 
 
 def test_new_agent_returns_fresh_instance_per_call(tmp_path: Path) -> None:

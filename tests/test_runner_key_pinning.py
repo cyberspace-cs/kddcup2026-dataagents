@@ -77,6 +77,14 @@ def test_pin_rotates_by_task_index(tmp_path: Path) -> None:
     assert picked == ["key-A", "key-B", "key-A", "key-B"]
 
 
+def test_pin_rejects_placeholder_api_key(tmp_path: Path) -> None:
+    rl = RateLimitConfig(state_dir=None)
+    cfg = _make_config(tmp_path=tmp_path, api_keys=("YOUR_API_KEY_1",), rate_limit=rl)
+
+    with pytest.raises(ValueError, match=r"agent\.api_keys\[0\].*placeholder"):
+        _pin_key_on_config(cfg, task_index=0, effective_run_id="run-1")
+
+
 def test_pin_fills_state_dir_default(tmp_path: Path) -> None:
     rl = RateLimitConfig(state_dir=None)
     cfg = _make_config(tmp_path=tmp_path, api_keys=("key-A",), rate_limit=rl)

@@ -28,7 +28,7 @@ from data_agent_baseline.agents.rate_limit import RateLimitedAdapter
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.agents.recorder import StepCallback
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
-from data_agent_baseline.config import AgentConfig, AppConfig
+from data_agent_baseline.config import AgentConfig, AppConfig, reject_placeholder_api_key
 from data_agent_baseline.tools.registry import ToolRegistry, create_default_tool_registry
 
 # Qwen3 model card Best Practices 推荐的两套采样组合：
@@ -120,6 +120,7 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
     独立成函数主要是为了测试：可以 monkeypatch 掉这里注入 ScriptedModelAdapter。
     """
     sampling = _resolve_sampling_defaults(config.agent)
+    reject_placeholder_api_key(config.agent.api_key, field="agent.api_key")
 
     has_rate_limiter = _has_rate_limiter(config)
 
@@ -161,6 +162,7 @@ def build_no_tools_model_adapter(config: AppConfig) -> ModelAdapter:
     It still uses the shared rate limiter so verifier calls consume the configured
     RPM/TPM budget.
     """
+    reject_placeholder_api_key(config.agent.api_key, field="agent.api_key")
     has_rate_limiter = _has_rate_limiter(config)
     inner = OpenAIModelAdapter(
         model=config.agent.model,

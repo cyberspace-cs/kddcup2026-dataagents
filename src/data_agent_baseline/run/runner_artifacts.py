@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from data_agent_baseline.config import AppConfig
+from data_agent_baseline.config import AppConfig, reject_placeholder_api_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,7 +176,9 @@ def pin_key_on_config(config: AppConfig, *, task_index: int, effective_run_id: s
     """
     if not config.agent.api_keys:
         return config
-    picked = config.agent.api_keys[task_index % len(config.agent.api_keys)]
+    key_index = task_index % len(config.agent.api_keys)
+    picked = config.agent.api_keys[key_index]
+    reject_placeholder_api_key(picked, field=f"agent.api_keys[{key_index}]")
     rl = config.agent.rate_limit
     if rl is not None and rl.state_dir is None:
         rl = replace(rl, state_dir=resolve_ratelimit_state_dir(config, effective_run_id))
