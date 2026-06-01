@@ -73,7 +73,7 @@ __all__ = [
     "parse_model_step",
 ]
 
-VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv"}
+VIDEO_EXTENSIONS = {".mp4", ".m4v", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv"}
 
 
 def _find_first_video(context_dir: Path) -> Path | None:
@@ -112,8 +112,15 @@ def _build_initial_user_content(task: PublicTask) -> str | list[dict[str, Any]]:
     mime_type = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
     video_b64 = base64.standard_b64encode(video_path.read_bytes()).decode("ascii")
     data_url = f"data:{mime_type};base64,{video_b64}"
+    try:
+        relative_video_path = video_path.relative_to(task.context_dir)
+    except ValueError:
+        relative_video_path = video_path.name
     return [
-        {"type": "text", "text": text},
+        {
+            "type": "text",
+            "text": f"{text}\n\nA video file from the task context is attached: {relative_video_path}.",
+        },
         {"type": "video_url", "video_url": {"url": data_url}},
     ]
 
