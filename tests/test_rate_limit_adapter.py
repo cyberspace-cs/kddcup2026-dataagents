@@ -214,6 +214,7 @@ def test_rate_limited_adapter_propagates_thinking_off_through_react_system_messa
     agent = ReActAgent(model=wrapper, tools=create_default_tool_registry(), protocol="native")
     system_content = agent._system_message().content
 
+    assert isinstance(system_content, str)
     assert "## Output protocol" not in system_content
     assert "anything inside <think>...</think>" not in system_content.lower()
 
