@@ -27,6 +27,7 @@ from data_agent_baseline.agents.model import (
     _extract_reasoning_content,
     _extract_usage,
 )
+from data_agent_baseline.agents.rate_limit import estimate_prompt_tokens
 from data_agent_baseline.tools.registry import create_default_tool_registry
 
 
@@ -302,6 +303,13 @@ def test_openai_adapter_captures_reasoning_and_usage(monkeypatch: pytest.MonkeyP
     assert result.latency_ms >= 0
 
 
+def test_openai_adapter_prompt_estimate_is_message_only() -> None:
+    messages = [ModelMessage(role="user", content="hello")]
+    adapter = OpenAIModelAdapter(model="m", api_base="http://x", api_key="k", temperature=0.0)
+
+    assert adapter.estimate_prompt_tokens(messages) == estimate_prompt_tokens(messages)
+
+
 # ---------- NativeToolsOpenAIAdapter（原生 function calling）---------- #
 
 
@@ -472,6 +480,17 @@ def test_native_adapter_extra_body_contains_only_top_k_when_thinking_none(
 
     kwargs = create_mock.call_args.kwargs
     assert kwargs["extra_body"] == {"top_k": 20}
+
+
+def test_native_adapter_prompt_estimate_includes_tool_schema() -> None:
+    messages = [ModelMessage(role="user", content="hello")]
+    adapter = _native_adapter()
+
+    message_only = estimate_prompt_tokens(messages)
+    estimated = adapter.estimate_prompt_tokens(messages)
+
+    assert estimated > message_only
+    assert estimated - message_only > 1_000
 
 
 # ---------- backend_kind 矩阵：vllm vs dashscope，自动推断 vs 显式覆盖 ----------

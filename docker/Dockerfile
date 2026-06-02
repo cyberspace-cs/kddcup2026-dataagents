@@ -55,6 +55,10 @@ WORKDIR /app
 # excludes configs/*.local.yaml so dev secrets never leak into the image.
 COPY configs ./configs
 COPY src/data_agent_baseline ./data_agent_baseline
+RUN python -c "from huggingface_hub import hf_hub_download; import shutil; \
+    shutil.copy(hf_hub_download('Qwen/Qwen3.5-35B-A3B','tokenizer.json', \
+    revision='59d61f3ce65a6d9863b86d2e96597125219dc754'), \
+    'data_agent_baseline/agents/tokenizer.json')"
 
 # Mount points (the judge mounts these via `docker run`, see §3.4):
 #   /input  ro - all task_<id>/{task.json,context/}

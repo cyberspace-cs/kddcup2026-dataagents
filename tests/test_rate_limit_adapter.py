@@ -102,6 +102,20 @@ class _ScriptedInnerAdapter:
         return item
 
 
+class _EstimatingInnerAdapter(_ScriptedInnerAdapter):
+    """Inner adapter with a custom prompt-token estimator."""
+
+    def __init__(self, script: list[ModelResponse | BaseException], prompt_tokens: int) -> None:
+        super().__init__(script)
+        self.prompt_tokens = prompt_tokens
+        self.estimate_calls = 0
+
+    def estimate_prompt_tokens(self, messages: list[ModelMessage]) -> int:
+        del messages
+        self.estimate_calls += 1
+        return self.prompt_tokens
+
+
 @pytest.fixture
 def rate_limit_cfg(tmp_path: Path) -> RateLimitConfig:
     """通用 rate_limit 配置；state_dir 指向 tmp_path，backoff 小以便测试跑得快。"""
@@ -227,8 +241,7 @@ def test_estimate_counts_role_and_content() -> None:
         ModelMessage(role="user", content="a" * 250),  # 250 bytes
     ]
     est = estimate_prompt_tokens(messages)
-    # bytes/2.5；250/2.5 + role 开销 ≈ 100+
-    assert est >= 100
+    assert est == 37
 
 
 def test_estimate_counts_tool_call_fields() -> None:
@@ -248,8 +261,20 @@ def test_estimate_counts_tool_call_fields() -> None:
 
 
 def test_estimate_always_at_least_one() -> None:
-    # 空 messages 也应返 >=1，避免后续 TPM 计算出现 0
     assert estimate_prompt_tokens([]) >= 1
+
+
+def test_estimate_video_block_constant() -> None:
+    messages = [
+        ModelMessage(
+            role="user",
+            content=[
+                {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+            ],
+        ),
+    ]
+    est = estimate_prompt_tokens(messages)
+    assert est >= 16_384
 
 
 # ------- _is_retriable / _parse_retry_after --------------------------------------
@@ -425,6 +450,21 @@ def test_acquire_waits_when_bucket_says_to(
     adapter.complete(_messages())
     # 应看到一次 2.0s 的 sleep（+ jitter=0）
     assert 2.0 in fast_sleep_and_jitter
+
+
+def test_complete_uses_inner_prompt_token_estimator(
+    rate_limit_cfg: RateLimitConfig,
+    fast_sleep_and_jitter: list[float],
+) -> None:
+    del fast_sleep_and_jitter
+    bucket = _FakeBucket()
+    inner = _EstimatingInnerAdapter([_make_response(total_tokens=100)], prompt_tokens=12_345)
+    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
+
+    adapter.complete(_messages())
+
+    assert inner.estimate_calls == 1
+    assert bucket.acquire_calls[0] == (1, 12_345 + rate_limit_cfg.reserve_output_tokens)
 
 
 def test_constructor_rejects_none_state_dir() -> None:
