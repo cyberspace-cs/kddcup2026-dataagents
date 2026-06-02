@@ -38,3 +38,8 @@ def get_tokenizer() -> Any:
     _tokenizer = Tokenizer.from_file(path)
     _loaded = True
     return _tokenizer
+
+
+def count_qwen_tokens(text: str) -> int:
+    """Count text tokens with the configured Qwen3 tokenizer."""
+    return len(get_tokenizer().encode(text, add_special_tokens=False).ids)

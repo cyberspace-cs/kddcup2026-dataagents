@@ -330,6 +330,14 @@ class OpenAIModelAdapter:
         self.max_retries = max_retries
         self.timeout = timeout
 
+    def estimate_prompt_tokens(self, messages: list[ModelMessage]) -> int:
+        """Estimate text-protocol request tokens; no tool schema is sent on this path."""
+        from data_agent_baseline.agents.rate_limit import (
+            estimate_prompt_tokens as estimate_message_prompt_tokens,
+        )
+
+        return estimate_message_prompt_tokens(messages)
+
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。"""
         # 显式检查 api_key，否则 SDK 会抛一条含糊的 401；这里给用户明确提示
@@ -456,6 +464,24 @@ class NativeToolsOpenAIAdapter:
         # registry 在构造后无法增删工具，因此该缓存在适配器生命周期内永远有效，
         # 也保证了重复请求的 tools 字段字节稳定（prompt cache 命中）。
         self._openai_tools = tools.to_openai_tools()
+        self._tools_prompt_tokens: int | None = None
+
+    def _estimate_tools_prompt_tokens(self) -> int:
+        """Count the stable native tools schema prompt contribution lazily."""
+        if self._tools_prompt_tokens is None:
+            from data_agent_baseline.agents.tokenizer_loader import count_qwen_tokens
+
+            tools_text = json.dumps(self._openai_tools, ensure_ascii=False)
+            self._tools_prompt_tokens = count_qwen_tokens(tools_text)
+        return self._tools_prompt_tokens
+
+    def estimate_prompt_tokens(self, messages: list[ModelMessage]) -> int:
+        """Estimate native request tokens, including vLLM-rendered tool definitions."""
+        from data_agent_baseline.agents.rate_limit import (
+            estimate_prompt_tokens as estimate_message_prompt_tokens,
+        )
+
+        return estimate_message_prompt_tokens(messages) + self._estimate_tools_prompt_tokens()
 
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         """发起一次 chat.completions 请求，返回解析好的 `ModelResponse`。"""

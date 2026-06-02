@@ -38,6 +38,12 @@ def test_get_tokenizer_caches() -> None:
     assert a is b
 
 
+def test_count_qwen_tokens() -> None:
+    from data_agent_baseline.agents.tokenizer_loader import count_qwen_tokens
+
+    assert count_qwen_tokens("hello world") > 0
+
+
 def test_get_tokenizer_raises_when_import_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     import builtins
 

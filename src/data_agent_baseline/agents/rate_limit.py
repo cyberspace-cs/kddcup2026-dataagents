@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, cast
 from openai import APIError
 
 from data_agent_baseline.agents.token_bucket import FileTokenBucket
+from data_agent_baseline.agents.tokenizer_loader import count_qwen_tokens
 
 if TYPE_CHECKING:
     from data_agent_baseline.agents.model import ModelAdapter, ModelMessage, ModelResponse
@@ -58,38 +59,40 @@ _VIDEO_TOKENS = 16_384
 
 def estimate_prompt_tokens(messages: list[ModelMessage]) -> int:
     """Estimate prompt token count using the Qwen3 tokenizer."""
-    from data_agent_baseline.agents.tokenizer_loader import get_tokenizer
-
-    tokenizer = get_tokenizer()
-    encode = tokenizer.encode
-
     total = 0
     for message in messages:
         total += _PER_MESSAGE_OVERHEAD
-        total += len(encode(message.role, add_special_tokens=False).ids)
+        total += count_qwen_tokens(message.role)
         if message.content:
             if isinstance(message.content, str):
-                total += len(encode(message.content, add_special_tokens=False).ids)
+                total += count_qwen_tokens(message.content)
             else:
                 for block in message.content:
                     if block.get("type") == "text":
-                        total += len(
-                            encode(str(block.get("text", "")), add_special_tokens=False).ids
-                        )
+                        total += count_qwen_tokens(str(block.get("text", "")))
                     elif block.get("type") == "video_url":
                         total += _VIDEO_TOKENS
         if message.tool_call_id:
-            total += len(encode(message.tool_call_id, add_special_tokens=False).ids)
+            total += count_qwen_tokens(message.tool_call_id)
         for tool_call in message.tool_calls or []:
             function_payload: Any = tool_call.get("function") or {}
             if isinstance(function_payload, dict):
                 fn_payload = cast(dict[str, Any], function_payload)
-                total += len(encode(str(fn_payload.get("name", "")), add_special_tokens=False).ids)
+                total += count_qwen_tokens(str(fn_payload.get("name", "")))
                 args = fn_payload.get("arguments", "")
                 if not isinstance(args, str):
                     args = json.dumps(args, ensure_ascii=False)
-                total += len(encode(args, add_special_tokens=False).ids)
+                total += count_qwen_tokens(args)
     return max(1, total)
+
+
+def _estimate_prompt_tokens_for_adapter(inner: ModelAdapter, messages: list[ModelMessage]) -> int:
+    """Use an adapter-specific estimator when available, otherwise fall back to messages."""
+    estimator = getattr(cast(Any, inner), "estimate_prompt_tokens", None)
+    if callable(estimator):
+        estimated = cast(Any, estimator)(messages)
+        return max(1, int(estimated))
+    return estimate_prompt_tokens(messages)
 
 
 # ------- 错误分类辅助：走 __cause__ 链拿到最底层的 openai.APIError -----------------
@@ -208,7 +211,8 @@ class RateLimitedAdapter:
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         """预扣 → 调 inner → 对账 → 返回；429/5xx 走内部重试，其他异常原样上抛。"""
         reserved_tpm = (
-            estimate_prompt_tokens(messages) + self.rate_limit_config.reserve_output_tokens
+            _estimate_prompt_tokens_for_adapter(self.inner, messages)
+            + self.rate_limit_config.reserve_output_tokens
         )
 
         # Step 1: 预扣 (1 RPM, reserved_tpm)；循环直到拿到令牌
