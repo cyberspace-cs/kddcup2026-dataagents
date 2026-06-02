@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,11 +20,12 @@ def test_get_tokenizer_returns_instance() -> None:
 def test_get_tokenizer_raises_when_download_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     import huggingface_hub
 
+    import data_agent_baseline.agents.tokenizer_loader as mod
+
+    monkeypatch.setattr(mod, "_LOCAL_PATH", Path("/nonexistent/tokenizer.json"))
     monkeypatch.setattr(
         huggingface_hub, "hf_hub_download", lambda *a, **kw: (_ for _ in ()).throw(OSError("fake"))
     )
-
-    import data_agent_baseline.agents.tokenizer_loader as mod
 
     with pytest.raises(OSError, match="fake"):
         mod.get_tokenizer()

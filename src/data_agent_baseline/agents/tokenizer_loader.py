@@ -7,6 +7,7 @@ from typing import Any
 
 _LOCAL_PATH = Path(__file__).parent / "tokenizer.json"
 _HF_REPO = "Qwen/Qwen3.5-35B-A3B"
+_HF_REVISION = "59d61f3ce65a6d9863b86d2e96597125219dc754"
 _HF_FILENAME = "tokenizer.json"
 
 _loaded: bool = False
@@ -19,7 +20,7 @@ def _resolve_tokenizer_path() -> str:
         return str(_LOCAL_PATH)
     from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
 
-    return hf_hub_download(repo_id=_HF_REPO, filename=_HF_FILENAME)
+    return hf_hub_download(repo_id=_HF_REPO, filename=_HF_FILENAME, revision=_HF_REVISION)
 
 
 def get_tokenizer() -> Any:
