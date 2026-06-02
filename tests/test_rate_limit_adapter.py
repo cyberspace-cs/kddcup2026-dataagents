@@ -236,12 +236,23 @@ def test_rate_limited_adapter_propagates_thinking_off_through_react_system_messa
 # ------- estimate_prompt_tokens ---------------------------------------------------
 
 
-def test_estimate_counts_role_and_content() -> None:
+def test_estimate_counts_role_and_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenized: list[str] = []
+
+    def fake_count_qwen_tokens(text: str) -> int:
+        tokenized.append(text)
+        return len(text)
+
+    monkeypatch.setattr(
+        "data_agent_baseline.agents.rate_limit.count_qwen_tokens",
+        fake_count_qwen_tokens,
+    )
     messages = [
         ModelMessage(role="user", content="a" * 250),  # 250 bytes
     ]
     est = estimate_prompt_tokens(messages)
-    assert est == 37
+    assert est == 4 + len("user") + 250
+    assert tokenized == ["user", "a" * 250]
 
 
 def test_estimate_counts_tool_call_fields() -> None:
