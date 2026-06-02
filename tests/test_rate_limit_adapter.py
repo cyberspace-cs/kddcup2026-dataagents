@@ -227,8 +227,7 @@ def test_estimate_counts_role_and_content() -> None:
         ModelMessage(role="user", content="a" * 250),  # 250 bytes
     ]
     est = estimate_prompt_tokens(messages)
-    # bytes/2.5；250/2.5 + role 开销 ≈ 100+
-    assert est >= 100
+    assert est == 37
 
 
 def test_estimate_counts_tool_call_fields() -> None:
@@ -248,8 +247,20 @@ def test_estimate_counts_tool_call_fields() -> None:
 
 
 def test_estimate_always_at_least_one() -> None:
-    # 空 messages 也应返 >=1，避免后续 TPM 计算出现 0
     assert estimate_prompt_tokens([]) >= 1
+
+
+def test_estimate_video_block_constant() -> None:
+    messages = [
+        ModelMessage(
+            role="user",
+            content=[
+                {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+            ],
+        ),
+    ]
+    est = estimate_prompt_tokens(messages)
+    assert est >= 16_384
 
 
 # ------- _is_retriable / _parse_retry_after --------------------------------------

@@ -52,47 +52,44 @@ class RateLimitExhausted(RuntimeError):
     """
 
 
+_PER_MESSAGE_OVERHEAD = 4
+_VIDEO_TOKENS = 16_384
+
+
 def estimate_prompt_tokens(messages: list[ModelMessage]) -> int:
-    """粗估 prompt tokens = bytes / 2.5。
+    """Estimate prompt token count using the Qwen3 tokenizer."""
+    from data_agent_baseline.agents.tokenizer_loader import get_tokenizer
 
-    选 2.5：Chinese 1.5 / English 4 / Code 3 的混合。偏高（估出的 token 数比真实多）比
-    偏低更安全——估小了会击穿 TPM 引起 429；估大了只是多占点桶容量，对账时会被退还。
+    tokenizer = get_tokenizer()
+    encode = tokenizer.encode
 
-    覆盖 ModelMessage 的所有有效负载字段：
-    - role（每条 ~4 bytes 的 "system"/"user"/"assistant"/"tool" 开销 + 格式符）
-    - content（主要 payload）
-    - tool_call_id（native 下 tool 响应消息必填，~36 bytes UUID）
-    - tool_calls[].function.{name, arguments}（assistant 发起工具调用时的原生 payload）
-    """
-    total_bytes = 0
+    total = 0
     for message in messages:
-        total_bytes += len(message.role.encode("utf-8")) + 4  # role + 小量格式符开销
+        total += _PER_MESSAGE_OVERHEAD
+        total += len(encode(message.role, add_special_tokens=False).ids)
         if message.content:
             if isinstance(message.content, str):
-                total_bytes += len(message.content.encode("utf-8"))
+                total += len(encode(message.content, add_special_tokens=False).ids)
             else:
                 for block in message.content:
                     if block.get("type") == "text":
-                        total_bytes += len(str(block.get("text", "")).encode("utf-8"))
+                        total += len(
+                            encode(str(block.get("text", "")), add_special_tokens=False).ids
+                        )
                     elif block.get("type") == "video_url":
-                        # Qwen-VL caps at ~16 384 visual tokens per video; use that as
-                        # a conservative upper bound (bytes = tokens × 2.5 to undo the
-                        # division at the end of this function).
-                        total_bytes += 40_960
+                        total += _VIDEO_TOKENS
         if message.tool_call_id:
-            total_bytes += len(message.tool_call_id.encode("utf-8"))
+            total += len(encode(message.tool_call_id, add_special_tokens=False).ids)
         for tool_call in message.tool_calls or []:
             function_payload: Any = tool_call.get("function") or {}
             if isinstance(function_payload, dict):
                 fn_payload = cast(dict[str, Any], function_payload)
-                total_bytes += len(str(fn_payload.get("name", "")).encode("utf-8"))
-                # arguments 在 OpenAI SDK 侧已经是 JSON 字符串；其他实现兜底成 dict→json
+                total += len(encode(str(fn_payload.get("name", "")), add_special_tokens=False).ids)
                 args = fn_payload.get("arguments", "")
-                if isinstance(args, str):
-                    total_bytes += len(args.encode("utf-8"))
-                else:
-                    total_bytes += len(json.dumps(args, ensure_ascii=False).encode("utf-8"))
-    return max(1, int(total_bytes / 2.5))
+                if not isinstance(args, str):
+                    args = json.dumps(args, ensure_ascii=False)
+                total += len(encode(args, add_special_tokens=False).ids)
+    return max(1, total)
 
 
 # ------- 错误分类辅助：走 __cause__ 链拿到最底层的 openai.APIError -----------------
