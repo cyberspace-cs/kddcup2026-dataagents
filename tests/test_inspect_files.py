@@ -193,7 +193,7 @@ def test_inspect_files_oversized_knowledge_md_no_fulltext(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """knowledge.md exceeding size limit does not get preloaded."""
-    monkeypatch.setattr(filesystem, "_KNOWLEDGE_MD_PRELOAD_LIMIT", 10)
+    monkeypatch.setattr(filesystem.constants, "KNOWLEDGE_MD_PRELOAD_LIMIT", 10)
     task = _make_task(tmp_path)
     (task.context_dir / "knowledge.md").write_text("x" * 100)
     result = inspect_context_files(task)
@@ -268,7 +268,7 @@ def test_inspect_files_oversized_json_via_streaming(
     模型在 execute_python 里瞎猜 `for k in data.keys()[:3]: print(data[k])` 印爆 stdout。
     新契约下 schema.kind == "object"，keys 字段给出真实顶层 keys。
     """
-    monkeypatch.setattr(filesystem, "_INSPECT_FILES_JSON_SIZE_LIMIT", 50)
+    monkeypatch.setattr(filesystem.constants, "INSPECT_FILES_JSON_SIZE_LIMIT", 50)
     task = _make_task(tmp_path)
     (task.context_dir / "zip_code.json").write_text(
         json.dumps({"table": "zip_code", "records": [{"id": 1}, {"id": 2}]})

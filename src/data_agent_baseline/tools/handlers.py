@@ -27,7 +27,7 @@ from data_agent_baseline.retrieval.index import (
     search_context,
 )
 from data_agent_baseline.tools.filesystem import (
-    _classify_dtype,  # pyright: ignore[reportPrivateUsage]
+    classify_dtype,
     inspect_context_files,
     read_csv_preview,
     read_doc_preview,
@@ -190,7 +190,7 @@ _FROM_CSV_SIZE_LIMIT_BYTES = 5 * 1024 * 1024
 def _coerce_row(row: list[str], dtypes: list[str]) -> list[Any]:
     """按列 dtype 把 CSV 字符串 cell 强转回 int / float / bool / None。
 
-    与 `_classify_dtype` 的判定一一对应：'empty' 列保留为 str（推断不出更窄类型时
+    与 `classify_dtype` 的判定一一对应：'empty' 列保留为 str（推断不出更窄类型时
     宁可保守，避免把 ID-like 字段误转成 int 丢精度）。空字符串始终视为 None，
     回填成 prediction.csv 时与 inline 路径的 `null` cell 行为一致。
     """
@@ -213,7 +213,7 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
     """读取并类型化一份 answer artifact CSV。
 
     设计意图：模型若用 `pandas.to_csv` 写 artifact，所有 cell 都会被序列化为字符串。
-    本函数复用 `_classify_dtype` 做列级类型推断（int 优先于 float，再依次 bool/str），
+    本函数复用 `classify_dtype` 做列级类型推断（int 优先于 float，再依次 bool/str），
     再用 `_coerce_row` 把字符串 cell 强转回原类型，让 prediction.csv 与 inline 路径
     生成的字面值一致——尤其是整数主键 ID（避免落地成 `163109.0`）与浮点全精度
     （避免被 float→str→float 截断）。
@@ -246,7 +246,7 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
     dtypes: list[str] = []
     for col_idx in range(width):
         column_values = [row[col_idx] for row in data]
-        dtypes.append(_classify_dtype(column_values))
+        dtypes.append(classify_dtype(column_values))
     typed = [_coerce_row(row, dtypes) for row in data]
     return header, typed, dtypes
 

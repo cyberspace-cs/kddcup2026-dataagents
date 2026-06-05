@@ -160,7 +160,7 @@ def test_oversized_file_returns_streamed_schema(
     旧契约（kind="unknown" + skipped=True）已被替换：模型现在能拿到顶层 keys，
     生成正确的 `data['records']` 取数代码而非瞎猜 `data.keys()[:3]`。
     """
-    monkeypatch.setattr(filesystem, "_READ_JSON_SIZE_LIMIT", 30)
+    monkeypatch.setattr(filesystem.constants, "READ_JSON_SIZE_LIMIT", 30)
     task = _make_task(tmp_path)
     payload: dict[str, Any] = {"table": "zip_code", "records": [{"id": 1}, {"id": 2}]}
     _write_json(task.context_dir / "big.json", payload)
@@ -183,7 +183,7 @@ def test_oversized_file_returns_streamed_schema(
 
 def test_streaming_array_returns_length(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """顶层 array 走流式分支：length 准确、first_item_kind 准确、streamed=True。"""
-    monkeypatch.setattr(filesystem, "_READ_JSON_SIZE_LIMIT", 50)
+    monkeypatch.setattr(filesystem.constants, "READ_JSON_SIZE_LIMIT", 50)
     task = _make_task(tmp_path)
     rows = [{"id": i, "name": f"name_{i}"} for i in range(7)]
     _write_json(task.context_dir / "rows.json", rows)
@@ -210,7 +210,7 @@ def test_streaming_object_keys_match_full_load(
     out_full = read_json_preview(task, "obj.json")
 
     # 路径 B：streaming（用 monkeypatch 把上限调到 50 字节强制走该分支）
-    monkeypatch.setattr(filesystem, "_READ_JSON_SIZE_LIMIT", 50)
+    monkeypatch.setattr(filesystem.constants, "READ_JSON_SIZE_LIMIT", 50)
     out_streamed = read_json_preview(task, "obj.json")
 
     assert out_full["kind"] == out_streamed["kind"] == "object"
