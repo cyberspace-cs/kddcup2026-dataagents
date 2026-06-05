@@ -63,7 +63,7 @@ ToolProtocolLiteral = Literal["native", "text"]
 # None = 由 adapter 按 api_base 主机名自动推断（含 aliyuncs.com/dashscope → dashscope）。
 BackendKindLiteral = Literal["vllm", "dashscope"]
 
-_PYDANTIC_DATACLASS_CONFIG = ConfigDict(extra="ignore")
+_PYDANTIC_DATACLASS_CONFIG = ConfigDict(extra="forbid")
 
 # RateLimitConfig.reserve_output_tokens 校验器借助 context 拿到父级 max_tokens，
 # 保持 "reserve > 0" 与 "reserve <= max_tokens" 在同一个校验器里相邻执行。

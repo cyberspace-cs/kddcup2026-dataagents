@@ -14,8 +14,9 @@ import warnings
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from data_agent_baseline.config import load_app_config
+from data_agent_baseline.config import AgentConfig, RunConfig, load_app_config
 
 
 def _write_config(path: Path, body: str) -> Path:
@@ -34,6 +35,19 @@ def test_defaults_when_fields_absent(tmp_path: Path) -> None:
     assert cfg.run.retrieval_index.max_chunk_chars == 1600
     assert cfg.run.retrieval_index.chunk_overlap_lines == 2
     assert cfg.run.retrieval_index.max_results == 8
+
+
+def test_load_app_config_rejects_unknown_agent_field(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "  does_not_exist: 123\n")
+    with pytest.raises(ValueError, match="Unexpected keyword argument"):
+        load_app_config(cfg_path)
+
+
+def test_config_constructors_reject_unknown_fields() -> None:
+    with pytest.raises(ValidationError, match="does_not_exist"):
+        AgentConfig(does_not_exist=123)  # type: ignore[call-arg]
+    with pytest.raises(ValidationError, match="does_not_exist"):
+        RunConfig(does_not_exist=123)  # type: ignore[call-arg]
 
 
 def test_retrieval_index_config_round_trip(tmp_path: Path) -> None:
