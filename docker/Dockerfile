@@ -20,7 +20,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# All listed deps (numpy/pandas/pyarrow/duckdb/polars/pydantic/...) ship
+# All listed deps (numpy/pandas/pyarrow/polars/pydantic/...) ship
 # manylinux wheels for x86_64, so no compilers needed. If a future dep
 # requires C extensions, re-add: build-essential gcc g++.
 RUN pip install --no-cache-dir uv
