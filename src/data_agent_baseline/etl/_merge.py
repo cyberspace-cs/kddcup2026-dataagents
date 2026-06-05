@@ -8,10 +8,11 @@ import logging
 import re
 from pathlib import Path
 
+from data_agent_baseline.etl._detect import ENTITY_LINE
+
 logger = logging.getLogger(__name__)
 
 KV_LINE = re.compile(r"^ID:\s*(\d+)\s*\|\s*entity_name:\s*(.+?)\s*\|", re.MULTILINE)
-_ENTITY_LINE = re.compile(r"^ID:\s*", re.MULTILINE)
 
 PLACEHOLDER_VALS = frozenset(
     {
@@ -99,7 +100,7 @@ def pre_merge_entity_lines(
         stripped = line.strip()
         if not stripped:
             continue
-        is_entity = (pk_token in stripped) if pk_token else _ENTITY_LINE.match(stripped)
+        is_entity = (pk_token in stripped) if pk_token else ENTITY_LINE.match(stripped)
         if is_entity:
             entity_lines.append(stripped)
         elif not entity_lines:
@@ -174,7 +175,7 @@ def normalize_entity_lines(
         stripped = line.strip()
         if not stripped:
             continue
-        is_entity = (pk_token in stripped) if pk_token else _ENTITY_LINE.match(stripped)
+        is_entity = (pk_token in stripped) if pk_token else ENTITY_LINE.match(stripped)
         if not is_entity:
             normalized.append(line)
             continue
@@ -223,7 +224,7 @@ def deterministic_kv_to_csv(
         stripped = line.strip()
         if not stripped:
             continue
-        is_entity = (pk_token in stripped) if pk_token else _ENTITY_LINE.match(stripped)
+        is_entity = (pk_token in stripped) if pk_token else ENTITY_LINE.match(stripped)
         if not is_entity:
             continue
 

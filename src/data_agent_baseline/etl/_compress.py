@@ -5,12 +5,11 @@ from __future__ import annotations
 import csv
 import io
 import logging
-import re
 import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
-from data_agent_baseline.etl._detect import detect_sections
+from data_agent_baseline.etl._detect import ENTITY_LINE, detect_sections
 
 if TYPE_CHECKING:
     from data_agent_baseline.agents.model import ModelAdapter
@@ -19,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 COMPRESS_CHUNK_SIZE = 30
 EXTRACT_CHUNK_LINES = 30
-_ENTITY_LINE = re.compile(r"^ID:\s*", re.MULTILINE)
 
 MAX_WORKERS = 4
 LLM_CALL_TIMEOUT = 180
@@ -279,7 +277,7 @@ def split_entity_chunks(
     entity_lines: list[str] = []
     non_entity_header: list[str] = []
     for line in text.splitlines():
-        is_entity = (pk_token and pk_token in line) if pk_token else _ENTITY_LINE.match(line)
+        is_entity = (pk_token and pk_token in line) if pk_token else ENTITY_LINE.match(line)
         if is_entity:
             entity_lines.append(line)
         elif not entity_lines:

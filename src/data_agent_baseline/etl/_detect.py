@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 MIN_LINES = 200
 PROSE_EXTS = frozenset({".md", ".txt"})
+ENTITY_LINE = re.compile(r"^ID:\s*", re.MULTILINE)
 _SECTION_HEADING = re.compile(r"^(#{2,4})\s+(.+)$", re.MULTILINE)
 
 

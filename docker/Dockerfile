@@ -56,7 +56,7 @@ WORKDIR /app
 COPY configs ./configs
 COPY src/data_agent_baseline ./data_agent_baseline
 RUN <<'PYEOF' python
-import time, urllib.request, urllib.error
+import shutil, time, urllib.request, urllib.error
 url = "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/resolve/59d61f3ce65a6d9863b86d2e96597125219dc754/tokenizer.json"
 dst = "data_agent_baseline/agents/tokenizer.json"
 delays = [0, 5, 10, 30, 60]
@@ -65,7 +65,8 @@ for attempt, delay in enumerate(delays):
         print(f"retry {attempt}/{len(delays)-1} after {delay}s...")
         time.sleep(delay)
     try:
-        urllib.request.urlretrieve(url, dst)
+        with urllib.request.urlopen(url) as resp, open(dst, "wb") as f:
+            shutil.copyfileobj(resp, f)
         break
     except urllib.error.URLError as exc:
         if attempt == len(delays) - 1:
