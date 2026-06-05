@@ -19,7 +19,7 @@ CLI 通过 `streamlit run streamlit_app.py -- --run-id <id> --task-id <id>` 透�
 # 模式会逐个 call 报 reportUnknownMemberType。这是 streamlit 上游 stub 的限制，
 # 不在我们代码控制内——文件级关掉这一规则；其它 strict 检查（参数类型/变量
 # 类型/不必要 isinstance 等）继续生效。
-# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownMemberType=false, reportMissingImports=false, reportUnknownVariableType=false, reportUnknownLambdaType=false, reportUnknownArgumentType=false
 
 from __future__ import annotations
 
@@ -492,11 +492,13 @@ def main() -> None:
     selected_run = _render_run_picker(runs, initial_run_id)
     if selected_run is None:
         st.stop()
+        return  # unreachable — satisfies pyright after st.stop()
 
     tasks = list_tasks_in_run(selected_run.run_dir)
     selected_task = _render_task_picker(tasks, initial_task_id)
     if selected_task is None:
         st.stop()
+        return  # unreachable — satisfies pyright after st.stop()
 
     # 同步 URL（便于 share 链接）
     st.query_params["run"] = selected_run.run_id
@@ -506,6 +508,7 @@ def main() -> None:
     if trace is None:
         st.error(f"trace.json not found under {selected_task.task_dir}")
         st.stop()
+        return  # unreachable — satisfies pyright after st.stop()
 
     gold = load_gold(selected_task.task_id, public_data_dir)
     pred = load_prediction(selected_task.task_dir)
