@@ -52,7 +52,8 @@ JSON, SQLite/DB, and text files.
 ## Configuration
 
 The YAML schema is summarized in [`docs/cli.md`](docs/cli.md), with validation
-implemented in `src/data_agent_baseline/config_models.py`. An example lives at
+implemented on the frozen config dataclasses in `src/data_agent_baseline/config.py`.
+An example lives at
 [`configs/react_baseline.example.yaml`](configs/react_baseline.example.yaml).
 
 ```yaml
