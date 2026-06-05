@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import abc
 import json
 import logging
 import re
@@ -280,8 +281,12 @@ class ToolCallParseError(RuntimeError):
         self.partial_response = partial_response
 
 
-class _BaseOpenAIAdapter:
+class _BaseOpenAIAdapter(abc.ABC):
     """Shared init / request-build / call-and-parse for OpenAI-compatible adapters."""
+
+    @abc.abstractmethod
+    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+        raise NotImplementedError
 
     def __init__(
         self,
