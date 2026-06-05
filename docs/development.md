@@ -48,8 +48,7 @@ CI is intentionally not wired in this repo — the gates run locally only.
 src/data_agent_baseline/
 ├── __init__.py
 ├── cli.py                       # Typer entrypoint (dabench)
-├── config.py                    # Frozen dataclasses (public type)
-├── config_models.py             # Pydantic v2 validators (internal)
+├── config.py                    # Frozen config dataclasses + Pydantic validation
 ├── agents/
 │   ├── react.py                 # Loop driver
 │   ├── protocol.py              # Native ↔ text → ToolCall normalization

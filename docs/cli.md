@@ -51,8 +51,8 @@ uv run dabench run-benchmark --range 2-8 --limit 3 --config configs/react_baseli
 
 ## Config schema
 
-The supported YAML fields are validated by
-`src/data_agent_baseline/config_models.py`; the example below mirrors
+The supported YAML fields are validated by the frozen Pydantic dataclasses in
+`src/data_agent_baseline/config.py`; the example below mirrors
 `configs/react_baseline.example.yaml`.
 
 ```yaml
