@@ -9,7 +9,6 @@ description = "ReAct-style baseline for the DABench data-agent benchmark"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "datasets>=3.3.2",
     "filelock>=3.13",
     "huggingface-hub>=0.29.3",
     "ijson>=3.3.0",
