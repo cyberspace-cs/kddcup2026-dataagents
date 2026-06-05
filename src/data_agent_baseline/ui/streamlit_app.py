@@ -19,7 +19,7 @@ CLI 通过 `streamlit run streamlit_app.py -- --run-id <id> --task-id <id>` 透�
 # 模式会逐个 call 报 reportUnknownMemberType。这是 streamlit 上游 stub 的限制，
 # 不在我们代码控制内——文件级关掉这一规则；其它 strict 检查（参数类型/变量
 # 类型/不必要 isinstance 等）继续生效。
-# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownMemberType=false, reportMissingImports=false
 
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ def _render_run_picker(runs: list[RunInfo], default_run_id: str | None) -> RunIn
     if default_run_id and default_run_id in options:
         default_index = options.index(default_run_id)
 
-    selected_id = st.sidebar.selectbox("Run", options, index=default_index)
+    selected_id: str = st.sidebar.selectbox("Run", options, index=default_index)  # pyright: ignore[reportUnknownVariableType]
     selected = next(info for info in runs if info.run_id == selected_id)
 
     # 子标签：成败计数 + 总数
@@ -158,11 +158,11 @@ def _render_task_picker(tasks: list[TaskInfo], default_task_id: str | None) -> T
     if default_task_id and default_task_id in options:
         default_index = options.index(default_task_id)
 
-    selected_id = st.sidebar.selectbox(
+    selected_id: str = st.sidebar.selectbox(  # pyright: ignore[reportUnknownVariableType]
         "Task",
         options,
         index=default_index,
-        format_func=lambda tid: _label(next(t for t in tasks if t.task_id == tid)),
+        format_func=lambda tid: _label(next(t for t in tasks if t.task_id == tid)),  # pyright: ignore[reportUnknownLambdaType]
     )
     return next(t for t in tasks if t.task_id == selected_id)
 
@@ -192,7 +192,7 @@ def _render_token_chart(steps: list[dict[str, Any]]) -> None:
 
 def _render_table_tabs(gold: pd.DataFrame | None, pred: pd.DataFrame | None) -> None:
     """三 Tab：gold / prediction / side-by-side。"""
-    tab_gold, tab_pred, tab_side = st.tabs(["gold.csv", "prediction.csv", "side-by-side"])
+    tab_gold, tab_pred, tab_side = st.tabs(["gold.csv", "prediction.csv", "side-by-side"])  # pyright: ignore[reportUnknownVariableType]
 
     with tab_gold:
         if gold is not None:
@@ -210,7 +210,7 @@ def _render_table_tabs(gold: pd.DataFrame | None, pred: pd.DataFrame | None) -> 
         if gold is None or pred is None:
             st.info("Side-by-side requires both gold and prediction.")
             return
-        col_gold, col_pred = st.columns(2)
+        col_gold, col_pred = st.columns(2)  # pyright: ignore[reportUnknownVariableType]
         with col_gold:
             st.markdown("**gold**")
             st.dataframe(gold, use_container_width=True)
@@ -229,7 +229,7 @@ def _render_step_expander(step: dict[str, Any]) -> None:
     label = f"Step {step_index} · [{action}] · {total_tokens} tok · {'✓' if ok else '✗'}"
 
     with st.expander(label, expanded=False):
-        tab_thought, tab_prompt, tab_tool, tab_response = st.tabs(
+        tab_thought, tab_prompt, tab_tool, tab_response = st.tabs(  # pyright: ignore[reportUnknownVariableType]
             ["🧠 思考", "📤 Prompt", "🔧 工具", "📥 Response"]
         )
 
@@ -484,19 +484,21 @@ def main() -> None:
     st.title("DABench · 单任务调试查看器")
 
     # 优先级：URL query > CLI 参数；这样刷新页面也保留状态
-    query_params = st.query_params
-    initial_run_id = query_params.get("run") or args.run_id
-    initial_task_id = query_params.get("task") or args.task_id
+    query_params = st.query_params  # pyright: ignore[reportUnknownVariableType]
+    initial_run_id: str | None = query_params.get("run") or args.run_id  # pyright: ignore[reportUnknownVariableType]
+    initial_task_id: str | None = query_params.get("task") or args.task_id  # pyright: ignore[reportUnknownVariableType]
 
     runs = list_runs(artifacts_dir)
-    selected_run = _render_run_picker(runs, initial_run_id)
+    selected_run = _render_run_picker(runs, initial_run_id)  # pyright: ignore[reportUnknownArgumentType]
     if selected_run is None:
         st.stop()
+        return  # unreachable — satisfies pyright after st.stop()
 
     tasks = list_tasks_in_run(selected_run.run_dir)
-    selected_task = _render_task_picker(tasks, initial_task_id)
+    selected_task = _render_task_picker(tasks, initial_task_id)  # pyright: ignore[reportUnknownArgumentType]
     if selected_task is None:
         st.stop()
+        return  # unreachable — satisfies pyright after st.stop()
 
     # 同步 URL（便于 share 链接）
     st.query_params["run"] = selected_run.run_id
@@ -506,6 +508,7 @@ def main() -> None:
     if trace is None:
         st.error(f"trace.json not found under {selected_task.task_dir}")
         st.stop()
+        return  # unreachable — satisfies pyright after st.stop()
 
     gold = load_gold(selected_task.task_id, public_data_dir)
     pred = load_prediction(selected_task.task_dir)

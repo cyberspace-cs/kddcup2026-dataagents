@@ -10,14 +10,13 @@ The agent supports two protocols for getting tool calls out of an LLM. Switch vi
 | `native` | The endpoint supports OpenAI native function calling. vLLM with `--enable-auto-tool-choice --tool-call-parser qwen3_coder` works. | Default. Multi-call per turn. JSON arguments validated by the SDK. |
 | `text` | The endpoint cannot accept a `tools=` payload, or returns `400 Bad Request` when one is sent. | One call per turn. The model emits a single fenced JSON object containing `thought`, `action`, `action_input`. |
 
-In both modes the agent strips any `<think>...</think>` block from
-`message.content` before parsing — see
-[`model-adapter` spec](../openspec/specs/model-adapter/spec.md).
+In both modes the model adapters strip any `<think>...</think>` block from
+`message.content` before parsing.
 
 ## Default tool inventory
 
 Registration order is fixed; `to_openai_tools()` sorts by name on output for cache
-stability. See [`tool-registry` spec](../openspec/specs/tool-registry/spec.md).
+stability.
 
 | Tool | Arguments | Purpose |
 | --- | --- | --- |
@@ -37,16 +36,16 @@ absolute paths, and symlinks escaping the sandbox are rejected.
 
 ## Loop control
 
-The driver bounds three counters (see
-[`agent-execution-loop` spec](../openspec/specs/agent-execution-loop/spec.md)):
+The driver bounds these counters:
 
 - `max_steps` — total recorded steps before the loop halts with a
   `failure_reason` mentioning `max_steps`.
-- `max_model_call_retries` — consecutive model exceptions tolerated; the
-  N-th retry's failure terminates the run.
 - `max_empty_tool_call_retries` — total empty-call turns tolerated. Halt
   fires when `empty_tool_call_retries >= max_empty_tool_call_retries`
   (i.e. with `N=1`, the first empty turn is the failure turn).
+
+Model request exceptions are recorded as `model_error` steps and consume the normal
+`max_steps` budget.
 
 Internal event kinds (`model_error`, `parse_error`, `empty_tool_calls`,
 `tool_error`, `observation`) are an internal `Literal`; on disk every

@@ -20,7 +20,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# All listed deps (numpy/pandas/pyarrow/duckdb/polars/pydantic/...) ship
+# All listed deps (numpy/pandas/pyarrow/polars/pydantic/...) ship
 # manylinux wheels for x86_64, so no compilers needed. If a future dep
 # requires C extensions, re-add: build-essential gcc g++.
 RUN pip install --no-cache-dir uv
@@ -55,10 +55,23 @@ WORKDIR /app
 # excludes configs/*.local.yaml so dev secrets never leak into the image.
 COPY configs ./configs
 COPY src/data_agent_baseline ./data_agent_baseline
-RUN python -c "from huggingface_hub import hf_hub_download; import shutil; \
-    shutil.copy(hf_hub_download('Qwen/Qwen3.5-35B-A3B','tokenizer.json', \
-    revision='59d61f3ce65a6d9863b86d2e96597125219dc754'), \
-    'data_agent_baseline/agents/tokenizer.json')"
+RUN <<'PYEOF' python
+import shutil, time, urllib.request, urllib.error
+url = "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/resolve/59d61f3ce65a6d9863b86d2e96597125219dc754/tokenizer.json"
+dst = "data_agent_baseline/agents/tokenizer.json"
+delays = [0, 5, 10, 30, 60]
+for attempt, delay in enumerate(delays):
+    if delay:
+        print(f"retry {attempt}/{len(delays)-1} after {delay}s...")
+        time.sleep(delay)
+    try:
+        with urllib.request.urlopen(url) as resp, open(dst, "wb") as f:
+            shutil.copyfileobj(resp, f)
+        break
+    except urllib.error.URLError as exc:
+        if attempt == len(delays) - 1:
+            raise RuntimeError("tokenizer download failed after retries") from exc
+PYEOF
 
 # Mount points (the judge mounts these via `docker run`, see §3.4):
 #   /input  ro - all task_<id>/{task.json,context/}

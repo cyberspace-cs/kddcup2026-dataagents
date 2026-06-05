@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import abc
 import json
 import logging
 import re
@@ -19,7 +20,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict, cast
 
 from openai import APIError, OpenAI
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion, ChatCompletionMessage
 
 if TYPE_CHECKING:
     from data_agent_baseline.tools.registry import ToolRegistry
@@ -280,13 +281,12 @@ class ToolCallParseError(RuntimeError):
         self.partial_response = partial_response
 
 
-class OpenAIModelAdapter:
-    """对 OpenAI 兼容 chat.completions 接口的包装（文本协议）。
+class _BaseOpenAIAdapter(abc.ABC):
+    """Shared init / request-build / call-and-parse for OpenAI-compatible adapters."""
 
-    仅依赖 `openai` 官方 SDK；通过 `api_base` 切换后端（本地 vLLM、代理网关等）。
-    每次 `complete` 都新建 client，避免跨线程共享 HTTP 连接导致的状态问题。
-    不传 `tools=` 参数，模型响应必须是纯文本 —— 文本 ReAct 协议。
-    """
+    @abc.abstractmethod
+    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+        raise NotImplementedError
 
     def __init__(
         self,
@@ -338,22 +338,10 @@ class OpenAIModelAdapter:
 
         return estimate_message_prompt_tokens(messages)
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
-        """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。"""
-        # 显式检查 api_key，否则 SDK 会抛一条含糊的 401；这里给用户明确提示
-        if not self.api_key:
-            raise RuntimeError("Missing model API key in config.agent.api_key.")
-
-        client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.api_base,
-            timeout=self.timeout,
-            max_retries=self.max_retries,
-        )
-
+    def _build_request_kwargs(self, messages: list[ModelMessage]) -> dict[str, Any]:
+        """Assemble the common chat.completions request dict."""
         request_kwargs: dict[str, Any] = {
             "model": self.model,
-            # 把 ModelMessage 转成 SDK 期望的 dict 形式
             "messages": [_message_to_payload(message) for message in messages],
         }
         if self.temperature is not None:
@@ -365,7 +353,6 @@ class OpenAIModelAdapter:
         if self.seed is not None:
             request_kwargs["seed"] = self.seed
         if self.max_tokens > 0:
-            # 下发显式上限；Qwen3 下封顶的是 **总输出**（含 reasoning tokens）
             request_kwargs["max_tokens"] = self.max_tokens
         # extra_body 累积构建：top_k / min_p 与 enable_thinking 合并下发，避免后来者覆盖前者。
         # enable_thinking 的位置依赖 self.backend_kind：vLLM 必须嵌套到 chat_template_kwargs，
@@ -379,12 +366,30 @@ class OpenAIModelAdapter:
             extra_body["min_p"] = self.min_p
         if extra_body:
             request_kwargs["extra_body"] = extra_body
+        return request_kwargs
+
+    def _call_and_parse_base(
+        self, request_kwargs: dict[str, Any]
+    ) -> tuple[ModelResponse, ChatCompletionMessage]:
+        """Execute the API call and return (base_response, raw_message).
+
+        The raw_message is the SDK message object from choices[0], exposed so
+        subclasses can extract tool_calls from it.
+        """
+        if not self.api_key:
+            raise RuntimeError("Missing model API key in config.agent.api_key.")
+
+        client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.api_base,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
+        )
 
         started = perf_counter()
         try:
             response = cast(ChatCompletion, client.chat.completions.create(**request_kwargs))
         except APIError as exc:
-            # 把供应商错误统一包成 RuntimeError，便于 ReAct 循环的通用异常分支处理
             raise RuntimeError(f"Model request failed: {exc}") from exc
         latency_ms = int((perf_counter() - started) * 1000)
 
@@ -392,11 +397,9 @@ class OpenAIModelAdapter:
         if not choices:
             raise RuntimeError("Model response missing choices.")
         message = choices[0].message
-        # 允许 content 为 None（偶尔模型返回空串或 reasoning-only）—— 归一化成空串
         content = message.content or ""
-        # 防御性剥离 `<think>` —— 若 vLLM reasoning-parser 未启用，避免污染 JSON 解析
         cleaned = _strip_think_tags(content)
-        return ModelResponse(
+        base_response = ModelResponse(
             content=cleaned,
             tool_calls=[],
             raw_response=cleaned,
@@ -405,9 +408,25 @@ class OpenAIModelAdapter:
             usage=_extract_usage(response),
             latency_ms=latency_ms,
         )
+        return base_response, message
 
 
-class NativeToolsOpenAIAdapter:
+class OpenAIModelAdapter(_BaseOpenAIAdapter):
+    """对 OpenAI 兼容 chat.completions 接口的包装（文本协议）。
+
+    仅依赖 `openai` 官方 SDK；通过 `api_base` 切换后端（本地 vLLM、代理网关等）。
+    每次 `complete` 都新建 client，避免跨线程共享 HTTP 连接导致的状态问题。
+    不传 `tools=` 参数，模型响应必须是纯文本 —— 文本 ReAct 协议。
+    """
+
+    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+        """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。"""
+        request_kwargs = self._build_request_kwargs(messages)
+        base_response, _message = self._call_and_parse_base(request_kwargs)
+        return base_response
+
+
+class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
     """对 OpenAI 兼容接口的包装（原生 function calling 协议）。
 
     与 `OpenAIModelAdapter` 的核心差异：
@@ -439,27 +458,24 @@ class NativeToolsOpenAIAdapter:
         max_retries: int = 2,
         timeout: float = 600.0,
     ) -> None:
-        self.model = model
-        self.api_base = api_base.rstrip("/")
-        self.api_key = api_key
-        # 采样字段：与 OpenAIModelAdapter 对齐，None = 不下发；
-        # top_p / presence_penalty / seed 走顶层；top_k / min_p 走 extra_body 与
-        # enable_thinking 合并；详见 OpenAIModelAdapter 的注释。
-        self.temperature = temperature
-        self.top_p = top_p
-        self.top_k = top_k
-        self.min_p = min_p
-        self.presence_penalty = presence_penalty
-        self.seed = seed
+        super().__init__(
+            model=model,
+            api_base=api_base,
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            enable_thinking=enable_thinking,
+            backend_kind=backend_kind,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            presence_penalty=presence_penalty,
+            seed=seed,
+            max_retries=max_retries,
+            timeout=timeout,
+        )
         self.tools = tools
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
-        self.max_tokens = max_tokens
-        self.enable_thinking = enable_thinking
-        # 解析后的 backend_kind 决定 enable_thinking 走顶层还是 chat_template_kwargs。
-        # 显式优先；未指定则按 self.api_base 自动推断（含 aliyuncs.com/dashscope → dashscope）。
-        self.backend_kind: BackendKind = _resolve_backend_kind(backend_kind, self.api_base)
-        self.max_retries = max_retries
-        self.timeout = timeout
         # 预先把不可变 ToolRegistry 的 definitions 转成 OpenAI tools 数组并缓存：
         # registry 在构造后无法增删工具，因此该缓存在适配器生命周期内永远有效，
         # 也保证了重复请求的 tools 字段字节稳定（prompt cache 命中）。
@@ -477,80 +493,26 @@ class NativeToolsOpenAIAdapter:
 
     def estimate_prompt_tokens(self, messages: list[ModelMessage]) -> int:
         """Estimate native request tokens, including vLLM-rendered tool definitions."""
-        from data_agent_baseline.agents.rate_limit import (
-            estimate_prompt_tokens as estimate_message_prompt_tokens,
-        )
+        return super().estimate_prompt_tokens(messages) + self._estimate_tools_prompt_tokens()
 
-        return estimate_message_prompt_tokens(messages) + self._estimate_tools_prompt_tokens()
+    def _build_request_kwargs(self, messages: list[ModelMessage]) -> dict[str, Any]:
+        request_kwargs = super()._build_request_kwargs(messages)
+        request_kwargs["tools"] = self._openai_tools
+        request_kwargs["tool_choice"] = "auto"
+        if self.allow_parallel_tool_calls:
+            request_kwargs["parallel_tool_calls"] = True
+        return request_kwargs
 
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         """发起一次 chat.completions 请求，返回解析好的 `ModelResponse`。"""
-        if not self.api_key:
-            raise RuntimeError("Missing model API key in config.agent.api_key.")
-
-        client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.api_base,
-            timeout=self.timeout,
-            max_retries=self.max_retries,
-        )
-
-        request_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": [_message_to_payload(message) for message in messages],
-            "tools": self._openai_tools,
-            "tool_choice": "auto",
-        }
-        if self.temperature is not None:
-            request_kwargs["temperature"] = self.temperature
-        if self.top_p is not None:
-            request_kwargs["top_p"] = self.top_p
-        if self.presence_penalty is not None:
-            request_kwargs["presence_penalty"] = self.presence_penalty
-        if self.seed is not None:
-            request_kwargs["seed"] = self.seed
-        if self.allow_parallel_tool_calls:
-            # 并非所有 OpenAI-兼容后端都接受此字段，但 vLLM/OpenAI 官方都支持；
-            # 配置项允许部署时关掉以兼容个别实现
-            request_kwargs["parallel_tool_calls"] = True
-        if self.max_tokens > 0:
-            # 下发显式上限；Qwen3 下封顶的是 **总输出**（含 reasoning tokens）
-            request_kwargs["max_tokens"] = self.max_tokens
-        # extra_body 累积构建：top_k / min_p 与 enable_thinking 合并下发，避免后来者覆盖前者。
-        # enable_thinking 的位置依赖 self.backend_kind：vLLM 必须嵌套到 chat_template_kwargs，
-        # DashScope 兼容模式则放顶层；错置会被对端静默忽略，详见 _thinking_extra_body 注释。
-        extra_body: dict[str, Any] = {}
-        if self.enable_thinking is not None:
-            extra_body.update(_thinking_extra_body(self.enable_thinking, self.backend_kind))
-        if self.top_k is not None:
-            extra_body["top_k"] = self.top_k
-        if self.min_p is not None:
-            extra_body["min_p"] = self.min_p
-        if extra_body:
-            request_kwargs["extra_body"] = extra_body
-
-        started = perf_counter()
-        try:
-            response = cast(ChatCompletion, client.chat.completions.create(**request_kwargs))
-        except APIError as exc:
-            raise RuntimeError(f"Model request failed: {exc}") from exc
-        latency_ms = int((perf_counter() - started) * 1000)
-
-        choices = response.choices or []
-        if not choices:
-            raise RuntimeError("Model response missing choices.")
-
-        message = choices[0].message
-        raw_content = message.content or ""
-        cleaned_content = _strip_think_tags(raw_content)
+        request_kwargs = self._build_request_kwargs(messages)
+        base_response, message = self._call_and_parse_base(request_kwargs)
 
         raw_tool_calls_payload: list[dict[str, Any]] = []
         parsed_calls: list[ModelToolCall] = []
 
         sdk_tool_calls = message.tool_calls or []
         for tool_call in sdk_tool_calls:
-            # SDK 对象 → dict：OpenAI SDK 的 pydantic 模型提供 model_dump；
-            # 失败时兜底成手工构造的结构
             try:
                 dumped: _ToolCallDump = cast(_ToolCallDump, tool_call.model_dump(exclude_none=True))
             except AttributeError:
@@ -570,29 +532,25 @@ class NativeToolsOpenAIAdapter:
             arguments_raw = function_payload.get("arguments", "")
             arguments: dict[str, Any]
             if isinstance(arguments_raw, dict):
-                # 个别实现会把 arguments 当 dict 返回；透传即可
                 arguments = dict(arguments_raw)
             else:
                 arg_str = str(arguments_raw or "").strip()
                 if not arg_str:
-                    # 空参数视为 {}，让工具层做默认值兜底；避免模型传空字符串炸解析
                     arguments = {}
                 else:
                     try:
                         parsed = json.loads(arg_str)
                     except json.JSONDecodeError as exc:
-                        # 解析失败：构造携带部分响应的异常，让 react.py
-                        # 能把 raw_tool_calls / usage / reasoning 落进 trace
                         err = ToolCallParseError(
                             f"Failed to parse tool_call arguments for {name!r}: {exc}",
                             partial_response=ModelResponse(
-                                content=cleaned_content,
+                                content=base_response.content,
                                 tool_calls=[],
-                                raw_response=cleaned_content,
+                                raw_response=base_response.raw_response,
                                 raw_tool_calls=raw_tool_calls_payload,
-                                reasoning_content=_extract_reasoning_content(message),
-                                usage=_extract_usage(response),
-                                latency_ms=latency_ms,
+                                reasoning_content=base_response.reasoning_content,
+                                usage=base_response.usage,
+                                latency_ms=base_response.latency_ms,
                             ),
                         )
                         raise err from exc
@@ -606,11 +564,11 @@ class NativeToolsOpenAIAdapter:
             parsed_calls.append(ModelToolCall(id=call_id, name=name, arguments=arguments))
 
         return ModelResponse(
-            content=cleaned_content,
+            content=base_response.content,
             tool_calls=parsed_calls,
-            raw_response=cleaned_content,
+            raw_response=base_response.raw_response,
             raw_tool_calls=raw_tool_calls_payload,
-            reasoning_content=_extract_reasoning_content(message),
-            usage=_extract_usage(response),
-            latency_ms=latency_ms,
+            reasoning_content=base_response.reasoning_content,
+            usage=base_response.usage,
+            latency_ms=base_response.latency_ms,
         )

@@ -8,12 +8,12 @@ uv run dabench <subcommand> --config <path/to/config.yaml> [options]
 ```
 
 > Do **not** invoke as `python -m data_agent_baseline.cli` — Typer + the module runner
-> produces no output in this project. See
-> [`cli-commands` spec](../openspec/specs/cli-commands/spec.md) for the binding contract.
+> produces no output in this project. The supported executable entrypoint is the
+> `dabench` script declared in `pyproject.toml`.
 
 ## Subcommands
 
-`dabench` exposes exactly four subcommands.
+`dabench` exposes five subcommands.
 
 | Command | Purpose |
 | --- | --- |
@@ -21,6 +21,7 @@ uv run dabench <subcommand> --config <path/to/config.yaml> [options]
 | `inspect-task <task_id>` | Show task metadata and the file tree under `context/`. |
 | `run-task <task_id>` | Run the agent on a single task and write outputs. |
 | `run-benchmark` | Run the agent across the dataset (optionally `--limit N` and/or `--range S-E`). |
+| `view` | Launch the Streamlit trace/prediction viewer. |
 
 All commands require `--config <path>`. The YAML is validated by Pydantic v2 on entry; a
 schema violation aborts with non-zero exit before any task runs.
@@ -50,8 +51,9 @@ uv run dabench run-benchmark --range 2-8 --limit 3 --config configs/react_baseli
 
 ## Config schema
 
-The full schema lives in [`app-config` spec](../openspec/specs/app-config/spec.md); the
-example below mirrors `configs/react_baseline.example.yaml`.
+The supported YAML fields are validated by
+`src/data_agent_baseline/config_models.py`; the example below mirrors
+`configs/react_baseline.example.yaml`.
 
 ```yaml
 dataset:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from data_agent_baseline.agents.model import ModelResponse
-from data_agent_baseline.etl.extractor import _compress_chunk
+from data_agent_baseline.etl._compress import compress_chunk
 
 
 class _CapturingAdapter:
@@ -19,7 +19,7 @@ def test_compress_prompt_does_not_name_specific_filler_domains() -> None:
     """Compression should not pre-delete specific domains like hobbies or catering."""
     adapter = _CapturingAdapter()
 
-    _compress_chunk(
+    compress_chunk(
         cast(Any, adapter),
         "ID 1. Avery has score 7 and a chess club role.",
         schema_columns=["ID", "score", "club_role"],
