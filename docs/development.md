@@ -70,7 +70,7 @@ src/data_agent_baseline/
     ├── app.py                   # build_application(config) -> AgentApp
     ├── runner.py                # Public run_single_task / run_benchmark API
     ├── runner_subprocess.py     # Subprocess + timeout isolation
-    └── runner_artifacts.py      # Run ids, partial traces, trace/CSV writes
+    └── runner_artifacts.py      # Run ids, summary/prediction writes
 ```
 
 Tests live under `tests/`, with shared fixtures in `tests/helpers/` (notably
@@ -82,7 +82,7 @@ Commit-message format and `CHANGELOG.md` maintenance live in their own document:
 [`CONTRIBUTING.md`](../CONTRIBUTING.md). Repository-specific developer rules below.
 
 - **Don't bypass `uv`.** `pip install`, raw `python`, and `.venv/bin/python` are out.
-- **Keep wire formats stable.** `trace.json`, `summary.json`, `prediction.csv`, and
-  `bucket_<sha1>.json` are runtime contracts. Any intentional format change needs
-  focused tests and a `CHANGELOG.md` entry when users can observe it.
+- **Keep wire formats stable.** `summary.json`, `prediction.csv`, optional
+  `traces.db`, and `bucket_<sha1>.json` are runtime contracts. Any intentional format
+  change needs focused tests and a `CHANGELOG.md` entry when users can observe it.
 - **Add tests for new code paths.** Coverage gate is 65%; treat it as a floor.

@@ -14,6 +14,7 @@ _extract_reasoning_tool_call_draft`），保留薄薄的再导出层。
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
 import mimetypes
@@ -128,9 +129,9 @@ def _build_initial_user_content(task: PublicTask) -> str | list[dict[str, Any]]:
 def _serialize_message(message: ModelMessage) -> dict[str, Any]:
     """把 `ModelMessage` 序列化成 JSON 友好的 dict（保留 role/content/tool_calls/tool_call_id）。
 
-    与 `model._message_to_payload` 的差异：本函数为 trace.json 落盘服务，保留所有
-    非 None 字段，便于离线调试时完整还原"当时发给 LLM 的请求"；payload 那边则是
-    专门给 OpenAI SDK 看的，会按角色裁剪字段。
+    与 `model._message_to_payload` 的差异：本函数保留所有非 None 字段，便于离线
+    调试时完整还原"当时发给 LLM 的请求"；payload 那边则是专门给 OpenAI SDK 看的，
+    会按角色裁剪字段。
     """
     content: str | list[dict[str, Any]] = message.content
     if isinstance(content, list):
@@ -217,10 +218,30 @@ class ReActAgent:
         self.protocol: ToolProtocol = protocol
         # 允许外部替换 prompt 基座用于 A/B，缺省根据协议选合适的模板
         self.system_prompt = system_prompt
-        # 每步回调：runner 在子进程里会注入 "把 state 落到 trace.json" 的 writer，
-        # 这样即便子进程因超时被硬 kill，磁盘上仍保留最后一次 append 后的部分 trace
         self.step_callback = step_callback
         self.answer_verifier = answer_verifier
+
+    # ----------------------------- tracing 辅助 -----------------------------
+
+    @staticmethod
+    def _open_turn_span(turn_index: int) -> Any:
+        try:
+            from data_agent_baseline.tracing.create import get_current_trace, turn_span
+
+            if get_current_trace() is None:
+                return None
+            span = turn_span(turn=turn_index, agent_name="ReActAgent")
+            span.start(mark_as_current=True)
+            return span
+        except Exception:
+            return None
+
+    @staticmethod
+    def _close_turn_span(span: Any) -> None:
+        if span is None:
+            return
+        with contextlib.suppress(Exception):
+            span.finish(reset_current=True)
 
     # ----------------------------- 消息构造 -----------------------------
 
@@ -394,8 +415,11 @@ class ReActAgent:
         fallback_answer: AnswerTable | None = None
         fallback_answer_arguments: dict[str, Any] | None = None
 
+        _turn_span = None
         while effective_turns < self.config.max_steps:
             turn_index += 1
+            self._close_turn_span(_turn_span)
+            _turn_span = self._open_turn_span(turn_index)
 
             # ---- 1. 调用模型 ----
             messages = self._build_messages(task, state, initial_content)
@@ -569,7 +593,7 @@ class ReActAgent:
 
             effective_turns += 1
             # text 协议下 StepRecord 不承载原生调用 id / 原始 tool_calls（语义上它们都是
-            # 合成的占位值），保持 None 可让 trace.json 读者清楚区分两种协议。
+            # 合成的占位值），保持 None 可让读者清楚区分两种协议。
             is_native = self.protocol == "native"
             # recovered tool call（从 content/reasoning 解析）没有原始 raw_tool_calls，
             # 需要合成以便 native 协议 message 回放时 assistant.tool_calls 与 tool.tool_call_id 匹配
@@ -721,6 +745,8 @@ class ReActAgent:
                 break
             if verifier_rejected_this_turn:
                 continue
+
+        self._close_turn_span(_turn_span)
 
         if not terminated and effective_turns >= self.config.max_steps:
             state.failure_reason = "Agent did not submit an answer within max_steps."

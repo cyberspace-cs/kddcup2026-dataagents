@@ -48,13 +48,14 @@ Model request exceptions are recorded as `model_error` steps and consume the nor
 `max_steps` budget.
 
 Internal event kinds (`model_error`, `parse_error`, `empty_tool_calls`,
-`tool_error`, `observation`) are an internal `Literal`; on disk every
-error step serializes as `action="__error__"` plus `error_payload` for
-`trace.json` byte stability.
+`tool_error`, `observation`) are an internal `Literal`; each recorded error
+step serializes as `action="__error__"` plus `error_payload` so downstream
+tracing and tests see one stable shape.
 
-## `trace.json`
+## Step Records
 
-Top-level shape:
+`AgentRunResult.to_dict()` returns the in-memory task result shape consumed by the
+runner:
 
 ```json
 {
@@ -74,7 +75,7 @@ Top-level shape:
 }
 ```
 
-Each step entry:
+Each `steps` entry:
 
 ```json
 {
@@ -113,7 +114,6 @@ Error steps have `action == "__error__"` and a populated `error_payload`:
     {
       "task_id": "task_1",
       "task_output_dir": "artifacts/runs/.../task_1",
-      "trace_path": "artifacts/runs/.../task_1/trace.json",
       "prediction_csv_path": "artifacts/runs/.../task_1/prediction.csv",
       "succeeded": true,
       "failure_reason": null
@@ -124,3 +124,6 @@ Error steps have `action == "__error__"` and a populated `error_payload`:
 
 The `succeeded` flag is purely "did the agent call `answer`?" — it does not assert that
 the answer is **correct** against any ground truth.
+
+Debug tracing is stored separately from run artifacts. Set `tracing.enabled: true` in
+the config to write SQLite spans to `tracing.db_path` for `dabench dashboard`.

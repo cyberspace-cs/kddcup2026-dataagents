@@ -163,13 +163,10 @@ class _CapturingSingleTask:
         self.captured.append((task_id, config.agent.api_key))
         task_output_dir = run_output_dir / task_id
         task_output_dir.mkdir(parents=True, exist_ok=True)
-        trace_path = task_output_dir / "trace.json"
-        trace_path.write_text("{}")
         return TaskRunArtifacts(
             task_id=task_id,
             task_output_dir=task_output_dir,
             prediction_csv_path=None,
-            trace_path=trace_path,
             succeeded=True,
             failure_reason=None,
         )
@@ -269,13 +266,10 @@ def test_run_benchmark_state_dir_default_resolution(
         rl = config.agent.rate_limit
         captured_state_dirs.append(rl.state_dir if rl else None)
         (run_output_dir / task_id).mkdir(parents=True, exist_ok=True)
-        trace = run_output_dir / task_id / "trace.json"
-        trace.write_text("{}")
         return TaskRunArtifacts(
             task_id=task_id,
             task_output_dir=run_output_dir / task_id,
             prediction_csv_path=None,
-            trace_path=trace,
             succeeded=True,
             failure_reason=None,
         )
@@ -303,10 +297,8 @@ def test_run_single_task_cli_picks_first_key(
     """CLI `dabench run-task <id>` 的入口：有 api_keys 时必须选 index=0 那个 Key。"""
     captured_configs: list[AppConfig] = []
 
-    def _fake_timeout_dispatch(
-        *, task_id: str, config: AppConfig, partial_trace_path: Any
-    ) -> dict[str, Any]:
-        del task_id, partial_trace_path
+    def _fake_timeout_dispatch(*, task_id: str, config: AppConfig) -> dict[str, Any]:
+        del task_id
         captured_configs.append(config)
         return {"task_id": "task_x", "answer": None, "steps": [], "succeeded": False}
 
@@ -333,10 +325,8 @@ def test_run_single_task_cli_unchanged_without_pool(
     """没配 api_keys 时，run_single_task 不碰 config（线上单 Key 路径）。"""
     captured: list[AppConfig] = []
 
-    def _fake_timeout_dispatch(
-        *, task_id: str, config: AppConfig, partial_trace_path: Any
-    ) -> dict[str, Any]:
-        del task_id, partial_trace_path
+    def _fake_timeout_dispatch(*, task_id: str, config: AppConfig) -> dict[str, Any]:
+        del task_id
         captured.append(config)
         return {"task_id": "task_x", "answer": None, "steps": [], "succeeded": False}
 

@@ -2,7 +2,7 @@
 
 覆盖三层：
 - Pydantic 校验（int / str / "task_<n>" 归一化、负数 / 重复 / 类型错误）
-- `run_single_task` 短路：命中名单时不走 timeout 子进程，落盘合成 trace.json
+- `run_single_task` 短路：命中名单时不走 timeout 子进程，合成失败 payload
 - `run_benchmark` 整合：blocklist + 限制选项叠加时统计与 summary.json 形态正确
 """
 
@@ -150,13 +150,6 @@ def test_run_single_task_short_circuits_blocklisted(
     assert artifact.succeeded is False
     assert artifact.failure_reason == BLOCKLIST_FAILURE_REASON
     assert artifact.prediction_csv_path is None
-    # trace.json 必须落盘，UI / 评测脚本依赖它存在
-    assert artifact.trace_path.exists()
-    payload = json.loads(artifact.trace_path.read_text())
-    assert payload["task_id"] == "task_5"
-    assert payload["succeeded"] is False
-    assert payload["failure_reason"] == BLOCKLIST_FAILURE_REASON
-    assert payload["steps"] == []
 
 
 def test_run_single_task_runs_normally_when_not_blocklisted(
@@ -165,8 +158,8 @@ def test_run_single_task_runs_normally_when_not_blocklisted(
     """blocklist 不命中时仍走原 timeout dispatcher——证明短路只在命中时触发。"""
     seen: list[str] = []
 
-    def _ok_timeout(*, task_id: str, config: AppConfig, partial_trace_path: Any) -> dict[str, Any]:
-        del config, partial_trace_path
+    def _ok_timeout(*, task_id: str, config: AppConfig) -> dict[str, Any]:
+        del config
         seen.append(task_id)
         return {
             "task_id": task_id,
@@ -214,13 +207,10 @@ class _CapturingRunSingleTask:
         self.captured.append(task_id)
         task_output_dir = run_output_dir / task_id
         task_output_dir.mkdir(parents=True, exist_ok=True)
-        trace_path = task_output_dir / "trace.json"
-        trace_path.write_text("{}")
         return TaskRunArtifacts(
             task_id=task_id,
             task_output_dir=task_output_dir,
             prediction_csv_path=None,
-            trace_path=trace_path,
             succeeded=True,
             failure_reason=None,
         )

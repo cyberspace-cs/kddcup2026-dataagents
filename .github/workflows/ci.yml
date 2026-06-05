@@ -43,11 +43,9 @@ jobs:
         # Matches docker/Dockerfile and pyproject.toml requires-python.
         run: uv python install 3.11
 
-      - name: Sync dev + viz extras
-        # viz is needed because src/data_agent_baseline/ui/streamlit_app.py
-        # is under pyright strict mode and pulls in `streamlit`.
+      - name: Sync dev extras
         # --locked: fail if uv.lock would change vs pyproject.toml.
-        run: uv sync --locked --extra dev --extra viz
+        run: uv sync --locked --extra dev
 
       - run: uv run ruff format --check .
       - run: uv run ruff check .

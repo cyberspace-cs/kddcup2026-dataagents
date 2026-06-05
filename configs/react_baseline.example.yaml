@@ -73,3 +73,7 @@ run:
     # - task_15 # 问题歧义
     # - task_17 # "type of expenses" 双绑定 (event.type vs expense_description)
     # - task_18 # 公式冲突：knowledge.md vs gold SQL 语义不一致
+
+tracing:
+  enabled: false                         # bool；默认关闭，开启后写 SQLite spans 供 dashboard 调试
+  db_path: artifacts/traces.db           # 相对路径以 PROJECT_ROOT 为基锚定

@@ -3,7 +3,6 @@
 覆盖：
 - 每条成功 step 的 `prompt_messages` 至少包含 system + user 两条消息
 - 每条成功 step 的 `response_message` 含 content / tool_calls / usage
-- 顶层 `system_prompt` 由 runner_artifacts 抽出，且与 step 内 system 消息一致
 - Step 1 的 prompt 不含 assistant 回放；Step 2 应该有上一轮的 assistant + tool 消息
 """
 
@@ -15,9 +14,6 @@ from pathlib import Path
 from data_agent_baseline.agents.model import ModelResponse, ModelToolCall, TokenUsage
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from data_agent_baseline.config import AgentConfig, AppConfig, DatasetConfig, RunConfig
-from data_agent_baseline.run.runner import run_single_task
-from data_agent_baseline.run.runner_artifacts import extract_system_prompt
 from data_agent_baseline.tools.registry import create_default_tool_registry
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
@@ -109,38 +105,13 @@ def test_step_records_carry_prompt_and_response(tmp_path: Path) -> None:
     assert step2.response_message["tool_calls"][0]["name"] == "answer"
 
 
-def test_extract_system_prompt_helper() -> None:
-    """`extract_system_prompt` 直接对 dict 列表工作，应能从 step[0] 中拣到 system 内容。"""
-    steps = [
-        {
-            "prompt_messages": [
-                {"role": "system", "content": "SYSTEM-CONTENT"},
-                {"role": "user", "content": "user msg"},
-            ],
-        },
-    ]
-    assert extract_system_prompt(steps) == "SYSTEM-CONTENT"
-
-    # 缺失 prompt_messages 时返回 None
-    assert extract_system_prompt([{"action": "x"}]) is None
-    # 空步列表
-    assert extract_system_prompt([]) is None
-    # 第一条 prompt 没 system 角色
-    assert (
-        extract_system_prompt(
-            [{"prompt_messages": [{"role": "user", "content": "u"}]}],
-        )
-        is None
-    )
-
-
 def test_parallel_tool_calls_only_lead_step_carries_prompt_and_response(
     tmp_path: Path,
 ) -> None:
     """lead-only 不变式：单 turn 并行 N 个 tool_calls 时，只有首条 StepRecord
     携带 `prompt_messages` / `response_message`，其余应为 None。
 
-    动机：完整 messages + response 落到每条 StepRecord 会让 trace.json 体积线性膨胀
+    动机：完整 messages + response 落到每条 StepRecord 会让数据体积线性膨胀
     （N 倍），且回放时只需读首条即可还原。该约定与 `raw_tool_calls` / `usage` /
     `reasoning` 保持一致——见 `react.py` 中 `is_lead` 判定。
     """
@@ -227,46 +198,3 @@ def test_parallel_tool_calls_only_lead_step_carries_prompt_and_response(
     assert answer_step.turn_index != lead_parallel.turn_index
     assert answer_step.prompt_messages is not None
     assert answer_step.response_message is not None
-
-
-def test_trace_json_has_top_level_system_prompt(tmp_path: Path) -> None:
-    """run_single_task 落盘后，trace.json 顶层 system_prompt 字段非空且与 step 内一致。"""
-    dataset_root = tmp_path / "input"
-    task_dir = dataset_root / "task_capture"
-    context_dir = task_dir / "context"
-    context_dir.mkdir(parents=True)
-    (task_dir / "task.json").write_text(
-        json.dumps(
-            {
-                "task_id": "task_capture",
-                "difficulty": "easy",
-                "question": "List the files.",
-            }
-        )
-    )
-
-    run_output_dir = tmp_path / "runs" / "capture"
-    run_output_dir.mkdir(parents=True)
-    config = AppConfig(
-        dataset=DatasetConfig(root_path=dataset_root),
-        agent=AgentConfig(api_key="test", max_steps=4),
-        run=RunConfig(
-            output_dir=run_output_dir.parent,
-            run_id="capture",
-            task_timeout_seconds=0,
-        ),
-    )
-    artifact = run_single_task(
-        task_id="task_capture",
-        config=config,
-        run_output_dir=run_output_dir,
-        model=_build_two_turn_adapter(),
-        tools=create_default_tool_registry(),
-    )
-    payload = json.loads(artifact.trace_path.read_text())
-
-    assert payload["system_prompt"] is not None
-    assert len(payload["system_prompt"]) > 0
-    # 顶层 system_prompt 必须等于 steps[0].prompt_messages[0].content
-    first_step_system = payload["steps"][0]["prompt_messages"][0]["content"]
-    assert payload["system_prompt"] == first_step_system

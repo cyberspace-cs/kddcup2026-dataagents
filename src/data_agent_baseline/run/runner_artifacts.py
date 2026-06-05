@@ -4,10 +4,8 @@
 `runner.py` 与 `runner_subprocess.py` 共同使用：
 
 - `TaskRunArtifacts` / run-id 工厂 / `pin_key_on_config`：编排前需要的轻量帮手
-- 部分轨迹 (`make_partial_trace_writer` / `load_partial_trace`)：子进程内增量写、
-  父进程在 timeout/crash 时回收
-- `timeout_payload` / `crash_payload` / `merge_partial_with_failure`：失败兜底
-- `write_task_outputs`：核心结果落盘成 trace.json + prediction.csv
+- `timeout_payload` / `crash_payload`：失败兜底
+- `write_task_outputs`：核心结果落盘成 prediction.csv
 
 跨模块共享的符号统一不带前缀下划线（pyright strict 友好）；仅在本文件内部使用的
 工具仍保留 `_xxx` 命名以表"模块私有"。
@@ -36,7 +34,6 @@ class TaskRunArtifacts:
     task_id: str
     task_output_dir: Path
     prediction_csv_path: Path | None  # 未提交 answer 时为 None
-    trace_path: Path
     succeeded: bool  # Agent 是否正常调用 answer 工具
     failure_reason: str | None  # 失败时的可读原因
     retrieval_index: dict[str, Any] | None = None
@@ -52,7 +49,6 @@ class TaskRunArtifacts:
             "prediction_csv_path": str(self.prediction_csv_path)
             if self.prediction_csv_path
             else None,
-            "trace_path": str(self.trace_path),
             "succeeded": self.succeeded,
             "failure_reason": self.failure_reason,
         }
@@ -189,10 +185,7 @@ def pin_key_on_config(config: AppConfig, *, task_index: int, effective_run_id: s
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    """写 JSON：UTF-8 + 2 缩进 + 行尾换行，保证 git diff 可读。
-
-    ensure_ascii=False 保留中文原样，避免 `\\uXXXX` 污染 trace.json。
-    """
+    """写 JSON：UTF-8 + 2 缩进 + 行尾换行，保证 git diff 可读。"""
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
@@ -223,7 +216,7 @@ def _failure_run_result_payload(task_id: str, failure_reason: str) -> dict[str, 
     }
 
 
-# 跳过名单 (run.blocklist) 命中时塞给 trace.json 的 failure_reason；UI / 报表可按字面量过滤。
+# 跳过名单 (run.blocklist) 命中时的 failure_reason；报表可按字面量过滤。
 BLOCKLIST_FAILURE_REASON = "Task is in blocklist."
 
 
@@ -234,107 +227,6 @@ def blocklist_payload(task_id: str) -> dict[str, Any]:
     让上层落盘 + summary 统计逻辑无须分支即可处理。
     """
     return _failure_run_result_payload(task_id, BLOCKLIST_FAILURE_REASON)
-
-
-def extract_system_prompt(steps: list[Any]) -> str | None:
-    """从 trace.json 的 steps 中拣出 system prompt（仅看第一步的 prompt_messages）。
-
-    设计动机：完整 prompt_messages 已落在每条 step 上（见 `react.py`），但 system
-    prompt 在所有 turn 中都重复，每条 step 复制一份会让 trace.json 体积重复膨胀；
-    在顶层抽出一份，UI 渲染头卡时直接读顶层即可。
-
-    输入容错：
-    - `steps` 不是 list、为空、第一步不是 dict、`prompt_messages` 缺失或不是 list：返回 None
-    - prompt_messages 中无 system 角色或 system 角色的 content 不是字符串：返回 None
-
-    公开为模块级 API（`extract_system_prompt`）：UI 层与测试都直接 import；
-    见 `data_agent_baseline.ui.streamlit_app` 与 `tests/test_recorder_prompt_capture.py`。
-    """
-    if not steps:
-        return None
-    first = steps[0]
-    if not isinstance(first, dict):
-        return None
-    prompt_messages = cast(Any, first).get("prompt_messages")
-    if not isinstance(prompt_messages, list):
-        return None
-    messages = cast(list[Any], prompt_messages)
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        msg_dict = cast(dict[str, Any], msg)
-        if msg_dict.get("role") != "system":
-            continue
-        content = msg_dict.get("content")
-        if isinstance(content, str):
-            return content
-    return None
-
-
-def _agent_state_to_payload(task_id: str, state: Any) -> dict[str, Any]:
-    """把运行中的 `AgentRuntimeState` 快照成 trace.json 兼容的 dict。
-
-    用于增量落盘：结构与 `AgentRunResult.to_dict()` 对齐，但因为尚未终止：
-    - `answer` 在 answer 工具命中那一步之后由 callback 自然带上
-    - `succeeded` 在 answer 已命中且无 failure_reason 时即可为 True；这样即使
-      子进程卡在结果回传阶段，父进程也能从 partial trace 判定任务已完成
-
-    兼容 typing：state 参数走 Any 是为了避免在 runner 层引入对 AgentRuntimeState 的硬依赖
-    （保留 runner 与 agent 内部类型的解耦）。
-    """
-    answer = state.answer.to_dict() if state.answer is not None else None
-    steps = [step.to_dict() for step in state.steps]
-    return {
-        "task_id": task_id,
-        "answer": answer,
-        "steps": steps,
-        "failure_reason": state.failure_reason,
-        "succeeded": answer is not None and state.failure_reason is None,
-        "system_prompt": extract_system_prompt(steps),
-    }
-
-
-def make_partial_trace_writer(task_id: str, trace_path: Path):
-    """构造"把当前 state 写成 trace.json"的 StepCallback。
-
-    每次 state.steps 变化都同步落盘：代价是几 KB 写 I/O，换来子进程被硬 kill 时
-    主进程可以读到最后一次 append 后的部分 trace，不至于丢失全部上下文。
-
-    写失败（磁盘满/权限）只静默记一下——不能让观测逻辑弄挂 Agent。
-    """
-
-    def _write(state: Any) -> None:
-        try:
-            trace_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = _agent_state_to_payload(task_id, state)
-            trace_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            )
-        except Exception:
-            # 观测失败不能影响任务本身
-            pass
-
-    return _write
-
-
-def load_partial_trace(task_id: str, trace_path: Path) -> dict[str, Any] | None:
-    """尝试从磁盘读出子进程写过的部分 trace；失败时返回 None。
-
-    用于子进程超时/crash 后，从落盘快照里恢复 "死前最后一步" 的 steps 列表。
-    """
-    if not trace_path.exists():
-        return None
-    try:
-        payload: Any = json.loads(trace_path.read_text())
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    payload_dict = cast(dict[str, Any], payload)
-    # 必须是同一个任务的 trace，避免跨任务误取
-    if payload_dict.get("task_id") != task_id:
-        return None
-    return payload_dict
 
 
 def _normalize_answer_payload(value: Any) -> dict[str, Any] | None:
@@ -364,93 +256,23 @@ def _normalize_answer_payload(value: Any) -> dict[str, Any] | None:
     return {"columns": list(columns_list), "rows": normalized_rows}
 
 
-def _recover_answer_from_steps(steps: list[Any]) -> dict[str, Any] | None:
-    """从 partial trace 的最后一个成功 answer step 中恢复答案表。"""
-    for step in reversed(steps):
-        if not isinstance(step, dict):
-            continue
-        step_dict = cast(dict[str, Any], step)
-        if step_dict.get("action") != "answer" or step_dict.get("ok") is not True:
-            continue
-        recovered = _normalize_answer_payload(step_dict.get("action_input"))
-        if recovered is not None:
-            return recovered
-    return None
+def timeout_payload(task_id: str, timeout_seconds: int) -> dict[str, Any]:
+    """构造超时失败 payload。"""
+    return _failure_run_result_payload(task_id, f"Task timed out after {timeout_seconds} seconds.")
 
 
-def timeout_payload(
-    task_id: str, partial_trace_path: Path | None, timeout_seconds: int
-) -> dict[str, Any]:
-    """构造超时失败 payload，优先带上 partial trace 里的 steps。"""
-    failure_reason = f"Task timed out after {timeout_seconds} seconds."
-    return merge_partial_with_failure(task_id, partial_trace_path, failure_reason)
-
-
-def crash_payload(
-    task_id: str, partial_trace_path: Path | None, failure_reason: str
-) -> dict[str, Any]:
-    """构造子进程崩溃失败 payload，优先带上 partial trace 里的 steps。"""
-    return merge_partial_with_failure(task_id, partial_trace_path, failure_reason)
-
-
-def merge_partial_with_failure(
-    task_id: str, partial_trace_path: Path | None, failure_reason: str
-) -> dict[str, Any]:
-    """合并规则：有 partial trace 就保留其 steps/answer。
-
-    拿到的 partial 是子进程写的快照。若顶层 answer 缺失但 steps 里已有成功 answer
-    调用，则从 action_input 恢复答案。只要恢复出合法 answer，就说明 terminal tool
-    已经命中，父进程应按成功处理；这兜住了子进程已完成 answer 但卡在 Queue 结果回传
-    阶段导致父进程超时的情况。
-    """
-    if partial_trace_path is not None:
-        partial = load_partial_trace(task_id, partial_trace_path)
-        if partial is not None and isinstance(partial.get("steps"), list):
-            merged = dict(partial)
-            steps = partial["steps"]
-            merged["task_id"] = task_id
-            answer = _normalize_answer_payload(partial.get("answer"))
-            if answer is None:
-                answer = _recover_answer_from_steps(steps)
-            merged["answer"] = answer
-            if answer is not None:
-                merged["failure_reason"] = None
-                merged["succeeded"] = True
-            else:
-                merged["failure_reason"] = failure_reason
-                merged["succeeded"] = False
-            return merged
+def crash_payload(task_id: str, failure_reason: str) -> dict[str, Any]:
+    """构造子进程崩溃失败 payload。"""
     return _failure_run_result_payload(task_id, failure_reason)
 
 
 def write_task_outputs(
     task_id: str, run_output_dir: Path, run_result: dict[str, Any]
 ) -> TaskRunArtifacts:
-    """把单任务结果落盘为 trace.json（必出）+ prediction.csv（仅当有 answer）。
-
-    trace.json 保留完整 ReAct 轨迹用于离线分析；prediction.csv 是评测面向的唯一产物。
-
-    顶层 `system_prompt` 字段在落盘前从 steps[0].prompt_messages 中抽出（若不存在
-    则保留 None）：UI 头卡渲染时直接读顶层而不必扫遍每个 step；step 内
-    prompt_messages 仍保留完整内容用于离线回放。
-    """
+    """把单任务结果落盘为 prediction.csv（仅当有 answer）。"""
     task_output_dir = run_output_dir / task_id
     task_output_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = task_output_dir / "trace.json"
 
-    # subprocess 路径下 run_result 由 AgentRunResult.to_dict() 产生，没有 system_prompt 字段；
-    # crash/timeout 路径下若 partial trace 已含 system_prompt 则保留之，缺失时再补
-    if "system_prompt" not in run_result:
-        steps = run_result.get("steps")
-        if isinstance(steps, list):
-            run_result["system_prompt"] = extract_system_prompt(cast(list[Any], steps))
-        else:
-            run_result["system_prompt"] = None
-
-    _write_json(trace_path, run_result)
-
-    # 只要 trace 中有结构合法的 answer 就写 prediction.csv；timeout/crash 路径如果
-    # 能从 partial trace 恢复 answer，也会被归并为 succeeded=True。
     prediction_csv_path: Path | None = None
     answer = _normalize_answer_payload(run_result.get("answer"))
     if answer is not None:
@@ -465,7 +287,6 @@ def write_task_outputs(
         task_id=task_id,
         task_output_dir=task_output_dir,
         prediction_csv_path=prediction_csv_path,
-        trace_path=trace_path,
         succeeded=bool(run_result.get("succeeded")),
         failure_reason=run_result.get("failure_reason"),
         retrieval_index=run_result.get("retrieval_index")

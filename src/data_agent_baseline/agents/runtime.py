@@ -3,7 +3,7 @@
 区分三个层次：
 - `StepRecord`:       单步产物（frozen，表示 "这步已经完成"）
 - `AgentRuntimeState`: 循环过程中的可变状态容器（`slots=True` 但非 frozen）
-- `AgentRunResult`:    整次运行的对外快照（frozen，供 runner 序列化到 trace.json）
+- `AgentRunResult`:    整次运行的对外快照（frozen，供 runner 序列化）
 
 保持 frozen 与 mutable 的区分，是为了避免 ReAct 循环中误改已经落定的历史步骤。
 """
@@ -84,7 +84,7 @@ class AgentRuntimeState:
 class AgentRunResult:
     """单个任务整轮 ReAct 运行的最终产物。
 
-    由 `ReActAgent.run` 构造；runner 会把它序列化为 trace.json。
+    由 `ReActAgent.run` 构造；runner 使用 `.to_dict()` 序列化结果。
     """
 
     task_id: str

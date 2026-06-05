@@ -1,7 +1,7 @@
 """事件落定层 `recorder.record_step_event` 测试。
 
 每种事件 kind 走一遍：构造事件 → 经 recorder 落到 state.steps → 断言生成的
-StepRecord 字段满足 trace.json 的 wire 约定（错误事件统一 action="__error__"，
+StepRecord 字段满足稳定序列化约定（错误事件统一 action="__error__"，
 观察事件 action=tool 名）。
 
 也覆盖 `step_callback` 的"每一步调用一次 + 异常被静默吞掉"。

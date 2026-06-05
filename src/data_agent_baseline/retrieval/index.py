@@ -610,7 +610,7 @@ def _build_index(
 def build_or_load_task_index(task: PublicTask, config: RetrievalIndexConfig) -> dict[str, Any]:
     """Build or reuse the local retrieval index for a task.
 
-    The returned dict is safe to write into trace.json and summary.json.
+    The returned dict is safe to write into summary.json and tracing metadata.
     """
     sources = _source_files(task)
     manifest = _manifest_for_sources(task, sources)

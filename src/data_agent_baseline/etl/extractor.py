@@ -157,17 +157,26 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
 
     When *model_adapter* is a ``RateLimitedAdapter``, the returned adapter is
     also rate-limited — sharing the same token-bucket state files so ETL and
-    agent calls compete for the same RPM/TPM budget.
+    agent calls compete for the same RPM/TPM budget.  Likewise, when the
+    incoming adapter is wrapped with ``TracedModelAdapter``, the returned
+    adapter is re-wrapped so ETL LLM calls produce generation spans.
     """
     from data_agent_baseline.agents.rate_limit import RateLimitedAdapter
+    from data_agent_baseline.tracing.instrument import TracedModelAdapter
 
     source = model_adapter
+    traced = False
     rate_limit_cfg: Any = None
     rate_limit_key: str | None = None
-    if isinstance(model_adapter, RateLimitedAdapter):
-        source = model_adapter.inner
-        rate_limit_cfg = model_adapter.rate_limit_config
-        rate_limit_key = model_adapter.api_key
+
+    if isinstance(source, TracedModelAdapter):
+        traced = True
+        source = source.inner
+
+    if isinstance(source, RateLimitedAdapter):
+        rate_limit_cfg = source.rate_limit_config
+        rate_limit_key = source.api_key
+        source = source.inner
 
     model: str | None = getattr(source, "model", None)
     api_base: str | None = getattr(source, "api_base", None)
@@ -190,11 +199,15 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
     )
 
     if rate_limit_cfg is not None and rate_limit_key:
-        return RateLimitedAdapter(
+        inner = RateLimitedAdapter(
             inner=inner,
             api_key=rate_limit_key,
             rate_limit=rate_limit_cfg,
         )
+
+    if traced:
+        inner = TracedModelAdapter(inner)
+
     return inner
 
 

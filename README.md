@@ -2,7 +2,8 @@
 
 ReAct-style baseline for the DABench data-agent benchmark. The runner reads tasks from
 `data/public/input/`, drives an OpenAI-compatible LLM through a fixed tool inventory, and
-writes per-task `trace.json` + `prediction.csv` plus a per-run `summary.json`.
+writes per-task `prediction.csv` files plus a per-run `summary.json`. Optional SQLite
+tracing writes debug spans to `artifacts/traces.db` for the dashboard.
 
 ## Quick Start
 
@@ -87,7 +88,7 @@ uv run dabench <command> --config PATH [options]
 | `inspect-task` | Show task metadata and list accessible files under `context/`. |
 | `run-task` | Run the agent on one task. |
 | `run-benchmark` | Run the agent across the dataset. Accepts `--limit N` and `--range S-E`. |
-| `view` | Launch the Streamlit trace/prediction viewer. |
+| `dashboard` | Launch the SQLite traces dashboard. Requires runs created with `tracing.enabled: true`. |
 
 ## Tools
 
@@ -114,11 +115,12 @@ All `path` arguments are relative to the task `context/` directory.
 artifacts/runs/<run_id>/
 ├── summary.json
 └── <task_id>/
-    ├── trace.json
     └── prediction.csv
 ```
 
-`summary.json` is the canonical machine-readable run output.
+`summary.json` is the canonical machine-readable run output. When a config contains
+`tracing.enabled: true`, tracing data is written to `tracing.db_path`
+(`artifacts/traces.db` by default) and can be viewed with `uv run dabench dashboard`.
 
 ## Main Modules
 

@@ -530,6 +530,23 @@ class RunConfig:
         return tuple(normalized)
 
 
+def _default_traces_db() -> Path:
+    return PROJECT_ROOT / "artifacts" / "traces.db"
+
+
+@dataclass(frozen=True, slots=True, config=_PYDANTIC_DATACLASS_CONFIG)
+class TracingConfig:
+    """Structured tracing configuration (opt-in)."""
+
+    enabled: StrictBool = False
+    db_path: Path = field(default_factory=_default_traces_db)
+
+    @field_validator("db_path", mode="before")
+    @classmethod
+    def _resolve_db_path(cls, v: Any) -> Path:
+        return _resolve_anchor_path(v, _default_traces_db())
+
+
 @dataclass(frozen=True, slots=True, config=_PYDANTIC_DATACLASS_CONFIG)
 class AppConfig:
     """顶层聚合配置，`load_app_config` 返回的完整对象。"""
@@ -537,6 +554,7 @@ class AppConfig:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     run: RunConfig = field(default_factory=RunConfig)
+    tracing: TracingConfig | None = None
 
 
 _APP_CONFIG_ADAPTER = TypeAdapter(AppConfig)

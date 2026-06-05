@@ -211,11 +211,7 @@ class AgentApp:
     protocol: ToolProtocol
 
     def new_agent(self, step_callback: StepCallback | None = None) -> ReActAgent:
-        """生成一个使用本 App 共享依赖的新 ReAct 实例。
-
-        子进程在每步结束时通过 step_callback 增量落盘 trace.json，主进程超时硬 kill 后
-        仍可读到死前最后一次 append 的状态。其它场景（测试 / 同步跑）传 None 即可。
-        """
+        """生成一个使用本 App 共享依赖的新 ReAct 实例。"""
         return ReActAgent(
             model=self.model_adapter,
             tools=self.registry,

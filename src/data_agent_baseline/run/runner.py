@@ -1,7 +1,7 @@
 """任务运行的对外 API：`run_single_task` / `run_benchmark` + summary 落盘。
 
 实现细节按职责拆到两个邻居模块：
-- `run/runner_artifacts.py`  ← TaskRunArtifacts、run-id 工厂、I/O 写盘、partial trace、
+- `run/runner_artifacts.py`  ← TaskRunArtifacts、run-id 工厂、I/O 写盘、
                                payload formatters、`write_task_outputs` 等
 - `run/runner_subprocess.py` ← `run_single_task_core`、`run_single_task_with_timeout`
                                等子进程编排
@@ -10,7 +10,6 @@
     <output_dir>/<run_id>/
     ├── summary.json                  # 整次 run 的汇总
     └── <task_id>/
-        ├── trace.json                # ReAct 全量 steps + answer + elapsed
         └── prediction.csv            # 答案表格（仅 Agent 提交了 answer 时）
 
 注意：`summary.json` 里的 `succeeded_task_count` 仅统计 Agent 是否调用了 answer，
@@ -33,9 +32,6 @@ from data_agent_baseline.run.runner_artifacts import (
     blocklist_payload,
     create_run_id,
     create_run_output_dir,
-    load_partial_trace,
-    make_partial_trace_writer,
-    merge_partial_with_failure,
     pin_key_on_config,
     resolve_ratelimit_state_dir,
     write_summary_json,
@@ -51,15 +47,9 @@ if TYPE_CHECKING:
     from data_agent_baseline.agents.model import ModelAdapter
     from data_agent_baseline.tools.registry import ToolRegistry
 
-# 测试历史上从 `runner` 模块导入这些下划线名（test_partial_trace / test_runner_key_pinning）；
-# 在此处保留 alias 兜底，新代码请直接使用 `runner_artifacts` / `runner_subprocess` 里的公开名。
+# test_runner_key_pinning 从 runner 模块导入这些下划线名；保留 alias 兜底。
 _pin_key_on_config = pin_key_on_config
 _resolve_ratelimit_state_dir = resolve_ratelimit_state_dir
-_load_partial_trace = load_partial_trace
-_make_partial_trace_writer = make_partial_trace_writer
-_merge_partial_with_failure = merge_partial_with_failure
-_write_task_outputs = write_task_outputs
-_run_single_task_with_timeout = run_single_task_with_timeout
 
 __all__ = [
     "TaskRunArtifacts",
@@ -86,9 +76,6 @@ def run_single_task(
     - 任一不为 None：走 `run_single_task_core`（当前进程，复用共享资源；
       用于 workers=1 或测试场景）
 
-    子进程路径下，`partial_trace_path` 在任务开始前就确定了，子进程每步增量写，
-    父进程在 kill/crash 后可从磁盘回收"死前"状态——避免 600s 超时的任务 steps=0。
-
     PR-2：CLI `dabench run-task <id>` 不经 run_benchmark，没人替它按 task_index 固定 Key。
     这里若检测到 "配了 api_keys 但 rate_limit.state_dir 仍是 None"（= 未被上游 pin 过），
     就按 `api_keys[0]` 决定性选 Key。上游 benchmark 路径已经做过 pin 的 config 不受影响。
@@ -113,12 +100,9 @@ def run_single_task(
 
     started_at = perf_counter()
     if model is None and tools is None and answer_verifier is None:
-        # 子进程路径：预先确定 trace.json 位置，供子进程增量写 + 父进程超时时读
-        partial_trace_path = run_output_dir / task_id / "trace.json"
         run_result = run_single_task_with_timeout(
             task_id=task_id,
             config=config,
-            partial_trace_path=partial_trace_path,
         )
     else:
         run_result = run_single_task_core(
@@ -128,7 +112,7 @@ def run_single_task(
             tools=tools,
             answer_verifier=answer_verifier,
         )
-    # end-to-end 耗时给 trace.json 记一笔，便于后续做性能分析
+    # end-to-end 耗时记一笔，便于后续做性能分析
     run_result["e2e_elapsed_seconds"] = round(perf_counter() - started_at, 3)
     return write_task_outputs(task_id, run_output_dir, run_result)
 

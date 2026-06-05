@@ -1,8 +1,8 @@
 """ReAct 循环的步事件落定层。
 
 把"哪个分支出错 / 哪个分支成功"从一组 `if action == "__error__"` 字面量沼泽换成
-五个具名事件类型（`Literal` 闭集），driver 只 emit 事件，trace.json 的具体形状
-仍由本模块统一序列化为 `StepRecord`，因此 wire format 保持字节稳定（D2）。
+五个具名事件类型（`Literal` 闭集），driver 只 emit 事件，具体形状仍由本模块统一
+序列化为 `StepRecord`，因此 wire format 保持字节稳定（D2）。
 
 事件分类（与 `EventKind` 一一对应）：
 - `model_error`:        `model.complete` 抛异常
@@ -40,7 +40,7 @@ EventKind = Literal[
     "observation",
 ]
 
-# 与 react.py 中保留同名签名：runner 在子进程里注入"把 state 落到 trace.json"的回调
+# 与 react.py 中保留同名签名：runner 注入的可选回调
 StepCallback = Callable[[AgentRuntimeState], None]
 
 
@@ -161,7 +161,7 @@ def _empty_tool_calls_observation(drafted_tool_call: dict[str, Any] | None) -> d
 
 
 def _to_step_record(event: StepEvent, *, step_index: int, turn_index: int) -> StepRecord:
-    """把事件序列化成 StepRecord（保持 trace.json 字节稳定，D2）。"""
+    """把事件序列化成 StepRecord（保持 wire format 字节稳定，D2）。"""
     if isinstance(event, ModelErrorEvent):
         # API 调用失败：没有响应可记，response_message 永远为 None；
         # prompt_messages 仍然有值，便于排查"哪条请求把模型炸了"

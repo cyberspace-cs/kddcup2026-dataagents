@@ -97,6 +97,10 @@ tmp/
 _tmp/
 scratch/
 
+# ─── Node / Frontend ────────────────────────────────
+node_modules/
+src/data_agent_baseline/dashboard/static/
+
 # ─── Claude / AI tools local state ──────────────────
 .claude/
 .cursor/

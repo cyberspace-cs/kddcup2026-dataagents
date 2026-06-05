@@ -7,7 +7,7 @@ each task in a subprocess so wall-clock timeouts and crashes can be cleanly boun
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │  CLI (Typer)                                                           │
-│   dabench {status, inspect-task, run-task, run-benchmark, view}        │
+│   dabench {status, inspect-task, run-task, run-benchmark, dashboard}   │
 └────────────────────────┬───────────────────────────────────────────────┘
                          │
                 ┌────────▼────────┐
@@ -31,7 +31,8 @@ each task in a subprocess so wall-clock timeouts and crashes can be cleanly boun
               │      └────┬────┘    │
               └───────────┼─────────┘
                           ▼
-                 trace.json + answer
+                 prediction.csv + summary.json
+                 optional traces.db
 ```
 
 ## Live capabilities
@@ -40,11 +41,12 @@ These are the current implementation anchors for the main runtime surfaces.
 
 | Capability | Implementation | What lives there |
 | --- | --- | --- |
-| ReAct loop | `src/data_agent_baseline/agents/react.py` | Bounded loop, message replay, budget guardrails, tool dispatch, answer verifier integration, and partial-trace callbacks. |
+| ReAct loop | `src/data_agent_baseline/agents/react.py` | Bounded loop, message replay, budget guardrails, tool dispatch, answer verifier integration, and step callbacks. |
 | Protocol adapter | `src/data_agent_baseline/agents/protocol.py` | Text-fenced JSON and native function-calling responses normalized into a common turn shape. |
 | Model I/O | `src/data_agent_baseline/agents/model.py` | OpenAI-compatible `chat.completions` adapters, Qwen3 `<think>` stripping, usage capture, latency capture, and native tool-call parsing. |
 | Tool inventory | `src/data_agent_baseline/tools/registry.py` | `ToolDefinition`, immutable `ToolRegistry`, default tool inventory, Pydantic input validation, and OpenAI tool schema export. |
-| Subprocess runner | `src/data_agent_baseline/run/runner.py` plus `run/runner_subprocess.py` and `run/runner_artifacts.py` | Per-task subprocess timeout isolation, partial-trace recovery, deterministic key pinning, task artifacts, and `summary.json`. |
+| Subprocess runner | `src/data_agent_baseline/run/runner.py` plus `run/runner_subprocess.py` and `run/runner_artifacts.py` | Per-task subprocess timeout isolation, deterministic key pinning, task artifacts, and `summary.json`. |
+| SQLite tracing | `src/data_agent_baseline/tracing/` plus `src/data_agent_baseline/dashboard/` | Opt-in span capture to `tracing.db_path` and the FastAPI/React dashboard that reads it. |
 | Rate limiting | `src/data_agent_baseline/agents/rate_limit.py` plus `agents/token_bucket.py` | Cross-process RPM/TPM token buckets with `filelock`, atomic state writes, and Retry-After handling. |
 
 ## Two protocols, one loop
@@ -64,10 +66,10 @@ messages, while native turns replay as assistant/tool messages with tool-call ID
 ## Subprocess isolation
 
 `run_single_task` always runs the agent in a child process when no test injection is
-active. The parent posts the `AppConfig` plus a partial-trace path; the child calls
-`build_application` itself (the `AgentApp` is intentionally not pickled). On timeout the
-parent reads back the partial `trace.json` written incrementally by the `step_callback`
-and synthesizes a terminal `__error__` step with a `timeout` payload.
+active. The parent posts the `AppConfig`; the child calls `build_application` itself
+(the `AgentApp` is intentionally not pickled). On timeout or crash, the parent returns a
+synthetic failure payload. When `tracing.enabled: true`, the child also writes spans to
+the configured SQLite database for dashboard inspection.
 
 ## Key pool + cross-process rate limiter
 
@@ -82,7 +84,7 @@ processes.
 The following outputs are treated as stable runtime artifacts and are covered by focused
 unit and integration tests:
 
-- `trace.json` — full step list with `action`, `action_input`, `observation`, `usage`
 - `summary.json` — per-run aggregate (run id, task count, succeeded count, per-task entries)
 - `prediction.csv` — answer table
+- `traces.db` — optional SQLite tracing store when `tracing.enabled: true`
 - `ratelimit/bucket_<sha1>.json` — cross-process bucket state

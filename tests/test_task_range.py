@@ -101,13 +101,10 @@ class _CapturingSingleTask:
         self.calls.append(task_id)
         task_output_dir = run_output_dir / task_id
         task_output_dir.mkdir(parents=True, exist_ok=True)
-        trace_path = task_output_dir / "trace.json"
-        trace_path.write_text("{}")
         return TaskRunArtifacts(
             task_id=task_id,
             task_output_dir=task_output_dir,
             prediction_csv_path=None,
-            trace_path=trace_path,
             succeeded=True,
             failure_reason=None,
         )

@@ -21,10 +21,12 @@ uv run dabench <subcommand> --config <path/to/config.yaml> [options]
 | `inspect-task <task_id>` | Show task metadata and the file tree under `context/`. |
 | `run-task <task_id>` | Run the agent on a single task and write outputs. |
 | `run-benchmark` | Run the agent across the dataset (optionally `--limit N` and/or `--range S-E`). |
-| `view` | Launch the Streamlit trace/prediction viewer. |
+| `dashboard` | Launch the SQLite traces dashboard for runs created with tracing enabled. |
 
-All commands require `--config <path>`. The YAML is validated by Pydantic v2 on entry; a
-schema violation aborts with non-zero exit before any task runs.
+The runtime commands (`status`, `inspect-task`, `run-task`, `run-benchmark`) require
+`--config <path>`. The YAML is validated by Pydantic v2 on entry; a schema violation
+aborts with non-zero exit before any task runs. `dashboard` reads an existing SQLite
+trace database and accepts `--db` instead of `--config`.
 
 ## Examples
 
@@ -47,6 +49,9 @@ uv run dabench run-benchmark --range task_5-task_10 --config configs/react_basel
 
 # Combine: range filters first, then --limit truncates → runs task_2..task_4
 uv run dabench run-benchmark --range 2-8 --limit 3 --config configs/react_baseline.local.yaml
+
+# View traces from runs whose config enabled SQLite tracing
+uv run dabench dashboard --db artifacts/traces.db
 ```
 
 ## Config schema
@@ -96,6 +101,11 @@ run:
     max_chunk_chars: 1600
     chunk_overlap_lines: 2
     max_results: 8
+
+# Optional debug tracing. Omit the block, or leave enabled false, for normal benchmark runs.
+# tracing:
+#   enabled: true
+#   db_path: artifacts/traces.db
 ```
 
 ### Validation behavior
@@ -107,6 +117,8 @@ run:
 - `agent.rate_limit.reserve_output_tokens` must be ≤ `agent.max_tokens` (when both are set).
 - `run.retrieval_index` is optional and defaults to disabled; when enabled, index cache paths
   still resolve relative to the project root.
+- `tracing` is optional and defaults to disabled. The dashboard only shows runs that wrote
+  spans to `tracing.db_path`.
 - All path fields resolve relative to the project root.
 
 ## Outputs
@@ -115,12 +127,15 @@ run:
 <output_dir>/<run_id>/
 ├── summary.json
 └── <task_id>/
-    ├── trace.json
     └── prediction.csv          # absent if the agent never called `answer`
 ```
 
 `summary.json` is the canonical machine-readable run output. CLI progress text is
 informational only.
+
+Debug traces are not written into the run directory. Enable `tracing.enabled: true` to
+write spans to SQLite (`artifacts/traces.db` by default), then open them with
+`dabench dashboard`.
 
 ## Exit codes
 

@@ -14,7 +14,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to print and verify intermediate aggregation results before embedding
   them in outer queries.
 - **Native answer tool-call JSON parse recovery.** Malformed native
-  `answer` arguments now keep the partial model response in `trace.json`
+  `answer` arguments now keep the partial model response in the recorded step
   (`raw_tool_calls`, reasoning, usage, and response payload) and feed back
   a targeted recovery hint to resubmit large answer tables via
   `answer({"from_csv": ...})` instead of losing the response as a generic
@@ -39,16 +39,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hosts containing `aliyuncs.com` or `dashscope` → dashscope, otherwise
   vllm. Explicit values win over inference. Only affects requests when
   `agent.enable_thinking` is non-null.
-- **`EMIT_TRACE` env var on the submission entrypoint.** When set,
-  `submission.py` writes a per-task `trace.json` next to `prediction.csv`
-  in `/output/<task_id>/`, matching the format
-  `runner_artifacts.write_task_outputs` produces (steps + answer +
-  total_usage + e2e_elapsed_seconds + system_prompt) so existing UI
-  loaders work on these traces. Default OFF: §3.7 disallows trace data
-  in the judged archive (raw rows from `/input` CSVs land in tool
-  observations and count as test-set leakage). Opt in only on local
-  rehearsals, e.g. `docker run … -e EMIT_TRACE=1 …` via
-  `scripts/eval_local.sh`.
 - **Mode-aware Qwen3 sampling defaults.** `agent.{top_p, top_k, min_p,
   presence_penalty, seed}` are now configurable; when left unset, defaults
   follow the Qwen3 model card recommendation for the selected
@@ -84,13 +74,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Native function calling.** `agent.tool_protocol = "native"` switches to OpenAI
   native `tool_calls`; legacy `text` protocol preserved as fallback. Qwen3 `<think>`
   blocks are stripped before parsing.
-- **Partial-trace recovery on subprocess timeout.** The agent's `step_callback`
-  incrementally writes `trace.json`; on subprocess timeout the parent reads back the
-  partial trace and synthesizes a terminal `__error__` step with a `timeout` payload.
 - **Refactor: agent layer split.** `agents/react.py` decomposed into
   `protocol.py` (text/native → unified `ToolCall`), `dispatcher.py` (tool execution +
   terminal short-circuit on success), and `recorder.py` (typed event kinds with
-  byte-stable `trace.json` serialization). `ToolDefinition` consolidates the previous
+  stable `StepRecord` serialization). `ToolDefinition` consolidates the previous
   `ToolSpec` + handler split; `ToolRegistry` is immutable post-construction.
   `run/app.py` introduces `build_application(config) -> AgentApp`; the runner stops
   importing concrete adapter classes directly.
@@ -123,6 +110,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with a ~30-token `{from_csv: ...}` call and a millisecond CSV re-parse.
 
 ### Changed
+- **Dashboard data source is SQLite tracing only.** `dabench dashboard` now reads
+  `tracing.db_path` directly and no longer imports legacy `trace.json` artifacts.
+  Default benchmark runs keep tracing disabled; enable `tracing.enabled: true` in a
+  config when dashboard inspection is needed.
 - **Minimum Python bumped to 3.11.** `requires-python = ">=3.11"`,
   `[tool.ruff].target-version = "py311"`, `[tool.pyright].pythonVersion = "3.11"`,
   and `uv.lock` re-resolved against the new floor. Aligns the dev/CI surface

@@ -1,7 +1,7 @@
 """`config.load_app_config` 对新加字段的解析测试。
 
 覆盖：
-- max_tokens 默认值 / 显式数字 / 字符串数字转 int
+- max_tokens 默认值
 - max_empty_tool_call_retries 默认值 / 显式数字 / 非法负数抛错
 - enable_thinking 的四种情形：缺省 / null / true / false / 非 bool 抛错
 - temperature 默认 None；采样字段（top_p/top_k/min_p/presence_penalty/seed）的边界与默认
