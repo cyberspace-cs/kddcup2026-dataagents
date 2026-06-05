@@ -51,8 +51,8 @@ JSON, SQLite/DB, and text files.
 
 ## Configuration
 
-The YAML schema is documented in [`docs/cli.md`](docs/cli.md) and the
-[`app-config` spec](openspec/specs/app-config/spec.md). An example lives at
+The YAML schema is summarized in [`docs/cli.md`](docs/cli.md), with validation
+implemented in `src/data_agent_baseline/config_models.py`. An example lives at
 [`configs/react_baseline.example.yaml`](configs/react_baseline.example.yaml).
 
 ```yaml
@@ -86,6 +86,7 @@ uv run dabench <command> --config PATH [options]
 | `inspect-task` | Show task metadata and list accessible files under `context/`. |
 | `run-task` | Run the agent on one task. |
 | `run-benchmark` | Run the agent across the dataset. Accepts `--limit N` and `--range S-E`. |
+| `view` | Launch the Streamlit trace/prediction viewer. |
 
 ## Tools
 
