@@ -1,6 +1,6 @@
-# DABench Data-Agent Baseline
+# KDD Cup 2026 Data Agents
 
-ReAct-style baseline for the DABench data-agent benchmark. The runner reads tasks from
+ReAct-style data agent for the DABench benchmark. The runner reads tasks from
 `data/public/input/`, drives an OpenAI-compatible LLM through a fixed tool inventory, and
 writes per-task `prediction.csv` files plus a per-run `summary.json`. Optional SQLite
 tracing writes debug spans to `artifacts/traces.db` for the dashboard.
@@ -22,13 +22,13 @@ tracing writes debug spans to `artifacts/traces.db` for the dashboard.
 3. Confirm the dataset is visible:
 
    ```bash
-   uv run dabench status --config configs/react_baseline.example.yaml
+   uv run dabench status --config configs/react.example.yaml
    ```
 
-4. Run the baseline:
+4. Run the agent:
 
    ```bash
-   uv run dabench run-benchmark --config configs/react_baseline.example.yaml
+   uv run dabench run-benchmark --config configs/react.example.yaml
    ```
 
 For more, see [`docs/`](docs/): `architecture.md`, `cli.md`, `agent-protocol.md`,
@@ -55,7 +55,7 @@ JSON, SQLite/DB, and text files.
 The YAML schema is summarized in [`docs/cli.md`](docs/cli.md), with validation
 implemented on the frozen config dataclasses in `src/agents/config.py`.
 An example lives at
-[`configs/react_baseline.example.yaml`](configs/react_baseline.example.yaml).
+[`configs/react.example.yaml`](configs/react.example.yaml).
 
 ```yaml
 dataset:

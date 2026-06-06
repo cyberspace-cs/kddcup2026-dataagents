@@ -22,7 +22,7 @@ pip install ...        # use `uv add` or `uv sync --extra dev` instead
 ## Benchmark CLI: drive via `dabench`
 
 ```bash
-uv run dabench status        --config configs/react_baseline.example.yaml
+uv run dabench status        --config configs/react.example.yaml
 uv run dabench inspect-task <task_id> --config <cfg>
 uv run dabench run-task     <task_id> --config <cfg>
 uv run dabench run-benchmark         --config <cfg> [--limit N] [--range S-E]

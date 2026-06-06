@@ -41,7 +41,7 @@ Bad:
 
 ```
 feat(agents,tools,ui): align ... + debug UI + inspect_files     # >72 chars, 3 things in 1
-docs(baseline): 给全量源码添加中文注释                            # not English
+docs(agent): 给全量源码添加中文注释                               # not English
 refactor: updated some files                                    # past tense + vague
 ```
 

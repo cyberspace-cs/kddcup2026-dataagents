@@ -10,7 +10,7 @@ invocations must go through `uv run` so the locked environment is used.
 uv sync --extra dev
 
 # Run the CLI / scripts
-uv run dabench status --config configs/react_baseline.example.yaml
+uv run dabench status --config configs/react.example.yaml
 uv run pytest
 uv run ruff format src/
 uv run pyright

@@ -3,7 +3,7 @@
 暴露 5 个子命令：
 - `status`: 打印项目目录结构与数据集状态
 - `inspect-task <id>`: 查看单任务的元信息与 context 文件树
-- `run-task <id>`: 对单个任务跑一次 ReAct baseline
+- `run-task <id>`: 对单个任务跑一次 ReAct agent
 - `run-benchmark`: 对数据集里全部（或 `--limit N` / `--range S-E`）任务批量跑
 - `dashboard`: 启动 tracing dashboard（FastAPI）
 
@@ -142,7 +142,7 @@ def _build_compact_progress_fields(
 
 @app.callback()
 def cli() -> None:
-    """Utilities for working with the local DABench baseline project."""
+    """Utilities for working with the local DABench agent project."""
     # Typer 要求 callback 存在才能展示整体 help；不需要额外逻辑
 
 
@@ -157,7 +157,7 @@ def status(
     public_dataset = DABenchPublicDataset(app_config.dataset.root_path)
 
     # 组装状态表：列出关键目录的物理位置和存在性
-    table = Table(title="DABench Baseline Status")
+    table = Table(title="DABench Agent Status")
     table.add_column("Item")
     table.add_column("Path")
     table.add_column("State")
@@ -220,7 +220,7 @@ def run_task_command(
     task_id: str,
     config: Path = typer.Option(..., exists=True, dir_okay=False, help="YAML config path."),
 ) -> None:
-    """Run the ReAct baseline on one task."""
+    """Run the ReAct agent on one task."""
     app_config = load_app_config(config)
     # 即便只跑一个任务，也复用 run-benchmark 的目录结构：
     # <output_dir>/<run_id>/<task_id>/prediction.csv
@@ -258,7 +258,7 @@ def run_benchmark_command(
         ),
     ),
 ) -> None:
-    """Run the ReAct baseline on multiple tasks from the config selection."""
+    """Run the ReAct agent on multiple tasks from the config selection."""
     app_config = load_app_config(config)
     dataset = DABenchPublicDataset(app_config.dataset.root_path)
     task_range = _parse_task_range(range_spec) if range_spec else None

@@ -32,23 +32,23 @@ trace database and accepts `--db` instead of `--config`.
 
 ```bash
 # Smoke-check the dataset and config wiring
-uv run dabench status --config configs/react_baseline.example.yaml
+uv run dabench status --config configs/react.example.yaml
 
 # Look at one task without running the agent
-uv run dabench inspect-task task_1 --config configs/react_baseline.local.yaml
+uv run dabench inspect-task task_1 --config configs/react.local.yaml
 
 # Run one task; outputs land under <output_dir>/<run_id>/task_1/
-uv run dabench run-task task_1 --config configs/react_baseline.local.yaml
+uv run dabench run-task task_1 --config configs/react.local.yaml
 
 # Run the first 5 tasks
-uv run dabench run-benchmark --limit 5 --config configs/react_baseline.local.yaml
+uv run dabench run-benchmark --limit 5 --config configs/react.local.yaml
 
 # Run a contiguous task subset (inclusive on both ends)
-uv run dabench run-benchmark --range 5-10 --config configs/react_baseline.local.yaml
-uv run dabench run-benchmark --range task_5-task_10 --config configs/react_baseline.local.yaml
+uv run dabench run-benchmark --range 5-10 --config configs/react.local.yaml
+uv run dabench run-benchmark --range task_5-task_10 --config configs/react.local.yaml
 
 # Combine: range filters first, then --limit truncates → runs task_2..task_4
-uv run dabench run-benchmark --range 2-8 --limit 3 --config configs/react_baseline.local.yaml
+uv run dabench run-benchmark --range 2-8 --limit 3 --config configs/react.local.yaml
 
 # View traces from runs whose config enabled SQLite tracing
 uv run dabench dashboard --db artifacts/traces.db
@@ -58,7 +58,7 @@ uv run dabench dashboard --db artifacts/traces.db
 
 The supported YAML fields are validated by the frozen Pydantic dataclasses in
 `src/agents/config.py`; the example below mirrors
-`configs/react_baseline.example.yaml`.
+`configs/react.example.yaml`.
 
 ```yaml
 dataset:

@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **Default ReAct config renamed.** The tracked example config is now
+  `configs/react.example.yaml`; local overrides should use
+  `configs/react.local.yaml`. The old config naming has been
+  removed from user-facing docs and submission defaults.
+
 ### Fixed
 - **Scoped superlative answer-shape checks.** Agent self-checks and the
   answer verifier now treat global singular superlatives as one-row
@@ -61,7 +67,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   are rejected. Applies to both `dabench run-task <id>` (single task) and
   `dabench run-benchmark` (batch); blocklisted tasks still appear in
   `summary.json` with the synthetic failure reason so dashboards can grep them.
-- **PR-1 baseline.** ReAct loop with text-fenced JSON action protocol; eight default
+- **PR-1 agent.** ReAct loop with text-fenced JSON action protocol; eight default
   tools (`inspect_files`, `read_csv`, `read_json`, `read_doc`, `inspect_sqlite_schema`,
   `execute_context_sql`, `execute_python`, `answer`); subprocess timeout isolation.
   `inspect_files` is the zero-decision first-turn entry point — it returns columns,
@@ -122,7 +128,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `agents.agent` module.
 - **Python package root moved to `agents`.** Runtime code now lives under
   `src/agents/`, with the ReAct loop in `agents.agent` and model adapters /
-  rate limiting in `agents.llm`. The previous baseline package import path
+  rate limiting in `agents.llm`. The previous package import path
   and module entrypoints were removed rather than kept as compatibility shims.
 - **Dashboard data source is SQLite tracing only.** `dabench dashboard` now reads
   `tracing.db_path` directly and no longer imports legacy `trace.json` artifacts.
@@ -188,7 +194,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   handoff under §3.4-mirroring rehearsals (`scripts/eval_local.sh`).
 - **`submission.py` silent fallback on missing config.** `_build_config`
   previously fell back to dataclass defaults (`AppConfig()`) when
-  `CONFIG_PATH` (or `DEFAULT_CONFIG = /app/configs/react_baseline.example.yaml`)
+  `CONFIG_PATH` (or `DEFAULT_CONFIG = /app/configs/react.example.yaml`)
   was missing — locally tuned `max_steps`, sampling, prompts, and timeouts
   silently reverted, with no signal at runtime. The judge could mark a run
   "successful" while it actually used stock defaults. New behavior: missing

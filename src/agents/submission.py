@@ -53,7 +53,7 @@ REQUIRED_ENV = ("MODEL_API_URL", "MODEL_API_KEY", "MODEL_NAME")
 DEFAULT_INPUT = Path("/input")
 DEFAULT_OUTPUT = Path("/output")
 DEFAULT_LOGS = Path("/logs")
-DEFAULT_CONFIG = Path("/app/configs/react_baseline.example.yaml")
+DEFAULT_CONFIG = Path("/app/configs/react.example.yaml")
 DEFAULT_GLOBAL_BUDGET_SECONDS = 42_000.0  # ~11.7 h, fits a 50-task batch with headroom
 
 _LOG_LOCK = threading.Lock()
@@ -92,7 +92,7 @@ def _write_prediction_csv(path: Path, columns: list[str], rows: list[list[Any]])
 def _build_config(input_root: Path) -> AppConfig:
     """Load the baked-in YAML and apply §3.4 / §3.5 overrides.
 
-    Reading from `configs/react_baseline.example.yaml` (baked into the image
+    Reading from `configs/react.example.yaml` (baked into the image
     at /app/configs/) preserves on-laptop tuning — `tool_protocol`,
     `enable_thinking`, `max_tokens`, `max_empty_tool_call_retries`, prompt
     knobs — that the local CLI uses. Override `CONFIG_PATH` to point at a

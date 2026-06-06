@@ -400,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.fail_on_regression is not None:
         if not args.fail_on_regression.is_file():
-            # Fail fast — silently skipping a typo'd baseline path would let
+            # Fail fast — silently skipping a typo'd reference path would let
             # genuine regressions slip through pre-submit checks unnoticed.
             print(
                 f"ERROR: --fail-on-regression file missing: {args.fail_on_regression}",
