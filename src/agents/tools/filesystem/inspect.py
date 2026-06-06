@@ -116,6 +116,8 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
     for child in context_root.rglob("*"):
         if not child.is_file():
             continue
+        if any(part.startswith(".") for part in child.relative_to(context_root).parts):
+            continue
         if child.suffix == ".md" and child.stem in etl_csv:
             csv_path = etl_csv[child.stem]
             candidates.append((str(csv_path), csv_path))
