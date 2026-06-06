@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import csv
 import pathlib
-import re
 import shutil
 from collections.abc import Callable
 from contextlib import suppress
@@ -282,45 +281,6 @@ def _prune_null_columns(
     pruned_columns = [columns[i] for i in keep_indices]
     pruned_rows = [[row[i] for i in keep_indices] for row in rows]
     return pruned_columns, pruned_rows, removed
-
-
-_ID_COLUMN_RE = re.compile(
-    r"(?:^|_)[Ii][Dd]$"  # id, ID, _id, _ID (suffix or standalone)
-    r"|^[Ii][Dd](?:_|$)"  # id_, ID_ (prefix or standalone)
-    r"|(?<=[a-z])Id$"  # CamelCase: CustomerId, PostId
-    r"|(?<=[a-z])ID$"  # CamelCase: CustomerID, PostID
-)
-
-
-def _sanity_check_answer(  # pyright: ignore[reportUnusedFunction]
-    columns: list[str], rows: list[list[Any]], question: str
-) -> list[str]:
-    """Soft sanity checks on the answer table. Returns a list of warnings."""
-    if not rows:
-        return ["Answer has 0 rows — empty answers always score 0. Re-check your query."]
-    warnings: list[str] = []
-    question_lower = question.lower()
-    q_wants_id = bool(re.search(r"\b(ids?\b|identifiers?\b)", question_lower))
-    for col_idx, col_name in enumerate(columns):
-        if _ID_COLUMN_RE.search(col_name) and not q_wants_id and len(rows) > 1:
-            vals = [row[col_idx] for row in rows if row[col_idx] is not None]
-            if vals and all(isinstance(v, (int, float)) for v in vals):
-                sorted_vals = sorted(vals)
-                if sorted_vals == list(
-                    range(int(sorted_vals[0]), int(sorted_vals[0]) + len(sorted_vals))
-                ):
-                    warnings.append(
-                        f"Column '{col_name}' looks like a sequential ID but the question "
-                        "does not ask for identifiers — consider removing it."
-                    )
-        if len(rows) > 1:
-            non_none = [row[col_idx] for row in rows if row[col_idx] is not None]
-            if non_none and len({str(v) for v in non_none}) == 1:
-                warnings.append(
-                    f"Column '{col_name}' has the same value in all rows — "
-                    "it may be a filter column rather than a result column."
-                )
-    return warnings
 
 
 def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
