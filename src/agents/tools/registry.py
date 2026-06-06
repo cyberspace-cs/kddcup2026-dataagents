@@ -398,15 +398,11 @@ def create_default_tool_registry() -> ToolRegistry:
                 # WH-target / 三段式投影 / cell-type 保真等细则不再复述（_DATA_OUTPUT_RULES 已写明）。
                 "Default to `pandas` for tabular work — projections, filters, and "
                 "joins are idiomatic and types are preserved automatically. "
-                "Available libs: pandas, numpy, pyarrow, polars, openpyxl. "
+                "Available libs: pandas, numpy, pyarrow, polars, openpyxl, sqlalchemy. "
                 "The `csv` module is fine only for trivial reads (a handful of rows). "
-                # 回归 run 20260430-013 task_16：模型先试 pd.read_sql_query(q, "sqlite:///...")
-                # 吃 ImportError 再回落到 sqlite3.connect。SQLAlchemy 不在 runtime image 内，
-                # URI 形式永远不可达——`do NOT` 框定行为反向，消除"先尝试再 fallback"的浪费步。
-                "For `.db` / `.sqlite` files, use `sqlite3.connect(path)` + "
-                "`pd.read_sql_query(query, conn)`; do NOT try the pandas URI form "
-                '(`"sqlite:///..."`) — SQLAlchemy is not installed and it fails '
-                "with `ImportError`."
+                "For `.db` / `.sqlite` files, either use the pandas URI form "
+                '(`pd.read_sql_query(query, "sqlite:///path")`) or '
+                "`sqlite3.connect(path)` + `pd.read_sql_query(query, conn)`."
             ),
             input_schema=ExecutePythonInput.example_value(),
             json_schema=EXECUTE_PYTHON_SCHEMA,
