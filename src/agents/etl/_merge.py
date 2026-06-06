@@ -157,6 +157,53 @@ def pre_merge_entity_lines(
     return f"{header}\n\n{body}" if header else body
 
 
+def collect_field_names(text: str, primary_key: str | None = None) -> list[str]:
+    """Collect all unique field names from KV entity lines, preserving first-seen order."""
+    pk_token = f"{primary_key}:" if primary_key else None
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        is_entity = (pk_token in stripped) if pk_token else ENTITY_LINE.match(stripped)
+        if not is_entity:
+            continue
+        for part in stripped.split("|"):
+            if ":" not in part:
+                continue
+            key = part.partition(":")[0].strip()
+            if key and key not in seen:
+                seen.add(key)
+                ordered.append(key)
+    return ordered
+
+
+def remap_field_names(text: str, mapping: dict[str, str], primary_key: str | None = None) -> str:
+    """Rename fields in KV entity lines according to a mapping dict."""
+    pk_token = f"{primary_key}:" if primary_key else None
+    result: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        is_entity = (pk_token in stripped) if pk_token else ENTITY_LINE.match(stripped)
+        if not is_entity:
+            result.append(line)
+            continue
+        parts: list[str] = []
+        for part in stripped.split("|"):
+            if ":" not in part:
+                parts.append(part)
+                continue
+            key, _, val = part.partition(":")
+            key = key.strip()
+            canonical = mapping.get(key, key)
+            parts.append(f" {canonical}: {val.strip()} ")
+        result.append("|".join(parts))
+    return "\n".join(result)
+
+
 def normalize_entity_lines(
     text: str,
     schema_columns: list[str],

@@ -45,6 +45,7 @@ from agents.etl._merge import (
     resolve_id_conflicts,
     validate_csv,
 )
+from agents.etl._pdf import pdf_to_markdown
 from agents.llm import ModelAdapter, ModelMessage, ModelResponse, OpenAIModelAdapter
 
 if TYPE_CHECKING:
@@ -78,7 +79,10 @@ def _parse_knowledge_schema(
 
     prose_sample = ""
     try:
-        prose_text = prose_path.read_text(encoding="utf-8")
+        if prose_path.suffix.lower() == ".pdf":
+            prose_text: str = pdf_to_markdown(prose_path)  # pyright: ignore[reportUnknownVariableType]
+        else:
+            prose_text = prose_path.read_text(encoding="utf-8")
         prose_sample = sample_paragraphs_by_section(prose_text, per_section=1)
     except OSError:
         pass
@@ -144,6 +148,81 @@ def _parse_knowledge_schema(
     if len(columns) < 2 or not pk:
         return None
     logger.info("Schema from knowledge.md (LLM) for '%s': pk=%s, cols=%s", prose_stem, pk, columns)
+    return columns, pk
+
+
+def _infer_schema_from_sample(
+    adapter: ModelAdapter,
+    prose_text: str,
+    question: str,
+) -> tuple[list[str], str] | None:
+    """Infer a unified schema by sampling the raw prose text before compression.
+
+    Sends a representative sample to the LLM to discover structured data fields
+    and produce a canonical column list + primary key.
+
+    Returns (columns, primary_key) or None.
+    """
+    sample = sample_paragraphs_by_section(prose_text, per_section=2)
+    if not sample or len(sample) < 50:
+        return None
+
+    prompt = textwrap.dedent(f"""\
+        Below is a sample from a prose data document. Each paragraph describes
+        one entity and mixes structured data with narrative filler.
+
+        Task question for context:
+        {question}
+
+        Sample (from multiple sections):
+        ---
+        {sample}
+        ---
+
+        Your job:
+        1. Identify ALL structured data fields present in the sample
+           (numeric values, dates, categories, IDs, codes, statuses).
+        2. Ignore narrative filler (descriptions, opinions, context sentences
+           that don't carry a reusable data value).
+        3. Assign each field a SHORT canonical name (snake_case, e.g.
+           "effective_date", "reserve_ratio", "target_entity").
+        4. Identify the primary key field (the field that uniquely identifies
+           each entity — usually an ID number).
+
+        Output exactly TWO lines:
+        Line 1: PK: <primary_key_field_name>
+        Line 2: all field names as a comma-separated list (including the PK)
+
+        Rules:
+        - Column names must be SHORT GENERIC FIELD NAMES, NEVER specific data values.
+        - Only include fields that carry actual structured data values.
+        - Do NOT include narrative/context/filler fields.""")
+
+    messages = [
+        ModelMessage(
+            role="system",
+            content="You extract database schema from prose samples. Output PK line then columns.",
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception as exc:
+        logger.warning("LLM schema inference from sample failed: %s", exc)
+        return None
+
+    result = response.content.strip().strip("`").strip()
+    lines = [line.strip() for line in result.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+
+    pk_line = lines[0]
+    pk = pk_line.split(":", 1)[-1].strip() if pk_line.upper().startswith("PK") else None
+    columns = [c.strip() for c in lines[1].split(",") if c.strip()]
+    if len(columns) < 2 or not pk:
+        return None
+
+    logger.info("Schema inferred from sample: pk=%s, cols=%s", pk, columns)
     return columns, pk
 
 
@@ -218,10 +297,17 @@ def extract_prose_file(
     Pipeline: compress → pre-merge → normalize → deterministic CSV.
     Fallback: LLM direct extraction → code-gen.
     """
-    full_text = path.read_text(encoding="utf-8")
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
     etl_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
+
+    if path.suffix.lower() == ".pdf":
+        logger.info("ETL PDF→markdown: %s", path.name)
+        full_text: str = pdf_to_markdown(path)  # pyright: ignore[reportUnknownVariableType]
+        md_path = etl_dir / f"{path.stem}.md"
+        md_path.write_text(full_text, encoding="utf-8")
+    else:
+        full_text = path.read_text(encoding="utf-8")
 
     cached = validate_csv(csv_path)
     if cached:
@@ -233,6 +319,12 @@ def extract_prose_file(
             columns=header,
             row_count=row_count,
         )
+
+    # ---- Phase 0: infer schema from prose sample (when no schema from knowledge.md) ----
+    if not schema_columns:
+        inferred = _infer_schema_from_sample(adapter, full_text, task.question)
+        if inferred:
+            schema_columns, primary_key = inferred
 
     # ---- Phase 1: compress ----
     logger.info("ETL compress: %s (%d chars)", path.name, len(full_text))
@@ -378,11 +470,11 @@ def run_etl_for_task(
 
     def _process(pf: Path) -> ETLResult | None:
         parsed = _parse_knowledge_schema(task, pf, adapter)
-        if not parsed:
-            logger.info("ETL skip: no matching entity for %s", pf.name)
-            return None
-        schema, pk = parsed
-        return extract_prose_file(adapter, pf, task, schema_columns=schema, primary_key=pk)
+        if parsed:
+            schema, pk = parsed
+            return extract_prose_file(adapter, pf, task, schema_columns=schema, primary_key=pk)
+        logger.info("ETL: no knowledge.md schema for %s, will infer from sample", pf.name)
+        return extract_prose_file(adapter, pf, task)
 
     if len(prose_files) == 1:
         result = _process(prose_files[0])

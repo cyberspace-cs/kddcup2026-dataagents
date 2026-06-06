@@ -19,6 +19,7 @@ dependencies = [
     "polars>=1.39.0",
     "pyarrow>=23.0.1",
     "pydantic>=2.10.6",
+    "pymupdf>=1.27.2.3",
     "pyyaml>=6.0.2",
     "rich>=13.9.4",
     "sqlalchemy>=2.0.50",
