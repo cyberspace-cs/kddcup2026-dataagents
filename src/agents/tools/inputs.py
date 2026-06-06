@@ -282,7 +282,13 @@ class AnswerInput(BaseModel):
 
     columns: Annotated[
         list[str],
-        Field(default_factory=list, description="Column header names (non-empty)."),
+        Field(
+            default_factory=list,
+            description=(
+                "Column header names. Leave empty when using from_csv. "
+                "Inline is rejected for 30+ rows — use from_csv instead."
+            ),
+        ),
     ]
     rows: Annotated[
         # `int` 必须排在 `float` 之前：Pydantic v2 union 按声明顺序匹配，否则
@@ -291,7 +297,11 @@ class AnswerInput(BaseModel):
         list[list[str | int | float | bool | None]],
         Field(
             default_factory=list,
-            description="Answer rows; each row's length must match the columns array.",
+            description=(
+                "Answer rows; each row's length must match the columns array. "
+                "Leave empty when using from_csv. "
+                "Inline is rejected for 30+ rows — use from_csv instead."
+            ),
         ),
     ]
     from_csv: Annotated[
@@ -299,12 +309,11 @@ class AnswerInput(BaseModel):
         Field(
             default=None,
             description=(
-                "Optional absolute path to a CSV file containing the answer table "
-                "(header row + data rows). When set, `columns` and `rows` MUST be "
-                "empty. Use this for tables >= 30 rows or >= 200 cells to avoid "
-                "burning decode tokens re-emitting the table as JSON. Convention: "
-                "write the CSV from `execute_python` under "
-                "`os.environ['DABENCH_ANSWER_DIR']`."
+                "Absolute path to a CSV file containing the answer table "
+                "(header row + data rows). REQUIRED for 30+ rows or 200+ cells "
+                "(inline is rejected above this threshold). When set, `columns` "
+                "and `rows` MUST be empty. Convention: write the CSV from "
+                "`execute_python` under `os.environ['DABENCH_ANSWER_DIR']`."
             ),
         ),
     ] = None
@@ -340,7 +349,11 @@ class AnswerInput(BaseModel):
 
     @classmethod
     def example_value(cls) -> dict[str, Any]:
-        return {"columns": ["column_name"], "rows": [["value_1"]]}
+        return {
+            "columns": ["column_name (≤30 rows only)"],
+            "rows": [["value_1"]],
+            "from_csv": "/path/to/answer.csv (30+ rows, omit columns/rows)",
+        }
 
 
 class ValidateAnswerInput(BaseModel):
