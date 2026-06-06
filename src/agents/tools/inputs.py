@@ -356,50 +356,6 @@ class AnswerInput(BaseModel):
         }
 
 
-class ValidateAnswerInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    columns: Annotated[
-        list[str],
-        Field(default_factory=list, description="Column header names (non-empty)."),
-    ]
-    rows: Annotated[
-        list[list[str | int | float | bool | None]],
-        Field(
-            default_factory=list,
-            description="Answer rows; each row's length must match the columns array.",
-        ),
-    ]
-    from_csv: Annotated[
-        str | None,
-        Field(
-            default=None,
-            description=(
-                "Optional absolute path to a CSV file to validate instead of "
-                "inline columns/rows. When set, `columns` and `rows` MUST be empty."
-            ),
-        ),
-    ] = None
-
-    @model_validator(mode="after")
-    def _check_payload(self) -> ValidateAnswerInput:
-        if self.from_csv is not None:
-            if self.columns or self.rows:
-                raise ValueError("provide either from_csv or columns+rows, not both")
-            return self
-        if not self.columns:
-            raise ValueError("columns must be non-empty when from_csv is not set")
-        width = len(self.columns)
-        for index, row in enumerate(self.rows):
-            if len(row) != width:
-                raise ValueError(f"row {index} has {len(row)} cells but columns has {width}")
-        return self
-
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {"columns": ["column_name"], "rows": [["value_1"]]}
-
-
 INSPECT_FILES_SCHEMA = normalize_for_vllm(InspectFilesInput.model_json_schema())
 READ_CSV_SCHEMA = normalize_for_vllm(ReadCsvInput.model_json_schema())
 READ_JSON_SCHEMA = normalize_for_vllm(ReadJsonInput.model_json_schema())
@@ -410,4 +366,3 @@ INSPECT_SQLITE_SCHEMA = normalize_for_vllm(InspectSqliteSchemaInput.model_json_s
 EXECUTE_CONTEXT_SQL_SCHEMA = normalize_for_vllm(ExecuteContextSqlInput.model_json_schema())
 EXECUTE_PYTHON_SCHEMA = normalize_for_vllm(ExecutePythonInput.model_json_schema())
 ANSWER_SCHEMA = normalize_for_vllm(AnswerInput.model_json_schema())
-VALIDATE_ANSWER_SCHEMA = normalize_for_vllm(ValidateAnswerInput.model_json_schema())

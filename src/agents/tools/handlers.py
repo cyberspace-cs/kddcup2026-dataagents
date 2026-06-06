@@ -46,7 +46,6 @@ from agents.tools.inputs import (
     ReadDocInput,
     ReadJsonInput,
     SearchContextInput,
-    ValidateAnswerInput,
 )
 from agents.tools.python_exec import execute_python_code
 from agents.tools.sqlite import execute_read_only_sql, inspect_sqlite_schema
@@ -293,7 +292,9 @@ _ID_COLUMN_RE = re.compile(
 )
 
 
-def _sanity_check_answer(columns: list[str], rows: list[list[Any]], question: str) -> list[str]:
+def _sanity_check_answer(  # pyright: ignore[reportUnusedFunction]
+    columns: list[str], rows: list[list[Any]], question: str
+) -> list[str]:
     """Soft sanity checks on the answer table. Returns a list of warnings."""
     if not rows:
         return ["Answer has 0 rows — empty answers always score 0. Re-check your query."]
@@ -320,31 +321,6 @@ def _sanity_check_answer(columns: list[str], rows: list[list[Any]], question: st
                     "it may be a filter column rather than a result column."
                 )
     return warnings
-
-
-def handle_validate_answer(task: PublicTask, args: ValidateAnswerInput) -> ToolExecutionResult:
-    """`validate_answer`: non-terminal sanity check on the answer table before submission."""
-    if args.from_csv is not None:
-        path = pathlib.Path(args.from_csv).expanduser()
-        if not path.is_absolute():
-            raise ValueError(
-                f"from_csv must be an absolute path, got '{args.from_csv}' "
-                "(hint: use os.environ['DABENCH_ANSWER_DIR'] to build the path)"
-            )
-        columns, rows, _dtypes = parse_answer_csv(path)
-    else:
-        columns = list(args.columns)
-        rows = [list(row) for row in args.rows]
-    warnings = _sanity_check_answer(columns, rows, task.question)
-    content: dict[str, Any] = {
-        "column_count": len(columns),
-        "row_count": len(rows),
-    }
-    if warnings:
-        content["warnings"] = warnings
-    else:
-        content["status"] = "ok"
-    return ToolExecutionResult(ok=True, content=content)
 
 
 def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:

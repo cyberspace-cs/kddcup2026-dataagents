@@ -1,18 +1,13 @@
-"""Tests for _sanity_check_answer and handle_validate_answer."""
+"""Tests for _sanity_check_answer."""
 
 from __future__ import annotations
 
-import csv
-from pathlib import Path
-
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.tools.handlers import (
-    ToolExecutionResult,
     _sanity_check_answer,
     handle_answer,
-    handle_validate_answer,
 )
-from agents.tools.inputs import AnswerInput, ValidateAnswerInput
+from agents.tools.inputs import AnswerInput
 
 
 def _make_task(tmp_path):
@@ -23,13 +18,6 @@ def _make_task(tmp_path):
         record=TaskRecord(task_id="task_v", difficulty="easy", question="What are the names?"),
         assets=TaskAssets(task_dir=task_dir, context_dir=context_dir),
     )
-
-
-def _write_csv(path: Path, header: list[str], rows: list[list]) -> None:
-    with path.open("w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(header)
-        w.writerows(rows)
 
 
 # --- Unit tests on _sanity_check_answer ---
@@ -103,35 +91,6 @@ def test_clean_answer_no_warnings() -> None:
     assert warnings == []
 
 
-# --- Integration tests on handle_validate_answer ---
-
-
-def test_handle_validate_answer_returns_warnings(tmp_path) -> None:
-    task = _make_task(tmp_path)
-    args = ValidateAnswerInput.model_validate(
-        {"columns": ["id", "name"], "rows": [[1, "Alice"], [2, "Bob"], [3, "Carol"]]}
-    )
-    result = handle_validate_answer(task, args)
-    assert isinstance(result, ToolExecutionResult)
-    assert result.ok is True
-    assert result.is_terminal is False
-    assert "warnings" in result.content
-    assert result.content["column_count"] == 2
-    assert result.content["row_count"] == 3
-
-
-def test_handle_validate_answer_clean(tmp_path) -> None:
-    task = _make_task(tmp_path)
-    args = ValidateAnswerInput.model_validate(
-        {"columns": ["name", "score"], "rows": [["Alice", 90], ["Bob", 85]]}
-    )
-    result = handle_validate_answer(task, args)
-    assert result.ok is True
-    assert result.is_terminal is False
-    assert result.content["status"] == "ok"
-    assert "warnings" not in result.content
-
-
 # --- Regression: handle_answer no longer returns answer_warnings ---
 
 
@@ -144,28 +103,3 @@ def test_handle_answer_no_answer_warnings(tmp_path) -> None:
     assert result.ok is True
     assert result.is_terminal is True
     assert "answer_warnings" not in result.content
-
-
-# --- from_csv support ---
-
-
-def test_handle_validate_answer_from_csv(tmp_path) -> None:
-    task = _make_task(tmp_path)
-    csv_path = tmp_path / "answer.csv"
-    _write_csv(csv_path, ["id", "name"], [[1, "Alice"], [2, "Bob"], [3, "Carol"]])
-    args = ValidateAnswerInput.model_validate({"from_csv": str(csv_path)})
-    result = handle_validate_answer(task, args)
-    assert result.ok is True
-    assert result.is_terminal is False
-    assert result.content["row_count"] == 3
-    assert "warnings" in result.content
-
-
-def test_handle_validate_answer_from_csv_clean(tmp_path) -> None:
-    task = _make_task(tmp_path)
-    csv_path = tmp_path / "answer.csv"
-    _write_csv(csv_path, ["name", "score"], [["Alice", 90], ["Bob", 85]])
-    args = ValidateAnswerInput.model_validate({"from_csv": str(csv_path)})
-    result = handle_validate_answer(task, args)
-    assert result.ok is True
-    assert result.content["status"] == "ok"
