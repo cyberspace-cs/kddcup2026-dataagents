@@ -37,6 +37,12 @@ Is any column NOT requested by the question?  Common mistakes:
   question does not ask for identifiers.
 - Filter / WHERE columns whose value is constant across all rows.
 - Join-key columns needed for computation but not for the answer.
+- Source-table dimension columns (Province, Date, EndDate, Year, Region,
+  Category, …) that provide context but are NOT the attribute the question
+  asks about.  When the question says "show me X" / "X的记录/数据", only
+  X is the result column.  Date/region/category columns are extra unless
+  the question explicitly names them (e.g., "show X by province", "X and
+  their dates", "for each year").
 
 Check 2 — MISSING columns:
 Does the question EXPLICITLY ask the user to output attributes that
@@ -70,6 +76,13 @@ Check 3 — ROW COUNT sanity:
   Do NOT flag single-row answers when the question uses singular
   phrasing ("the player's", "which driver", "who is the", "calculate
   for the") — those naturally expect 1 row.
+- Data listing / retrieval questions ("show the data", "list the records",
+  "查一下数据", "记录是什么样的", "展示/显示/列出", "找一下数据") expect
+  ALL qualifying source rows.  Multiple rows sharing the same date or key
+  value is NORMAL when the source is multi-dimensional (e.g., per-province,
+  per-product, per-category).  Do NOT reject for "duplicate" dates or
+  repeated key values in this case — the rows represent different entities
+  at the same time point, not true duplicates.
 - When in doubt about expected plurality, say "ok".
 
 Check 4 — VALUE sanity (only flag MATHEMATICAL impossibilities):

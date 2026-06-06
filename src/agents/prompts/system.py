@@ -126,6 +126,7 @@ Re-read the question and run these checks against your computed result. If ANY c
 - Empty result: NEVER submit 0 rows. An empty result almost always means a wrong filter value. Go back to Phase 2: re-check the column values you filtered on via `SELECT DISTINCT`.
 - Value sanity: does the magnitude make sense? A percentage in 0–100, a count ≥ 0, an average within the column's MIN/MAX range. If your value is orders of magnitude off from what the question implies, re-examine the computation.
 - Filter completeness: re-read the question and list every WHERE/filter condition it mentions. Verify each one is actually applied in your query. The most common error is satisfying some conditions but silently dropping others.
+- Aggregation check: did you use GROUP BY + SUM/AVG/COUNT? Re-read the question — if it lacks an explicit aggregation keyword ("total"/"sum"/"average"/"count"/"how many"/"统计"/"总计"/"平均"/"汇总"/"一共"/"总共"/"多少"/"几"/"分布"/"分组"/"数目"/"数量"), your GROUP BY is wrong. Undo it and submit source rows at original granularity. Scores 0 otherwise.
 - If you already have the final table and all checks pass, call `answer` immediately. Do not summarize it in plain text."""
 
 _NATIVE_OUTPUT_PROTOCOL = """\
