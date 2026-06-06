@@ -310,6 +310,10 @@ def extract_prose_file(
             row_count=row_count,
         )
 
+    if not full_text.strip():
+        logger.info("ETL skip: no extractable text in %s", path.name)
+        return None
+
     # ---- Phase 0: infer schema from prose sample (when no schema from knowledge.md) ----
     if not schema_columns:
         inferred = _infer_schema_from_sample(adapter, full_text, task.question)
