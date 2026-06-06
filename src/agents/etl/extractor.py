@@ -263,39 +263,56 @@ def _parse_knowledge_schema(
     prose_section = ""
     if prose_sample:
         prose_section = (
-            f'\n\nProse sample from "{prose_stem}.md" '
-            f"(scan for data fields missing from governance doc):\n"
+            f"\n\nSample paragraphs from EVERY SECTION of the prose file "
+            f'"{prose_stem}.md" (use these to discover ALL numeric/categorical '
+            f"data fields present in the prose, even if the governance document "
+            f"does not list them):\n"
             f"---\n{prose_sample}\n---"
         )
 
     prompt = textwrap.dedent(f"""\
-        Match the prose file "{prose_stem}" to an entity in the governance document.
+        Below is a data governance document AND a sample from a prose data file.
+        Find the entity in the governance document that best matches \
+        the prose file "{prose_stem}".
 
-        No match → output: NONE
+        If NO entity in the governance document matches, output exactly: NONE
 
-        Match → output FOUR lines:
-        PK: <primary_key>
-        ANCHORS: <PK + name/label/secondary ID fields, comma-separated>
-        TYPES: <field=type, field=type, ... for every field>
-        <all field names, comma-separated, must include all ANCHORS>
+        Otherwise output exactly FOUR lines:
+        Line 1: PK: <primary_key_field_name>
+        Line 2: ANCHORS: <comma-separated identity fields that can uniquely \
+        identify an entity — includes PK plus name/label/secondary ID fields>
+        Line 3: TYPES: <field=type, field=type, ... for every field>
+        Line 4: all field names as a comma-separated list (must include all ANCHORS)
 
-        Rules:
-        - Column names: short snake_case generic names. NEVER data values.
-        - ANCHORS: fields that identify an entity across sections.
-        - Types: number, integer_count, integer_rank, date, time, \
-        string, category, boolean, scalar_id, url.
-        - "档案/记录/条目/战略单元/Record/File/Case 353" patterns → \
-        field "record_id", type "integer_scalar local_record_id", \
-        FIRST in PK and ANCHORS. Not a domain ID.
-        - Include data fields from prose sample even if governance doc omits them.
-        - No narrative/filler fields.
+        IMPORTANT:
+        - PK and column names must be SHORT GENERIC FIELD NAMES (like "event_id", \
+        "molecule_id", "patient_id"), NEVER a specific data value.
+        - ANCHORS should include the PK and any name/label/secondary identifier \
+        field that could be used to recognize the same entity across different \
+        sections of the document (e.g. a person's name, a record label).
+        - Start with fields from the governance document.
+        - Use simple type labels such as integer_scalar_id, scalar_id, date, time, \
+        number, integer_count, integer_rank, string, category, boolean, url.
+        - For document-local record_id fields use type "integer_scalar local_record_id"; \
+        record_id values must be a single scalar number, not a range or list.
+        - ALSO scan the prose sample for ADDITIONAL structured data fields \
+        that are present in the data but MISSING from the governance document. \
+        Add these to the list with descriptive short names matching the \
+        abbreviations used in the prose.
+        - If paragraphs are keyed by repeated document-local labels such as \
+        "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353", \
+        "File 353", or "Case 353", include a field named "record_id" and \
+        put it FIRST in PK and ANCHORS. This local record ID is the row key \
+        for merging sections; it is NOT the same as domain IDs such as \
+        personalcode, innercode, fundcode, or secucode.
+        - Do NOT add narrative/filler fields — only structured data fields.
 
         Governance document:
         {km_text}{prose_section}""")
     messages = [
         ModelMessage(
             role="system",
-            content="Output PK, ANCHORS, TYPES, then columns. Nothing else.",
+            content="You extract database schema. Output PK, ANCHORS, TYPES, then comma-separated columns.",
         ),
         ModelMessage(role="user", content=prompt),
     ]
@@ -345,34 +362,55 @@ def _infer_schema_from_sample(
         return None
 
     prompt = textwrap.dedent(f"""\
-        Extract the schema from this prose data sample.
+        Below is a sample from a prose data document. Each paragraph describes
+        one entity and mixes structured data with narrative filler.
 
-        Question context: {question}
+        Task question for context:
+        {question}
 
-        Sample:
+        Sample (from multiple sections):
         ---
         {sample}
         ---
 
-        Output FOUR lines:
-        PK: <primary_key>
-        ANCHORS: <PK + name/label/secondary ID fields, comma-separated>
-        TYPES: <field=type, field=type, ... for every field>
-        <all field names, comma-separated, must include all ANCHORS>
+        Your job:
+        1. Identify ALL structured data fields present in the sample
+           (numeric values, dates, categories, IDs, codes, statuses).
+        2. Ignore narrative filler (descriptions, opinions, context sentences
+           that don't carry a reusable data value).
+        3. Assign each field a SHORT canonical name (snake_case, e.g.
+           "effective_date", "reserve_ratio", "target_entity").
+        4. Identify the primary key field (the field that uniquely identifies
+           each entity — usually an ID number).
+        5. Identify ANCHOR fields — identity fields (including PK) that can
+           uniquely identify an entity even when the PK is missing or takes
+           a different form (e.g. a name, label, or secondary ID).
+
+        Output exactly FOUR lines:
+        Line 1: PK: <primary_key_field_name>
+        Line 2: ANCHORS: <comma-separated identity fields including PK>
+        Line 3: TYPES: <field=type, field=type, ... for every field>
+        Line 4: all field names as a comma-separated list (must include all ANCHORS)
 
         Rules:
-        - Short snake_case names. NEVER data values.
-        - Only structured data fields. No narrative/filler.
-        - Types: number, integer_count, integer_rank, date, time, \
-        string, category, boolean, scalar_id, url.
-        - "档案/记录/条目/战略单元/Record/File/Case 353" patterns → \
-        field "record_id", type "integer_scalar local_record_id", \
-        FIRST in PK and ANCHORS. Not a domain ID.""")
+        - Column names must be SHORT GENERIC FIELD NAMES, NEVER specific data values.
+        - Only include fields that carry actual structured data values.
+        - Use simple type labels such as integer_scalar_id, scalar_id, date, time,
+          number, integer_count, integer_rank, string, category, boolean, url.
+        - If paragraphs are keyed by repeated document-local labels such as
+          "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353",
+          "File 353", or "Case 353", include a field named "record_id" and
+          put it FIRST in PK and ANCHORS. This local record ID is the row key
+          for merging sections; it is NOT the same as domain IDs such as
+          personalcode, innercode, fundcode, or secucode.
+          Give record_id type "integer_scalar local_record_id"; record_id values
+          must be a single scalar number, not a range or list.
+        - Do NOT include narrative/context/filler fields.""")
 
     messages = [
         ModelMessage(
             role="system",
-            content="Output PK, ANCHORS, TYPES, then columns. Nothing else.",
+            content="You extract database schema from prose samples. Output PK, ANCHORS, TYPES, then columns.",
         ),
         ModelMessage(role="user", content=prompt),
     ]

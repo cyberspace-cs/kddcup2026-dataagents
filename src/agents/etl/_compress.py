@@ -80,18 +80,29 @@ def _field_type_instruction(field: str, field_type: str) -> str:
     type_text = field_type.lower()
     if "local_record_id" in type_text or "integer_scalar" in type_text:
         return (
-            f"- {field} [{field_type}]: one integer. "
-            '"档案 286"→"286". Ranges like "197至217"→skip line.'
+            f"- {field}: {field_type}. Extract one scalar integer only. "
+            'Convert labels like "档案 286" or "Record 286" to "286". '
+            'Reject ranges/groups/lists such as "197至217"; if the paragraph only '
+            "states missing values for such a range/group, skip the paragraph."
         )
     if "number" in type_text or "integer" in type_text:
-        return f"- {field} [{field_type}]: numeric scalar only. Strip units and commas."
+        return (
+            f"- {field}: {field_type}. Extract only an explicit numeric scalar that "
+            "matches this exact field; remove unit suffixes."
+        )
     if "date" in type_text:
-        return f"- {field} [{field_type}]: YYYY-MM-DD (or YYYY-MM/YYYY). Use final corrected value."
+        return (
+            f"- {field}: {field_type}. Extract only an explicit reporting date/period; "
+            "use the final corrected value when corrections are described."
+        )
     if "time" in type_text:
-        return f"- {field} [{field_type}]: clock/timestamp only."
+        return f"- {field}: {field_type}. Extract only an explicit clock/timestamp value."
     if "id" in type_text or "identity" in type_text:
-        return f"- {field} [{field_type}]: one scalar ID. No ranges or descriptions."
-    return f"- {field} [{field_type}]."
+        return (
+            f"- {field}: {field_type}. Extract one scalar identity value only; "
+            "do not use ranges, grouped labels, or narrative descriptions."
+        )
+    return f"- {field}: {field_type}. Extract only explicit values of this type."
 
 
 def _format_schema_type_hint(
@@ -107,7 +118,11 @@ def _format_schema_type_hint(
     ]
     if not lines:
         return ""
-    return "\nPer-field types (wrong type → blank):\n" + "\n".join(lines) + "\n"
+    return (
+        "\nField type constraints (obey strictly; omit values that violate the type):\n"
+        + "\n".join(lines)
+        + "\n"
+    )
 
 
 def _format_hard_type_rules(
@@ -281,80 +296,111 @@ def compress_chunk(
     if schema_columns and primary_key:
         cols = ", ".join(schema_columns)
         schema_hint = (
-            f"\nFields (use EXACTLY): {cols}\n"
-            "Map a value to a field ONLY when it explicitly matches. "
-            "No synonyms. No forcing narrative into fields.\n"
+            f"\nUse EXACTLY these field names: {cols}\n"
+            "Map a value to a field only when it explicitly matches that field's "
+            "meaning. Do NOT force narrative text into the closest field, and "
+            "do NOT invent synonyms or alternative names.\n"
         )
         type_hint = _format_schema_type_hint(schema_columns, schema_field_types)
         hard_type_rules = _format_hard_type_rules(schema_columns, schema_field_types)
         format_hint = (
-            f"Format — one line per entity, pipe-separated:\n"
-            f"  {primary_key}: <val> | field_a: <val> | ...\n"
-            "Include only fields with actual values. Omit the rest.\n"
+            f"Format — one line per entity-paragraph, pipe-separated key-value pairs:\n"
+            f"  {primary_key}: <value> | field_a: <value> | field_b: <value> | ...\n"
+            "ONLY include fields that have actual values in the paragraph. "
+            "OMIT non-identity fields with no suitable value; downstream "
+            "normalization will fill them as empty cells.\n"
         )
         if anchor_keys and len(anchor_keys) > 1:
             anchor_names = ", ".join(anchor_keys)
             anchor_rule = (
-                f"- Start each line with: {anchor_names}. "
-                "Include ALL of them. Empty value if not stated."
+                f"- Start each line with these identity fields: {anchor_names}. "
+                "Include ALL of them when mentioned in the paragraph. "
+                "If a field's value is not stated in the paragraph, include its "
+                "key with an empty value."
             )
         else:
             anchor_rule = (
-                f"- Start each line with {primary_key} as stated. This field anchors every line."
+                f"- Start each line with {primary_key} as stated in the paragraph. "
+                "This field anchors every line."
             )
     else:
         schema_hint = ""
         type_hint = ""
         hard_type_rules = ""
         format_hint = (
-            "Format — one line per entity:\n"
+            "Format — one line per entity-paragraph:\n"
             "  ID: <number> | entity_name: <name> | <field>: <value> | ...\n"
         )
         anchor_rule = (
-            "- Start each line with the entity's numeric ID AND name. "
-            "These two fields anchor every line."
+            "- Start each line with the entity's numeric ID AND its name/codename/label "
+            "as stated in the paragraph. These two fields anchor every line."
         )
 
     sparse = bool(schema_columns and len(schema_columns) > 10)
     if sparse:
-        placeholder_rule = "- None/NaN/placeholder/redacted → SKIP the field entirely."
+        placeholder_rule = (
+            "- If a field is not mentioned or its value is None/NaN/placeholder/redacted, "
+            "SKIP IT entirely — do NOT include it in the output line."
+        )
     else:
         placeholder_rule = (
-            '- None/NaN/placeholder/redacted → mark as "(placeholder)", '
-            'e.g. "height_cm: 0.0 (placeholder)". '
-            "Corrected values are NOT placeholders."
+            "- If a field's ENTIRE value is 0.0, None, NaN, placeholder, or "
+            'redacted (with no real data), output it with a "(placeholder)" marker — '
+            'e.g. "height_cm: 0.0 (placeholder)". Do NOT mark corrected values as '
+            'placeholder — "initially X, corrected to Y" means Y is the real value.'
         )
 
-    prompt = (
-        f"Extract data from each paragraph as labeled key-value pairs.\n"
-        f"{schema_hint}\n"
-        f"{type_hint}\n"
-        f"{format_hint}\n"
-        f"{hard_type_rules}\n"
-        f"Rules:\n"
-        f"{anchor_rule}\n"
-        f"- No value for a schema field → omit that non-identity field. "
-        f"NEVER substitute descriptions, plans, or prose as field values.\n"
-        f"- Paragraph says values are missing/not provided/unavailable → "
-        f"SKIP the paragraph. No identity-only rows.\n"
-        f"- Field qualifiers are binding: overall/global total ≠ "
-        f"qualified/category-specific field. Omit if qualifier mismatches.\n"
-        f'- "档案/记录/条目/战略单元/Record/File/Case 353" → record_id: 353. '
-        f'Ranges like "197至217" → skip line. '
-        f"Local record labels ≠ personalcode/fundcode/secucode.\n"
-        f"- personalcode = person identifier only. Not a name, not a record number.\n"
-        f"- Strip unit suffixes (193.0, not 193.0 cm).\n"
-        f"{placeholder_rule}\n"
-        f"- Corrections → output FINAL value only.\n"
-        f"- Preserve URLs, names, dates, categories.\n"
-        f"- Strip narrative filler with no data value.\n"
-        f"- One blank line between entries. No commentary, no markdown.\n"
-        f"\n---\n{chunk_text}\n---"
-    )
+    prompt = textwrap.dedent(f"""\
+        Below are paragraphs from a data document. Each paragraph describes one entity \
+        and mixes data with narrative filler.
+
+        Task: for each paragraph, extract data as labeled key-value pairs.
+        {schema_hint}
+        {type_hint}
+        {hard_type_rules}
+        {format_hint}
+        Rules:
+        {anchor_rule}
+        - Every value MUST have a descriptive field label before it.
+        - If a schema field has no explicit, suitable value in this paragraph, \
+        leave it empty by omitting that non-identity field. Do NOT substitute \
+        background descriptions, business strengths, culture, plans, or prose \
+        summaries just because they are loosely related to the field name.
+        - If a paragraph only says values are missing/not provided/unavailable \
+        for an entity or a range/group of entities, SKIP that paragraph entirely. \
+        Do NOT output a row that contains only identity fields and empty data fields.
+        - Field-name qualifiers are binding. Do NOT map an overall/global \
+        total, count, rank, or average into a qualified/category-specific \
+        field unless the paragraph explicitly states the same qualifier for \
+        that value; omit the field instead.
+        - Local document labels such as "档案 353", "记录 353", "条目 353", \
+        "战略单元 353", "Record 353", "File 353", or "Case 353" are \
+        record identifiers. Put only the scalar numeric portion (for example, \
+        "353") in fields such as record_id/archive_id/file_id/case_id/local_id. \
+        NEVER output ranges like "197至217" or grouped labels as a single \
+        record_id, and never put a local record label into domain ID fields such \
+        as personalcode, innercode, fundcode, or secucode unless the paragraph \
+        explicitly labels it as that domain ID.
+        - personalcode/PersonalCode fields are person identifiers. Do NOT \
+        fill them with a manager name or with a local document record number; \
+        leave personalcode empty unless an explicit personal/manager code is \
+        stated.
+        - Output numeric values WITHOUT unit suffixes (e.g. 193.0, not 193.0 cm).
+        {placeholder_rule}
+        - For corrections: output the FINAL corrected value directly — e.g. \
+        "label: positive", not "label: positive (placeholder)".
+        - Preserve URLs, names, dates, times, categories, classifications.
+        - Strip only narrative filler that contains no structured field, schema field, \
+        ID, value, date, unit, label, status, or question-relevant fact.
+        - Separate entries with ONE blank line. No commentary, no markdown.
+
+        ---
+        {chunk_text}
+        ---""")
     from agents.llm.types import ModelMessage
 
     messages = [
-        ModelMessage(role="system", content="Extract key-value pairs. No commentary."),
+        ModelMessage(role="system", content="You are a data extraction preprocessor."),
         ModelMessage(role="user", content=prompt),
     ]
     return adapter.complete(messages).content.strip()
@@ -450,22 +496,29 @@ def extract_csv_from_text(
     hard_type_rules = _format_hard_type_rules(schema_columns, schema_field_types)
 
     prompt = textwrap.dedent(f"""\
-        Convert to CSV. One row per entity.
+        Below is a compressed data document. Each line describes one entity \
+        as pipe-separated key-value pairs (e.g. "key: value | key: value").
+
+        Output a CSV with one row per entity.
         {schema_line}
         {hard_type_rules}
-        - ONLY valid CSV. Header first.
-        - Wrong type → blank cell. Placeholder/None/NaN → blank.
-        - Strip unit suffixes. Missing → blank.
-        - No markdown fences. No explanation.
+        Rules:
+        - Output ONLY valid CSV. First line is the header.
+        - Placeholder/None/NaN/redacted values → leave the cell empty.
+        - Strip unit suffixes (cm, kg, etc.) from numeric fields.
+        - For genuinely missing values: leave empty.
+        - No markdown fences, no explanation.
 
-        Question: {question}
+        Question context: {question}
 
-        Data:
-        {text}""")
+        Document:
+        {text}
+
+        Output CSV now:""")
     from agents.llm.types import ModelMessage
 
     messages = [
-        ModelMessage(role="system", content="Output only CSV. No explanation."),
+        ModelMessage(role="system", content="You are a CSV data extractor. Output only CSV."),
         ModelMessage(role="user", content=prompt),
     ]
     csv_text = adapter.complete(messages).content.strip()

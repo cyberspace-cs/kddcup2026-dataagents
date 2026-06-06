@@ -37,7 +37,7 @@ def test_compress_prompt_does_not_name_specific_filler_domains() -> None:
     assert "hobbies" not in lower
     assert "catering" not in lower
     assert "anecdotes" not in lower
-    assert "no data value" in lower
+    assert "no structured field" in lower
 
 
 def test_compress_prompt_leaves_unsuitable_schema_fields_empty() -> None:
@@ -55,12 +55,12 @@ def test_compress_prompt_leaves_unsuitable_schema_fields_empty() -> None:
     lower = prompt.lower()
 
     assert "only when it explicitly matches" in lower
-    assert "no synonyms" in lower
-    assert "never substitute descriptions" in lower
-    assert "omit that non-identity field" in lower
+    assert "do not invent synonyms" in lower
+    assert "do not substitute" in lower
+    assert "omitting that non-identity field" in lower
     assert "missing/not provided/unavailable" in lower
-    assert "skip the paragraph" in lower
-    assert "identity-only rows" in lower
+    assert "skip that paragraph" in lower
+    assert "only identity fields and empty data fields" in lower
     assert "qualifiers are binding" in lower
     assert "overall/global" in lower
     assert "qualified/category-specific" in lower
@@ -120,7 +120,7 @@ def test_direct_extract_prompt_repeats_hard_type_rules() -> None:
     lower = prompt.lower()
 
     assert "hard type rules" in lower
-    assert "wrong type → blank" in lower
+    assert "wrong type" in lower
     assert "numeric values only (integers or decimals)" in lower
     assert "fields: lowestsumsubscribing" in lower
 
@@ -144,11 +144,11 @@ def test_compress_prompt_distinguishes_local_record_ids_from_personalcode() -> N
     prompt = adapter.messages[1].content
     lower = prompt.lower()
 
-    assert "record_id [integer_scalar local_record_id]" in lower
-    assert "record_id: 353" in lower
-    assert "skip line" in lower
-    assert "personalcode = person identifier" in lower
-    assert "not a name, not a record number" in lower
+    assert "record_id: integer_scalar local_record_id" in lower
+    assert '"353"' in lower
+    assert "skip the paragraph" in lower
+    assert "personalcode/personalcode fields are person identifiers" in lower
+    assert "local document record number" in lower
 
 
 def test_compress_clean_drops_grouped_record_ids_before_clean_markdown() -> None:
@@ -320,5 +320,5 @@ def test_compress_prompt_single_anchor_unchanged() -> None:
     prompt = adapter.messages[1].content
     lower = prompt.lower()
 
-    assert "start each line with id as stated" in lower
+    assert "start each line with id as stated in the paragraph" in lower
     assert "anchors every line" in lower
