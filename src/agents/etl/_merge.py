@@ -31,6 +31,9 @@ PLACEHOLDER_VALS = frozenset(
     }
 )
 UNIT_SUFFIX = re.compile(r"^([\d.]+)\s*(?:cm|kg|U/L|mg/dL|mmHg|%)\s*$")
+NUMERIC_SCALAR = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$")
+DATE_SCALAR = re.compile(r"^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$")
+BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "1", "0", "是", "否"})
 
 
 def _canonical_key_map(keys: list[str]) -> dict[str, str]:
@@ -231,8 +234,6 @@ def pre_merge_entity_lines(
                         ) and not _is_placeholder(v):
                             groups[canonical][k] = v
                     del groups[pk]
-                    if pk in order:
-                        order.remove(pk)
 
         merge2_before = len(entity_lines)
         merge2_after = len(groups)
@@ -311,10 +312,34 @@ def clean_cell(val: str) -> str:
     return val
 
 
+def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
+    """Normalize a KV value and enforce lightweight schema field types."""
+    cleaned = clean_cell(val)
+    if not cleaned:
+        return ""
+    type_text = (field_type or "").lower()
+    if "number" in type_text or "integer" in type_text:
+        normalized = cleaned.replace(",", "")
+        if normalized.endswith("%"):
+            normalized = normalized[:-1].strip()
+        return normalized if NUMERIC_SCALAR.match(normalized) else ""
+    if "date" in type_text:
+        return cleaned if DATE_SCALAR.match(cleaned) else ""
+    if "boolean" in type_text:
+        low = cleaned.lower()
+        if low in ("true", "yes", "1", "是"):
+            return "true"
+        if low in ("false", "no", "0", "否"):
+            return "false"
+        return ""
+    return cleaned
+
+
 def deterministic_kv_to_csv(
     text: str,
     schema_columns: list[str],
     primary_key: str | None = None,
+    schema_field_types: dict[str, str] | None = None,
 ) -> str | None:
     """Parse normalized KV entity lines directly into CSV without LLM.
 
@@ -343,7 +368,10 @@ def deterministic_kv_to_csv(
             key, _, val = part.partition(":")
             key = _canonicalize_key(key, field_map)
             if key in col_set:
-                fields[key] = clean_cell(val.strip())
+                fields[key] = clean_cell_for_type(
+                    val.strip(),
+                    schema_field_types.get(key) if schema_field_types else None,
+                )
 
         row = [fields.get(c, "") for c in schema_columns]
         if any(row):

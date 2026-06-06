@@ -157,3 +157,46 @@ def test_deterministic_kv_to_csv_preserves_rows_without_semantic_filtering() -> 
     assert rows[0]["province_name"] == "黑龙江、甘肃、广东、陕西、湖南和云南"
     assert rows[1]["record_id"] == "档案 286"
     assert rows[1]["primary_industry_gdp"] == "302.48"
+
+
+def test_deterministic_kv_to_csv_blanks_values_with_wrong_schema_type() -> None:
+    schema = [
+        "fundcode",
+        "lowestsumsubscribing",
+        "lowestsumredemption",
+        "foundedsize",
+        "establishmentdate",
+        "iffof",
+        "ifinitiatingfund",
+    ]
+    csv_text = deterministic_kv_to_csv(
+        (
+            "fundcode: 159001 | lowestsumsubscribing: 万家上证50交易型开放式指数证券投资基金 "
+            "| lowestsumredemption: 900000.0 | foundedsize: 1,234.50 "
+            "| establishmentdate: 股票型 | iffof: 万家上证50交易型开放式指数证券投资基金 "
+            "| ifinitiatingfund: 否"
+        ),
+        schema,
+        primary_key="fundcode",
+        schema_field_types={
+            "fundcode": "scalar_id",
+            "lowestsumsubscribing": "number",
+            "lowestsumredemption": "number",
+            "foundedsize": "number",
+            "establishmentdate": "date",
+            "iffof": "boolean",
+            "ifinitiatingfund": "boolean",
+        },
+    )
+    assert csv_text is not None
+
+    row = next(csv.DictReader(io.StringIO(csv_text)))
+    assert row == {
+        "fundcode": "159001",
+        "lowestsumsubscribing": "",
+        "lowestsumredemption": "900000.0",
+        "foundedsize": "1234.50",
+        "establishmentdate": "",
+        "iffof": "",
+        "ifinitiatingfund": "false",
+    }

@@ -33,110 +33,129 @@ RECORD_ID_RANGE = re.compile(
     r"(?:档案|记录|条目|战略单元|Record|File|Case)?\s*\d{1,8}\s*(?:至|到|[-~–—])\s*\d{1,8}",
     re.IGNORECASE,
 )
+NUMERIC_SCALAR = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$")
+DATE_SCALAR = re.compile(r"^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$")
+BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "1", "0", "是", "否"})
 
 
-def infer_schema_field_types(
-    schema_columns: list[str] | None,
-    anchor_keys: list[str] | None = None,
-) -> dict[str, str]:
-    """Infer lightweight type hints for compression from canonical field names."""
-    if not schema_columns:
-        return {}
+def _is_placeholder_value(val: str) -> bool:
+    normalized = val.lower().strip()
+    return not normalized or normalized in {"-", "none", "nan", "n/a", "placeholder", "redacted"}
 
-    anchor_set = {anchor.lower() for anchor in anchor_keys or []}
-    field_types: dict[str, str] = {}
-    for field in schema_columns:
-        name = field.lower()
-        if name in RECORD_ID_FIELDS:
-            field_types[field] = "integer_scalar local_record_id"
-        elif "date" in name or name in {"enddate", "startdate"}:
-            field_types[field] = "date"
-        elif "time" in name:
-            field_types[field] = "time"
-        elif name.endswith("count") or "_count" in name:
-            field_types[field] = "integer_count"
-        elif "rank" in name:
-            field_types[field] = "integer_rank"
-        elif "id" in name or "code" in name:
-            field_types[field] = "scalar_id"
-        elif any(token in name for token in ("name", "province", "city", "type", "status")):
-            field_types[field] = "string"
-        elif any(
-            token in name
-            for token in (
-                "gdp",
-                "nv",
-                "amount",
-                "ratio",
-                "rate",
-                "growth",
-                "value",
-                "assets",
-                "liability",
-                "price",
-                "weight",
-                "height",
-            )
-        ):
-            field_types[field] = "number"
-        elif name in anchor_set:
-            field_types[field] = "scalar_identity"
-        else:
-            field_types[field] = "value"
-    return field_types
+
+def _clean_numeric_scalar(val: str) -> str | None:
+    stripped = val.strip()
+    if _is_placeholder_value(stripped) or "(placeholder)" in stripped.lower():
+        return ""
+    normalized = stripped.replace(",", "")
+    if normalized.endswith("%"):
+        normalized = normalized[:-1].strip()
+    unit_match = re.match(r"^(.+?)\s*(?:cm|kg|U/L|mg/dL|mmHg|%)$", normalized, re.IGNORECASE)
+    if unit_match:
+        normalized = unit_match.group(1).strip()
+    return normalized if NUMERIC_SCALAR.match(normalized) else None
+
+
+def _clean_typed_scalar(val: str, field_type: str) -> str | None:
+    type_text = field_type.lower()
+    if "number" in type_text or "integer" in type_text:
+        return _clean_numeric_scalar(val)
+
+    stripped = val.strip()
+    if _is_placeholder_value(stripped) or "(placeholder)" in stripped.lower():
+        return ""
+    if "date" in type_text:
+        return stripped if DATE_SCALAR.match(stripped) else None
+    if "boolean" in type_text:
+        low = stripped.lower()
+        if low in ("true", "yes", "1", "是"):
+            return "true"
+        if low in ("false", "no", "0", "否"):
+            return "false"
+        return None
+    return stripped
 
 
 def _field_type_instruction(field: str, field_type: str) -> str:
     type_text = field_type.lower()
     if "local_record_id" in type_text or "integer_scalar" in type_text:
         return (
-            f"- {field}: {field_type}. Extract one scalar integer only. "
-            'Convert labels like "档案 286" or "Record 286" to "286". '
-            'Reject ranges/groups/lists such as "197至217"; if the paragraph only '
-            "states missing values for such a range/group, skip the paragraph."
+            f"- {field} [{field_type}]: one integer. "
+            '"档案 286"→"286". Ranges like "197至217"→skip line.'
         )
     if "number" in type_text or "integer" in type_text:
-        return (
-            f"- {field}: {field_type}. Extract only an explicit numeric scalar that "
-            "matches this exact field; remove unit suffixes."
-        )
+        return f"- {field} [{field_type}]: numeric scalar only. Strip units and commas."
     if "date" in type_text:
-        return (
-            f"- {field}: {field_type}. Extract only an explicit reporting date/period; "
-            "use the final corrected value when corrections are described."
-        )
+        return f"- {field} [{field_type}]: YYYY-MM-DD (or YYYY-MM/YYYY). Use final corrected value."
     if "time" in type_text:
-        return f"- {field}: {field_type}. Extract only an explicit clock/timestamp value."
+        return f"- {field} [{field_type}]: clock/timestamp only."
     if "id" in type_text or "identity" in type_text:
-        return (
-            f"- {field}: {field_type}. Extract one scalar identity value only; "
-            "do not use ranges, grouped labels, or narrative descriptions."
-        )
-    return f"- {field}: {field_type}. Extract only explicit values of this type."
+        return f"- {field} [{field_type}]: one scalar ID. No ranges or descriptions."
+    return f"- {field} [{field_type}]."
 
 
 def _format_schema_type_hint(
     schema_columns: list[str] | None,
     schema_field_types: dict[str, str] | None,
-    anchor_keys: list[str] | None,
 ) -> str:
-    if not schema_columns:
-        return ""
-    field_types = schema_field_types or infer_schema_field_types(schema_columns, anchor_keys)
-    if not field_types:
+    if not schema_columns or not schema_field_types:
         return ""
     lines = [
-        _field_type_instruction(field, field_types[field])
+        _field_type_instruction(field, schema_field_types[field])
         for field in schema_columns
-        if field in field_types
+        if field in schema_field_types
     ]
     if not lines:
         return ""
-    return (
-        "\nField type constraints (obey strictly; omit values that violate the type):\n"
-        + "\n".join(lines)
-        + "\n"
-    )
+    return "\nPer-field types (wrong type → blank):\n" + "\n".join(lines) + "\n"
+
+
+def _format_hard_type_rules(
+    schema_columns: list[str] | None,
+    schema_field_types: dict[str, str] | None,
+) -> str:
+    if not schema_columns or not schema_field_types:
+        return ""
+
+    number_fields = [
+        field
+        for field in schema_columns
+        if "number" in schema_field_types.get(field, "").lower()
+        or "integer" in schema_field_types.get(field, "").lower()
+    ]
+    date_fields = [
+        field for field in schema_columns if "date" in schema_field_types.get(field, "").lower()
+    ]
+    boolean_fields = [
+        field for field in schema_columns if "boolean" in schema_field_types.get(field, "").lower()
+    ]
+    if not number_fields and not date_fields and not boolean_fields:
+        return ""
+
+    lines = [
+        "HARD TYPE RULES:",
+        "- If a value has the wrong type for a field, leave the value blank.",
+        "- Do NOT put names, descriptions, or labels into number/date/boolean fields.",
+    ]
+    if number_fields:
+        lines.append(
+            "- number/integer fields: numeric values only (integers or decimals); "
+            "strip unit suffixes and thousand separators. "
+            f"Fields: {', '.join(number_fields)}."
+        )
+    if date_fields:
+        lines.append(
+            "- date fields: convert to YYYY-MM-DD (or YYYY-MM / YYYY if day/month unknown); "
+            "leave blank if not a recognizable date. "
+            f"Fields: {', '.join(date_fields)}."
+        )
+    if boolean_fields:
+        lines.append(
+            "- boolean fields: normalize to true or false; "
+            "leave blank if the value is not boolean. "
+            f"Fields: {', '.join(boolean_fields)}."
+        )
+    return "\n" + "\n".join(lines) + "\n"
 
 
 def _clean_compressed_entity_lines(
@@ -149,7 +168,7 @@ def _clean_compressed_entity_lines(
         return text
 
     field_map = {field.lower(): field for field in schema_columns}
-    field_types = schema_field_types or infer_schema_field_types(schema_columns)
+    field_types = schema_field_types or {}
     cleaned: list[str] = []
     dropped = 0
     normalized = 0
@@ -177,6 +196,14 @@ def _clean_compressed_entity_lines(
                     break
                 if m := RECORD_ID_LABEL.match(val):
                     val = m.group(1)
+                    changed = True
+            else:
+                typed_val = _clean_typed_scalar(val, field_type)
+                if typed_val is None:
+                    val = ""
+                    changed = True
+                elif typed_val != val:
+                    val = typed_val
                     changed = True
             parts.append(f"{key}: {val}")
 
@@ -254,108 +281,80 @@ def compress_chunk(
     if schema_columns and primary_key:
         cols = ", ".join(schema_columns)
         schema_hint = (
-            f"\nUse EXACTLY these field names: {cols}\n"
-            "Map a value to a field only when it explicitly matches that field's "
-            "meaning. Do NOT force narrative text into the closest field, and "
-            "do NOT invent synonyms or alternative names.\n"
+            f"\nFields (use EXACTLY): {cols}\n"
+            "Map a value to a field ONLY when it explicitly matches. "
+            "No synonyms. No forcing narrative into fields.\n"
         )
-        type_hint = _format_schema_type_hint(schema_columns, schema_field_types, anchor_keys)
+        type_hint = _format_schema_type_hint(schema_columns, schema_field_types)
+        hard_type_rules = _format_hard_type_rules(schema_columns, schema_field_types)
         format_hint = (
-            f"Format — one line per entity-paragraph, pipe-separated key-value pairs:\n"
-            f"  {primary_key}: <value> | field_a: <value> | field_b: <value> | ...\n"
-            "ONLY include fields that have actual values in the paragraph. "
-            "OMIT non-identity fields with no suitable value; downstream "
-            "normalization will fill them as empty cells.\n"
+            f"Format — one line per entity, pipe-separated:\n"
+            f"  {primary_key}: <val> | field_a: <val> | ...\n"
+            "Include only fields with actual values. Omit the rest.\n"
         )
         if anchor_keys and len(anchor_keys) > 1:
             anchor_names = ", ".join(anchor_keys)
             anchor_rule = (
-                f"- Start each line with these identity fields: {anchor_names}. "
-                "Include ALL of them when mentioned in the paragraph. "
-                "If a field's value is not stated in the paragraph, include its "
-                "key with an empty value."
+                f"- Start each line with: {anchor_names}. "
+                "Include ALL of them. Empty value if not stated."
             )
         else:
             anchor_rule = (
-                f"- Start each line with {primary_key} as stated in the paragraph. "
-                "This field anchors every line."
+                f"- Start each line with {primary_key} as stated. This field anchors every line."
             )
     else:
         schema_hint = ""
         type_hint = ""
+        hard_type_rules = ""
         format_hint = (
-            "Format — one line per entity-paragraph:\n"
+            "Format — one line per entity:\n"
             "  ID: <number> | entity_name: <name> | <field>: <value> | ...\n"
         )
         anchor_rule = (
-            "- Start each line with the entity's numeric ID AND its name/codename/label "
-            "as stated in the paragraph. These two fields anchor every line."
+            "- Start each line with the entity's numeric ID AND name. "
+            "These two fields anchor every line."
         )
 
     sparse = bool(schema_columns and len(schema_columns) > 10)
     if sparse:
-        placeholder_rule = (
-            "- If a field is not mentioned or its value is None/NaN/placeholder/redacted, "
-            "SKIP IT entirely — do NOT include it in the output line."
-        )
+        placeholder_rule = "- None/NaN/placeholder/redacted → SKIP the field entirely."
     else:
         placeholder_rule = (
-            "- If a field's ENTIRE value is 0.0, None, NaN, placeholder, or "
-            'redacted (with no real data), output it with a "(placeholder)" marker — '
-            'e.g. "height_cm: 0.0 (placeholder)". Do NOT mark corrected values as '
-            'placeholder — "initially X, corrected to Y" means Y is the real value.'
+            '- None/NaN/placeholder/redacted → mark as "(placeholder)", '
+            'e.g. "height_cm: 0.0 (placeholder)". '
+            "Corrected values are NOT placeholders."
         )
 
-    prompt = textwrap.dedent(f"""\
-        Below are paragraphs from a data document. Each paragraph describes one entity \
-        and mixes data with narrative filler.
-
-        Task: for each paragraph, extract data as labeled key-value pairs.
-        {schema_hint}
-        {type_hint}
-        {format_hint}
-        Rules:
-        {anchor_rule}
-        - Every value MUST have a descriptive field label before it.
-        - If a schema field has no explicit, suitable value in this paragraph, \
-        leave it empty by omitting that non-identity field. Do NOT substitute \
-        background descriptions, business strengths, culture, plans, or prose \
-        summaries just because they are loosely related to the field name.
-        - If a paragraph only says values are missing/not provided/unavailable \
-        for an entity or a range/group of entities, SKIP that paragraph entirely. \
-        Do NOT output a row that contains only identity fields and empty data fields.
-        - Field-name qualifiers are binding. Do NOT map an overall/global \
-        total, count, rank, or average into a qualified/category-specific \
-        field unless the paragraph explicitly states the same qualifier for \
-        that value; omit the field instead.
-        - Local document labels such as "档案 353", "记录 353", "条目 353", \
-        "战略单元 353", "Record 353", "File 353", or "Case 353" are \
-        record identifiers. Put only the scalar numeric portion (for example, \
-        "353") in fields such as record_id/archive_id/file_id/case_id/local_id. \
-        NEVER output ranges like "197至217" or grouped labels as a single \
-        record_id, and never put a local record label into domain ID fields such \
-        as personalcode, innercode, fundcode, or secucode unless the paragraph \
-        explicitly labels it as that domain ID.
-        - personalcode/PersonalCode fields are person identifiers. Do NOT \
-        fill them with a manager name or with a local document record number; \
-        leave personalcode empty unless an explicit personal/manager code is \
-        stated.
-        - Output numeric values WITHOUT unit suffixes (e.g. 193.0, not 193.0 cm).
-        {placeholder_rule}
-        - For corrections: output the FINAL corrected value directly — e.g. \
-        "label: positive", not "label: positive (placeholder)".
-        - Preserve URLs, names, dates, times, categories, classifications.
-        - Strip only narrative filler that contains no structured field, schema field, \
-        ID, value, date, unit, label, status, or question-relevant fact.
-        - Separate entries with ONE blank line. No commentary, no markdown.
-
-        ---
-        {chunk_text}
-        ---""")
+    prompt = (
+        f"Extract data from each paragraph as labeled key-value pairs.\n"
+        f"{schema_hint}\n"
+        f"{type_hint}\n"
+        f"{format_hint}\n"
+        f"{hard_type_rules}\n"
+        f"Rules:\n"
+        f"{anchor_rule}\n"
+        f"- No value for a schema field → omit that non-identity field. "
+        f"NEVER substitute descriptions, plans, or prose as field values.\n"
+        f"- Paragraph says values are missing/not provided/unavailable → "
+        f"SKIP the paragraph. No identity-only rows.\n"
+        f"- Field qualifiers are binding: overall/global total ≠ "
+        f"qualified/category-specific field. Omit if qualifier mismatches.\n"
+        f'- "档案/记录/条目/战略单元/Record/File/Case 353" → record_id: 353. '
+        f'Ranges like "197至217" → skip line. '
+        f"Local record labels ≠ personalcode/fundcode/secucode.\n"
+        f"- personalcode = person identifier only. Not a name, not a record number.\n"
+        f"- Strip unit suffixes (193.0, not 193.0 cm).\n"
+        f"{placeholder_rule}\n"
+        f"- Corrections → output FINAL value only.\n"
+        f"- Preserve URLs, names, dates, categories.\n"
+        f"- Strip narrative filler with no data value.\n"
+        f"- One blank line between entries. No commentary, no markdown.\n"
+        f"\n---\n{chunk_text}\n---"
+    )
     from agents.llm.types import ModelMessage
 
     messages = [
-        ModelMessage(role="system", content="You are a data extraction preprocessor."),
+        ModelMessage(role="system", content="Extract key-value pairs. No commentary."),
         ModelMessage(role="user", content=prompt),
     ]
     return adapter.complete(messages).content.strip()
@@ -439,6 +438,7 @@ def extract_csv_from_text(
     text: str,
     schema_columns: list[str] | None,
     question: str,
+    schema_field_types: dict[str, str] | None = None,
 ) -> str | None:
     """Single LLM call: text → CSV.  Used as fallback when no schema is available."""
     schema_line = (
@@ -447,30 +447,25 @@ def extract_csv_from_text(
         else "\nInfer column names from the data. First column must be the entity's "
         "numeric ID named 'id'.\n"
     )
+    hard_type_rules = _format_hard_type_rules(schema_columns, schema_field_types)
 
     prompt = textwrap.dedent(f"""\
-        Below is a compressed data document. Each line describes one entity \
-        as pipe-separated key-value pairs (e.g. "key: value | key: value").
-
-        Output a CSV with one row per entity.
+        Convert to CSV. One row per entity.
         {schema_line}
-        Rules:
-        - Output ONLY valid CSV. First line is the header.
-        - Placeholder/None/NaN/redacted values → leave the cell empty.
-        - Strip unit suffixes (cm, kg, etc.) from numeric fields.
-        - For genuinely missing values: leave empty.
-        - No markdown fences, no explanation.
+        {hard_type_rules}
+        - ONLY valid CSV. Header first.
+        - Wrong type → blank cell. Placeholder/None/NaN → blank.
+        - Strip unit suffixes. Missing → blank.
+        - No markdown fences. No explanation.
 
-        Question context: {question}
+        Question: {question}
 
-        Document:
-        {text}
-
-        Output CSV now:""")
+        Data:
+        {text}""")
     from agents.llm.types import ModelMessage
 
     messages = [
-        ModelMessage(role="system", content="You are a CSV data extractor. Output only CSV."),
+        ModelMessage(role="system", content="Output only CSV. No explanation."),
         ModelMessage(role="user", content=prompt),
     ]
     csv_text = adapter.complete(messages).content.strip()
@@ -529,12 +524,19 @@ def direct_extract_csv(
     schema_columns: list[str] | None,
     question: str,
     primary_key: str | None = None,
+    schema_field_types: dict[str, str] | None = None,
 ) -> str | None:
     """Extract CSV from compressed text. Splits into entity-line chunks for parallel extraction."""
     chunks = split_entity_chunks(compressed_text, primary_key=primary_key)
 
     if len(chunks) == 1:
-        return extract_csv_from_text(adapter, compressed_text, schema_columns, question)
+        return extract_csv_from_text(
+            adapter,
+            compressed_text,
+            schema_columns,
+            question,
+            schema_field_types,
+        )
 
     import pandas as pd
 
@@ -548,6 +550,7 @@ def direct_extract_csv(
                 chunk,
                 schema_columns,
                 question,
+                schema_field_types,
             ): idx
             for idx, chunk in enumerate(chunks)
         }

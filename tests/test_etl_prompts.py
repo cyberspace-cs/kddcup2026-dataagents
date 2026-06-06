@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from agents.etl._compress import _clean_compressed_entity_lines, compress_chunk
-from agents.etl.extractor import _ensure_local_record_anchor
+from agents.etl._compress import (
+    _clean_compressed_entity_lines,
+    compress_chunk,
+    extract_csv_from_text,
+)
+from agents.etl.extractor import _ensure_local_record_anchor, _parse_schema_response
 from agents.llm.types import ModelResponse
 
 
@@ -33,9 +37,7 @@ def test_compress_prompt_does_not_name_specific_filler_domains() -> None:
     assert "hobbies" not in lower
     assert "catering" not in lower
     assert "anecdotes" not in lower
-    assert "question-relevant fact" in lower
-    assert "structured field" in lower
-    assert "schema field" in lower
+    assert "no data value" in lower
 
 
 def test_compress_prompt_leaves_unsuitable_schema_fields_empty() -> None:
@@ -53,16 +55,74 @@ def test_compress_prompt_leaves_unsuitable_schema_fields_empty() -> None:
     lower = prompt.lower()
 
     assert "only when it explicitly matches" in lower
-    assert "do not force narrative text into the closest field" in lower
-    assert "no explicit, suitable value" in lower
-    assert "omitting that non-identity field" in lower
-    assert "field type constraints" in lower
+    assert "no synonyms" in lower
+    assert "never substitute descriptions" in lower
+    assert "omit that non-identity field" in lower
     assert "missing/not provided/unavailable" in lower
-    assert "skip that paragraph entirely" in lower
-    assert "only identity fields and empty data fields" in lower
-    assert "field-name qualifiers are binding" in lower
+    assert "skip the paragraph" in lower
+    assert "identity-only rows" in lower
+    assert "qualifiers are binding" in lower
     assert "overall/global" in lower
     assert "qualified/category-specific" in lower
+
+
+def test_compress_prompt_has_short_absolute_type_rules() -> None:
+    adapter = _CapturingAdapter()
+
+    compress_chunk(
+        cast(Any, adapter),
+        "fundcode 159001. The fund name is 万家上证50交易型开放式指数证券投资基金.",
+        schema_columns=[
+            "fundcode",
+            "lowestsumsubscribing",
+            "establishmentdate",
+            "iffof",
+        ],
+        primary_key="fundcode",
+        schema_field_types={
+            "fundcode": "scalar_id",
+            "lowestsumsubscribing": "number",
+            "establishmentdate": "date",
+            "iffof": "boolean",
+        },
+    )
+
+    prompt = adapter.messages[1].content
+    lower = prompt.lower()
+
+    assert "hard type rules" in lower
+    assert "wrong type" in lower
+    assert "leave the value blank" in lower
+    assert "not put names, descriptions, or labels into number/date/boolean" in lower
+    assert "numeric values only (integers or decimals)" in lower
+    assert "fields: lowestsumsubscribing" in lower
+    assert "convert to yyyy-mm-dd" in lower
+    assert "fields: establishmentdate" in lower
+    assert "normalize to true or false" in lower
+    assert "fields: iffof" in lower
+
+
+def test_direct_extract_prompt_repeats_hard_type_rules() -> None:
+    adapter = _CapturingAdapter()
+
+    extract_csv_from_text(
+        cast(Any, adapter),
+        "fundcode: 159001 | lowestsumsubscribing: 万家上证50交易型开放式指数证券投资基金",
+        ["fundcode", "lowestsumsubscribing"],
+        "show rows",
+        schema_field_types={
+            "fundcode": "scalar_id",
+            "lowestsumsubscribing": "number",
+        },
+    )
+
+    prompt = adapter.messages[1].content
+    lower = prompt.lower()
+
+    assert "hard type rules" in lower
+    assert "wrong type → blank" in lower
+    assert "numeric values only (integers or decimals)" in lower
+    assert "fields: lowestsumsubscribing" in lower
 
 
 def test_compress_prompt_distinguishes_local_record_ids_from_personalcode() -> None:
@@ -74,22 +134,21 @@ def test_compress_prompt_distinguishes_local_record_ids_from_personalcode() -> N
         schema_columns=["record_id", "personalcode", "manager_name"],
         primary_key="record_id",
         anchor_keys=["record_id", "personalcode", "manager_name"],
+        schema_field_types={
+            "record_id": "integer_scalar local_record_id",
+            "personalcode": "scalar_id",
+            "manager_name": "string",
+        },
     )
 
     prompt = adapter.messages[1].content
     lower = prompt.lower()
 
-    assert "local document labels" in lower
-    assert "record identifiers" in lower
-    assert "record_id: integer_scalar local_record_id" in lower
-    assert "convert labels" in lower
-    assert "scalar numeric portion" in lower
-    assert "never output ranges" in lower
-    assert "never put a local" in lower
-    assert "personalcode/personalcodes" not in lower
-    assert "personalcode/personalcode fields are person identifiers" in lower
-    assert "manager name" in lower
-    assert "local document record number" in lower
+    assert "record_id [integer_scalar local_record_id]" in lower
+    assert "record_id: 353" in lower
+    assert "skip line" in lower
+    assert "personalcode = person identifier" in lower
+    assert "not a name, not a record number" in lower
 
 
 def test_compress_clean_drops_grouped_record_ids_before_clean_markdown() -> None:
@@ -117,6 +176,39 @@ def test_compress_clean_drops_grouped_record_ids_before_clean_markdown() -> None
     assert "record_id: 286 | province_name: 山西省 | primary_industry_gdp: 302.48" in cleaned
 
 
+def test_compress_clean_blanks_values_with_wrong_schema_type() -> None:
+    cleaned = _clean_compressed_entity_lines(
+        (
+            "fundcode: 159001 | lowestsumsubscribing: 万家上证50交易型开放式指数证券投资基金 "
+            "| lowestsumredemption: 900000.0 | foundedsize: 1,234.50 "
+            "| establishmentdate: 股票型 | iffof: 万家上证50交易型开放式指数证券投资基金 "
+            "| ifinitiatingfund: 否"
+        ),
+        schema_columns=[
+            "fundcode",
+            "lowestsumsubscribing",
+            "lowestsumredemption",
+            "foundedsize",
+            "establishmentdate",
+            "iffof",
+            "ifinitiatingfund",
+        ],
+        schema_field_types={
+            "fundcode": "scalar_id",
+            "lowestsumsubscribing": "number",
+            "lowestsumredemption": "number",
+            "foundedsize": "number",
+            "establishmentdate": "date",
+            "iffof": "boolean",
+            "ifinitiatingfund": "boolean",
+        },
+    )
+
+    assert "lowestsumsubscribing:  | lowestsumredemption: 900000.0" in cleaned
+    assert "foundedsize: 1234.50" in cleaned
+    assert "establishmentdate:  | iffof:  | ifinitiatingfund: false" in cleaned
+
+
 def test_schema_adds_record_id_for_repeated_local_record_labels() -> None:
     columns, anchors = _ensure_local_record_anchor(
         "档案 21 记录一个经理。\n\n战略单元 353 记录另一个经理。\n\n记录 418 继续。",
@@ -126,6 +218,72 @@ def test_schema_adds_record_id_for_repeated_local_record_labels() -> None:
 
     assert columns == ["record_id", "personalcode", "manager_name"]
     assert anchors == ["record_id", "personalcode", "manager_name"]
+
+
+def test_parse_schema_response_normal_order() -> None:
+    result = _parse_schema_response(
+        "PK: fundcode\n"
+        "ANCHORS: fundcode, fundname\n"
+        "TYPES: fundcode=scalar_id, fundname=string, nav=number\n"
+        "fundcode, fundname, nav"
+    )
+    assert result is not None
+    pk, anchors, types, cols = result
+    assert pk == "fundcode"
+    assert anchors == ["fundcode", "fundname"]
+    assert types == {"fundcode": "scalar_id", "fundname": "string", "nav": "number"}
+    assert cols == ["fundcode", "fundname", "nav"]
+
+
+def test_parse_schema_response_out_of_order() -> None:
+    result = _parse_schema_response(
+        "TYPES: id=integer, score=number\nANCHORS: id\nPK: id\nid, score, label"
+    )
+    assert result is not None
+    pk, anchors, _types, cols = result
+    assert pk == "id"
+    assert anchors == ["id"]
+    assert cols == ["id", "score", "label"]
+
+
+def test_parse_schema_response_missing_anchors_and_types() -> None:
+    result = _parse_schema_response("PK: patient_id\npatient_id, age, weight")
+    assert result is not None
+    pk, anchors, types, cols = result
+    assert pk == "patient_id"
+    assert anchors == ["patient_id"]
+    assert types == {}
+    assert cols == ["patient_id", "age", "weight"]
+
+
+def test_parse_schema_response_extra_commentary_ignored() -> None:
+    result = _parse_schema_response(
+        "Here is the schema:\n"
+        "PK: record_id\n"
+        "ANCHORS: record_id, province_name\n"
+        "TYPES: record_id=integer_scalar local_record_id, gdp=number\n"
+        "record_id, province_name, gdp\n"
+        "Note: gdp is in billions."
+    )
+    assert result is not None
+    pk, anchors, types, cols = result
+    assert pk == "record_id"
+    assert anchors == ["record_id", "province_name"]
+    assert "gdp" in types
+    assert cols == ["record_id", "province_name", "gdp"]
+
+
+def test_parse_schema_response_returns_none_on_garbage() -> None:
+    assert _parse_schema_response("NONE") is None
+    assert _parse_schema_response("I cannot determine the schema.") is None
+    assert _parse_schema_response("PK: x\nonly_one_column") is None
+
+
+def test_parse_schema_response_anchor_added_to_columns() -> None:
+    result = _parse_schema_response("PK: id\nANCHORS: id, name\nid, score")
+    assert result is not None
+    _, _, _, cols = result
+    assert "name" in cols
 
 
 def test_compress_prompt_multi_anchor() -> None:
@@ -144,7 +302,6 @@ def test_compress_prompt_multi_anchor() -> None:
     lower = prompt.lower()
 
     assert "personalcode, chinesename" in lower
-    assert "identity fields" in lower
     assert "include all of them" in lower
 
 
