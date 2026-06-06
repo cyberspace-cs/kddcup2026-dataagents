@@ -23,15 +23,15 @@ from pathlib import Path
 import pytest
 from openai import APIError
 
-from data_agent_baseline.agents.model import ModelMessage, ModelResponse, TokenUsage
-from data_agent_baseline.agents.rate_limit import (
+from agents.config import RateLimitConfig
+from agents.llm.rate_limit import (
     RateLimitedAdapter,
     RateLimitExhausted,
     _is_retriable,
     _parse_retry_after,
     estimate_prompt_tokens,
 )
-from data_agent_baseline.config import RateLimitConfig
+from agents.llm.types import ModelMessage, ModelResponse, TokenUsage
 
 # ------- 小工具 -------------------------------------------------------------------
 
@@ -136,11 +136,11 @@ def fast_sleep_and_jitter(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     """把 time.sleep 钉为记录调用但不真睡；随机抖动钉为 0。"""
     slept: list[float] = []
     monkeypatch.setattr(
-        "data_agent_baseline.agents.rate_limit.time.sleep",
+        "agents.llm.rate_limit.time.sleep",
         lambda s: slept.append(s),
     )
     monkeypatch.setattr(
-        "data_agent_baseline.agents.rate_limit.random.uniform",
+        "agents.llm.rate_limit.random.uniform",
         lambda a, b: 0.0,
     )
     return slept
@@ -218,8 +218,8 @@ def test_rate_limited_adapter_propagates_thinking_off_through_react_system_messa
     路径下，`<think>` 警告确实被 strip 掉"。失败即意味着 wrapper / agent /
     prompt builder 三段中至少一段断链。
     """
-    from data_agent_baseline.agents.react import ReActAgent
-    from data_agent_baseline.tools.registry import create_default_tool_registry
+    from agents.agent import ReActAgent
+    from agents.tools.registry import create_default_tool_registry
 
     inner = _ScriptedInnerAdapter([])
     inner.enable_thinking = False  # type: ignore[attr-defined]
@@ -244,7 +244,7 @@ def test_estimate_counts_role_and_content(monkeypatch: pytest.MonkeyPatch) -> No
         return len(text)
 
     monkeypatch.setattr(
-        "data_agent_baseline.agents.rate_limit.count_qwen_tokens",
+        "agents.llm.rate_limit.count_qwen_tokens",
         fake_count_qwen_tokens,
     )
     messages = [

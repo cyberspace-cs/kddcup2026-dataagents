@@ -11,7 +11,7 @@ Anything else passes through untouched.
 
 from __future__ import annotations
 
-from data_agent_baseline.tools.registry import _normalize_for_vllm
+from agents.tools.registry import _normalize_for_vllm
 
 
 def test_strip_title_at_top_level_and_in_properties() -> None:

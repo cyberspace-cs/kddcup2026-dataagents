@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from data_agent_baseline.config import TracingConfig, load_app_config
+from agents.config import TracingConfig, load_app_config
 
 
 def _write_config(path: Path, extra: dict | None = None) -> Path:

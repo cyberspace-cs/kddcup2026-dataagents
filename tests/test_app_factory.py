@@ -1,4 +1,4 @@
-"""`run.app.build_application` 工厂单测。
+"""`agents.application.build_application` 工厂单测。
 
 覆盖点：
 - `build_application(config)` 返回 `AgentApp`，五个字段全部赋值且类型正确
@@ -14,20 +14,20 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.agents.answer_verifier import AnswerVerifier
-from data_agent_baseline.agents.model import OpenAIModelAdapter
-from data_agent_baseline.agents.rate_limit import RateLimitedAdapter
-from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
-from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
-from data_agent_baseline.config import (
+from agents.agent import ReActAgent, ReActAgentConfig
+from agents.application import AgentApp, build_application, build_no_tools_model_adapter
+from agents.benchmark.dataset import DABenchPublicDataset
+from agents.config import (
     AgentConfig,
     AppConfig,
     DatasetConfig,
     RateLimitConfig,
     RunConfig,
 )
-from data_agent_baseline.run.app import AgentApp, build_application, build_no_tools_model_adapter
-from data_agent_baseline.tools.registry import ToolRegistry, create_default_tool_registry
+from agents.llm.openai import OpenAIModelAdapter
+from agents.llm.rate_limit import RateLimitedAdapter
+from agents.tools.registry import ToolRegistry, create_default_tool_registry
+from agents.verification.answer import AnswerVerifier
 from tests.helpers.scripted_adapters import ScriptedModelAdapter
 
 

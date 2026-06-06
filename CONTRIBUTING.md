@@ -52,7 +52,7 @@ refactor: updated some files                                    # past tense + v
 **Trigger — write a CHANGELOG entry when:**
 
 - A user-visible CLI flag, subcommand, or config field is added / removed / renamed.
-- Public Python API in `src/data_agent_baseline/` changes (signature, default, return shape).
+- Public Python API in `src/agents/` changes (signature, default, return shape).
 - Output artifact format changes (`trace.json`, `prediction.csv`, `summary.json` schema).
 - Behavior changes that an existing user would notice (validation strictness, error messages, default values).
 - Dependency / build / packaging changes that affect how users install or run the project.

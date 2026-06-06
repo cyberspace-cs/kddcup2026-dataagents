@@ -28,7 +28,7 @@ uv run dabench run-task     <task_id> --config <cfg>
 uv run dabench run-benchmark         --config <cfg> [--limit N] [--range S-E]
 ```
 
-Do not invoke via `uv run python -m data_agent_baseline.cli`.
+Do not invoke via `uv run python -m agents.cli`.
 
 ## Code contribution rules
 

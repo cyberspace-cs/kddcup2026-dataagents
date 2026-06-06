@@ -17,18 +17,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from data_agent_baseline.agents import model as model_mod
-from data_agent_baseline.agents.model import (
-    ModelMessage,
+from agents.llm import openai as model_mod
+from agents.llm.openai import (
     NativeToolsOpenAIAdapter,
     OpenAIModelAdapter,
-    TokenUsage,
     ToolCallParseError,
     _extract_reasoning_content,
     _extract_usage,
 )
-from data_agent_baseline.agents.rate_limit import estimate_prompt_tokens
-from data_agent_baseline.tools.registry import create_default_tool_registry
+from agents.llm.rate_limit import estimate_prompt_tokens
+from agents.llm.types import ModelMessage, TokenUsage
+from agents.tools.registry import create_default_tool_registry
 
 
 def _make_usage(
@@ -598,7 +597,7 @@ def test_backend_kind_does_not_emit_extra_body_when_thinking_none(
 
 def test_resolve_backend_kind_explicit_value_wins() -> None:
     """单独验证 _resolve_backend_kind helper 的显式优先语义。"""
-    from data_agent_baseline.agents.model import _resolve_backend_kind
+    from agents.llm.openai import _resolve_backend_kind
 
     assert _resolve_backend_kind("vllm", "https://dashscope.aliyuncs.com/v1") == "vllm"
     assert _resolve_backend_kind("dashscope", "http://localhost:8000/v1") == "dashscope"
@@ -606,7 +605,7 @@ def test_resolve_backend_kind_explicit_value_wins() -> None:
 
 def test_resolve_backend_kind_inference_fallback() -> None:
     """None 时按 host 子串匹配；命中 aliyuncs.com 或 dashscope → dashscope，否则 vllm。"""
-    from data_agent_baseline.agents.model import _resolve_backend_kind
+    from agents.llm.openai import _resolve_backend_kind
 
     assert _resolve_backend_kind(None, "https://dashscope.aliyuncs.com/v1") == "dashscope"
     assert _resolve_backend_kind(None, "https://api.dashscope.com/v1") == "dashscope"

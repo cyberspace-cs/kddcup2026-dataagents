@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from data_agent_baseline.agents.model import ModelMessage, ModelResponse
+from agents.llm.types import ModelMessage, ModelResponse
 
 
 class ScriptedModelAdapter:

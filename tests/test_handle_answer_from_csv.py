@@ -14,15 +14,15 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.benchmark.schema import (
+from agents.benchmark.schema import (
     AnswerTable,
     PublicTask,
     TaskAssets,
     TaskRecord,
 )
-from data_agent_baseline.tools import handlers as _handlers
-from data_agent_baseline.tools.handlers import handle_answer
-from data_agent_baseline.tools.inputs import AnswerInput
+from agents.tools import handlers as _handlers
+from agents.tools.handlers import handle_answer
+from agents.tools.inputs import AnswerInput
 
 
 @pytest.fixture
@@ -232,7 +232,7 @@ def test_from_csv_exceeds_size_limit_raises(
 ) -> None:
     """5MB 上限：不真造 5MB 文件，把阈值临时调小到 64 字节再触发。"""
     monkeypatch.setattr(
-        "data_agent_baseline.tools.handlers._FROM_CSV_SIZE_LIMIT_BYTES",
+        "agents.tools.handlers._FROM_CSV_SIZE_LIMIT_BYTES",
         64,
     )
     csv_path = _write(

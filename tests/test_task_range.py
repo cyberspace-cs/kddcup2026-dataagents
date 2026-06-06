@@ -14,15 +14,15 @@ from typing import Any
 import pytest
 import typer
 
-from data_agent_baseline.cli import _parse_task_range
-from data_agent_baseline.config import (
+from agents.cli import _parse_task_range
+from agents.config import (
     AgentConfig,
     AppConfig,
     DatasetConfig,
     RunConfig,
 )
-from data_agent_baseline.run import runner as runner_mod
-from data_agent_baseline.run.runner import TaskRunArtifacts
+from agents.runs import runner as runner_mod
+from agents.runs.runner import TaskRunArtifacts
 
 # ---------- _parse_task_range ----------------------------------------------------
 

@@ -5,13 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from data_agent_baseline.tracing.processor_interface import TracingProcessor
-from data_agent_baseline.tracing.processors import SimpleProcessor, SQLiteExporter
-from data_agent_baseline.tracing.provider import (
+from agents.tracing.processor_interface import TracingProcessor
+from agents.tracing.processors import SimpleProcessor, SQLiteExporter
+from agents.tracing.provider import (
     DefaultTraceProvider,
     SynchronousMultiTracingProcessor,
 )
-from data_agent_baseline.tracing.store import SQLiteTraceStore
+from agents.tracing.store import SQLiteTraceStore
 
 
 class _RecordingProcessor(TracingProcessor):

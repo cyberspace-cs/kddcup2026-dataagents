@@ -74,14 +74,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Native function calling.** `agent.tool_protocol = "native"` switches to OpenAI
   native `tool_calls`; legacy `text` protocol preserved as fallback. Qwen3 `<think>`
   blocks are stripped before parsing.
-- **Refactor: agent layer split.** `agents/react.py` decomposed into
-  `protocol.py` (text/native → unified `ToolCall`), `dispatcher.py` (tool execution +
-  terminal short-circuit on success), and `recorder.py` (typed event kinds with
+- **Refactor: agent layer split.** The ReAct loop was decomposed into
+  `agents.agent` (loop driver), `agents/core/protocol.py` (text/native -> unified `ToolCall`),
+  `agents/core/dispatcher.py` (tool execution + terminal short-circuit on
+  success), and `agents/core/recorder.py` (typed event kinds with
   stable `StepRecord` serialization). `ToolDefinition` consolidates the previous
   `ToolSpec` + handler split; `ToolRegistry` is immutable post-construction.
-  `run/app.py` introduces `build_application(config) -> AgentApp`; the runner stops
+  `application.py` introduces `build_application(config) -> AgentApp`; the runner stops
   importing concrete adapter classes directly.
-- **Quality gates.** Pyright strict on `src/data_agent_baseline` (177 → 0 errors).
+- **Quality gates.** Pyright strict on `src/agents` (177 → 0 errors).
   `pyright`, `pytest-cov`, `pre-commit` added to dev dependencies.
   `pytest --cov-fail-under=70`. `.pre-commit-config.yaml` chains
   `ruff format` → `ruff check --fix` → `pyright src` (opt-in).
@@ -110,6 +111,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with a ~30-token `{from_csv: ...}` call and a millisecond CSV re-parse.
 
 ### Changed
+- **Agent core modules split by responsibility.** The old `agents.core`
+  package was removed. Runtime state and recording now live in
+  `agents.runtime`, response protocol normalization in `agents.llm.protocol`,
+  tool-call dispatch in `agents.tools.dispatcher`, and answer self-checks in
+  `agents.verification.answer`.
+- **ReAct loop implementation moved to `agents.agent`.** The old
+  `agents.core.loop` module was removed; runtime wiring, package-root exports,
+  tests, and architecture docs import the agent loop from the top-level
+  `agents.agent` module.
+- **Python package root moved to `agents`.** Runtime code now lives under
+  `src/agents/`, with the ReAct loop in `agents.agent` and model adapters /
+  rate limiting in `agents.llm`. The previous baseline package import path
+  and module entrypoints were removed rather than kept as compatibility shims.
 - **Dashboard data source is SQLite tracing only.** `dabench dashboard` now reads
   `tracing.db_path` directly and no longer imports legacy `trace.json` artifacts.
   Default benchmark runs keep tracing disabled; enable `tracing.enabled: true` in a
@@ -194,7 +208,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`react.py` empty-tool retry off-by-one.** Guard now uses `>=` so
   `max_empty_tool_call_retries=N` halts on the Nth empty turn, matching the
   documented contract.
-- **`agents/rate_limit.py` non-atomic state writes.** `_save` writes to a tempfile
+- **`agents/models/rate_limit.py` non-atomic state writes.** `_save` writes to a tempfile
   in `state_path.parent` then `os.replace`, eliminating the torn-write window.
 - **`tools/python_exec.py` unreliable cross-process queue check.** Replaced
   `Queue.empty()` with `process.join(timeout)` followed by `get_nowait()` /
@@ -204,7 +218,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 - **`README.zh.md`.** The project goes English-only.
-- **`src/data_agent_baseline/workflow/`** (only stale `__pycache__` remained).
+- **Legacy workflow package directory** (only stale `__pycache__` remained).
 - **`scripts/`** (only stale `__pycache__`).
 - **`configs/delegate_experiment.yaml`** (referenced fields that no longer exist).
 - **`docs/00`–`docs/11`** (legacy plan docs describing deleted modules).
@@ -385,5 +399,5 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Breaking (internal API only)
 - `ScriptedModelAdapter` and `ScriptedNativeModelAdapter` moved from
-  `data_agent_baseline.agents.model` to `tests.helpers.scripted_adapters`. No
+  the previous model module to `tests.helpers.scripted_adapters`. No
   production caller; tests updated.

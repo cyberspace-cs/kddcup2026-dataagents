@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from data_agent_baseline.agents.answer_verifier import _VERIFIER_SYSTEM, verify_answer
-from data_agent_baseline.agents.model import ModelMessage, ModelResponse
+from agents.llm.types import ModelMessage, ModelResponse
+from agents.verification.answer import _VERIFIER_SYSTEM, verify_answer
 
 
 class _PromptCapturingVerifier:

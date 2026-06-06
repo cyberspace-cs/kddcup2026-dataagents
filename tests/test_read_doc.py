@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from data_agent_baseline.tools.filesystem import read_doc_preview
-from data_agent_baseline.tools.registry import create_default_tool_registry
+from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from agents.tools.filesystem import read_doc_preview
+from agents.tools.registry import create_default_tool_registry
 
 
 @pytest.fixture

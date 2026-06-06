@@ -9,7 +9,7 @@ import pytest
 
 
 def test_get_tokenizer_returns_instance() -> None:
-    from data_agent_baseline.agents.tokenizer_loader import get_tokenizer
+    from agents.llm.tokenizer import get_tokenizer
 
     tok = get_tokenizer()
     assert tok is not None
@@ -20,7 +20,7 @@ def test_get_tokenizer_returns_instance() -> None:
 def test_get_tokenizer_raises_when_download_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     import huggingface_hub
 
-    import data_agent_baseline.agents.tokenizer_loader as mod
+    import agents.llm.tokenizer as mod
 
     monkeypatch.setattr(mod, "_LOCAL_PATH", Path("/nonexistent/tokenizer.json"))
     monkeypatch.setattr(
@@ -32,7 +32,7 @@ def test_get_tokenizer_raises_when_download_fails(monkeypatch: pytest.MonkeyPatc
 
 
 def test_get_tokenizer_caches() -> None:
-    from data_agent_baseline.agents.tokenizer_loader import get_tokenizer
+    from agents.llm.tokenizer import get_tokenizer
 
     a = get_tokenizer()
     b = get_tokenizer()
@@ -41,7 +41,7 @@ def test_get_tokenizer_caches() -> None:
 
 
 def test_count_qwen_tokens() -> None:
-    from data_agent_baseline.agents.tokenizer_loader import count_qwen_tokens
+    from agents.llm.tokenizer import count_qwen_tokens
 
     assert count_qwen_tokens("hello world") > 0
 
@@ -49,7 +49,7 @@ def test_count_qwen_tokens() -> None:
 def test_get_tokenizer_raises_when_import_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     import builtins
 
-    import data_agent_baseline.agents.tokenizer_loader as mod
+    import agents.llm.tokenizer as mod
 
     original_import = builtins.__import__
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from data_agent_baseline.agents.model import ModelResponse
-from data_agent_baseline.etl._compress import compress_chunk
+from agents.etl._compress import compress_chunk
+from agents.llm.types import ModelResponse
 
 
 class _CapturingAdapter:

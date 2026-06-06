@@ -6,13 +6,13 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _reset_tokenizer_loader_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _reset_tokenizer_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Reset tokenizer singleton and keep unit tests independent of HuggingFace."""
     from tokenizers import Tokenizer  # type: ignore[import-untyped]
     from tokenizers.models import WordLevel  # type: ignore[import-untyped]
     from tokenizers.pre_tokenizers import Whitespace  # type: ignore[import-untyped]
 
-    import data_agent_baseline.agents.tokenizer_loader as mod
+    import agents.llm.tokenizer as mod
 
     tokenizer_path = tmp_path / "tokenizer.json"
     tokenizer = Tokenizer(WordLevel({"[UNK]": 0, "hello": 1, "world": 2}, unk_token="[UNK]"))

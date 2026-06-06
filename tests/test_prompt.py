@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.agents.prompt import (
+from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from agents.prompts import (
     REACT_NATIVE_SYSTEM_PROMPT,
     build_native_system_prompt,
     build_observation_prompt,
     build_system_prompt,
     build_task_prompt,
 )
-from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 
 
 def _task(tmp_path: Path) -> PublicTask:
@@ -192,7 +192,7 @@ def test_execute_python_tool_description_pins_sqlite_in_python_idiom() -> None:
       - 原生 function calling 的 `tools=[...]` schema 的 `description` 字段
     既然每轮必到，就没有"漏发"的失败模式，prompt 里再写一份只是冗余。
     """
-    from data_agent_baseline.tools.registry import create_default_tool_registry
+    from agents.tools.registry import create_default_tool_registry
 
     desc = create_default_tool_registry().definitions["execute_python"].description
     lower = desc.lower()
@@ -216,9 +216,9 @@ def test_native_system_prompt_enforces_format_tolerance() -> None:
     当兜底，错选 number=44。
 
     2026-04-30 调整：规则从 `## Decision tree` 段（routing 信号）搬到
-    `_DATA_OUTPUT_RULES`（数据规约）。Decision tree 里其余 8 条都是
+    `DATA_OUTPUT_RULES`（数据规约）。Decision tree 里其余 8 条都是
     "If X → call Y" 的工具路由，混入值比较规则会稀释路由 attention；
-    迁到 `_DATA_OUTPUT_RULES` 后还顺带让文本协议首次拿到这条防护
+    迁到 `DATA_OUTPUT_RULES` 后还顺带让文本协议首次拿到这条防护
     （Decision tree 是 `_NATIVE_HEADER` 独享段，文本协议看不到）。
 
     曾经一并写过的 "singular tolerance" 实测（run 008/010/011/012 共四轮）
@@ -241,7 +241,7 @@ def test_text_system_prompt_enforces_format_tolerance() -> None:
     """文本协议同样需要 format tolerance 防护。
 
     迁移前文本协议完全没有这条规则（Decision tree 是 `_NATIVE_HEADER`
-    独享段）。规则现在落在 `_DATA_OUTPUT_RULES`，两协议共享，
+    独享段）。规则现在落在 `DATA_OUTPUT_RULES`，两协议共享，
     `test_system_prompts_share_data_conventions_text` 已锁定字面一致；
     本测试是面向规则本身的语义钉子，删常量也能立刻定位回归点。
     """
@@ -285,7 +285,7 @@ def test_system_prompts_carry_path_convention() -> None:
     `PATH_CONVENTION_NOTE`（tools/inputs.py）作为单一真相源，
     分别在 system prompt 与 5 个 path 字段 schema description 中复用。
     """
-    from data_agent_baseline.tools.inputs import PATH_CONVENTION_NOTE
+    from agents.prompts.rules import PATH_CONVENTION_NOTE
 
     for prompt in (
         build_native_system_prompt(),
@@ -316,33 +316,33 @@ def test_system_prompts_share_data_conventions_text() -> None:
     """`## Data conventions` 段在两个 prompt 必须字面一致——单一真相源。
 
     回归保护：commit 9e5a24f 等历史事故都源于"两个 prompt 各写一遍数据规则、
-    改一处漏一处"。本测试通过共享常量 `_DATA_OUTPUT_RULES` 强制两份输出一致。
+    改一处漏一处"。本测试通过共享常量 `DATA_OUTPUT_RULES` 强制两份输出一致。
     """
-    from data_agent_baseline.agents.prompt import _DATA_OUTPUT_RULES
+    from agents.prompts import DATA_OUTPUT_RULES
 
     text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     native_prompt = build_native_system_prompt()
 
-    assert _DATA_OUTPUT_RULES in text_prompt
-    assert _DATA_OUTPUT_RULES in native_prompt
+    assert DATA_OUTPUT_RULES in text_prompt
+    assert DATA_OUTPUT_RULES in native_prompt
 
 
 def test_system_prompts_share_task_profile_and_grader_note() -> None:
-    """`_TASK_PROFILE` + `_GRADER_NOTE` 在两套 prompt 中都必须出现，且字面一致。
+    """`TASK_PROFILE` + `GRADER_NOTE` 在两套 prompt 中都必须出现，且字面一致。
 
     取代旧版仅讲身份的 `_INTRO`，把 success criterion（通过 `answer` 提交）
     + 访问边界（仅 `context/`）+ grader 罚多余列/近似值，三条都前置到 prompt
     起首。两套 prompt 共享同一段文本，避免"改 native 漏改 text"的双写事故。
     """
-    from data_agent_baseline.agents.prompt import _GRADER_NOTE, _TASK_PROFILE
+    from agents.prompts import GRADER_NOTE, TASK_PROFILE
 
     text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     native_prompt = build_native_system_prompt()
 
-    assert _TASK_PROFILE in text_prompt
-    assert _TASK_PROFILE in native_prompt
-    assert _GRADER_NOTE in text_prompt
-    assert _GRADER_NOTE in native_prompt
+    assert TASK_PROFILE in text_prompt
+    assert TASK_PROFILE in native_prompt
+    assert GRADER_NOTE in text_prompt
+    assert GRADER_NOTE in native_prompt
 
 
 def test_text_system_prompt_keeps_text_protocol_contract() -> None:
@@ -517,7 +517,7 @@ def test_native_system_prompt_clarifies_knowledge_md_conflict_precedence() -> No
 def test_system_prompts_advertise_artifact_handoff() -> None:
     """两套 system prompt 都必须告知模型 from_csv artifact 协议 + DABENCH_ANSWER_DIR。
 
-    `_DATA_OUTPUT_RULES` 是单一真相源，所以两套 prompt 拿到的措辞必须字面一致；
+    `DATA_OUTPUT_RULES` 是单一真相源，所以两套 prompt 拿到的措辞必须字面一致；
     本断言锁住关键短语，避免 prompt 改动只覆盖一份的回归。
     """
     text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
@@ -662,16 +662,16 @@ def test_observation_prompt_ok_false_generic_error() -> None:
 def test_system_prompts_share_disambiguation_rules() -> None:
     """`## Disambiguation` 段在两个 prompt 必须字面一致——单一真相源。
 
-    歧义检测与消解规则是跨协议的不变量，`_DISAMBIGUATION_RULES` 常量
+    歧义检测与消解规则是跨协议的不变量，`DISAMBIGUATION_RULES` 常量
     被两套 prompt 引用，避免双写脱同步。
     """
-    from data_agent_baseline.agents.prompt import _DISAMBIGUATION_RULES
+    from agents.prompts import DISAMBIGUATION_RULES
 
     text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     native_prompt = build_native_system_prompt()
 
-    assert _DISAMBIGUATION_RULES in text_prompt
-    assert _DISAMBIGUATION_RULES in native_prompt
+    assert DISAMBIGUATION_RULES in text_prompt
+    assert DISAMBIGUATION_RULES in native_prompt
 
 
 def test_disambiguation_covers_four_ambiguity_types() -> None:
@@ -749,7 +749,7 @@ def test_native_system_prompt_has_phase_keywords() -> None:
 
 def test_verifier_distinguishes_output_from_ranking_columns() -> None:
     """Verifier Check 2 must not flag ranking/filter criteria as missing columns."""
-    from data_agent_baseline.agents.answer_verifier import _VERIFIER_SYSTEM
+    from agents.verification.answer import _VERIFIER_SYSTEM
 
     lower = _VERIFIER_SYSTEM.lower()
     assert "ranking criterion, not a requested output" in lower
@@ -769,7 +769,7 @@ def test_prompts_scope_superlative_row_count_to_global_questions() -> None:
     assert "per group/category/region" in lower
     assert "by category/group" in lower
 
-    from data_agent_baseline.agents.answer_verifier import _VERIFIER_SYSTEM
+    from agents.verification.answer import _VERIFIER_SYSTEM
 
     verifier_lower = _VERIFIER_SYSTEM.lower()
     assert "global singular superlative" in verifier_lower

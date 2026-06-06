@@ -54,23 +54,20 @@ WORKDIR /app
 # Configs first (rarely change), then code (changes most). .dockerignore
 # excludes configs/*.local.yaml so dev secrets never leak into the image.
 COPY configs ./configs
-COPY src/data_agent_baseline ./data_agent_baseline
+COPY src/agents ./agents
 RUN <<'PYEOF' python
-import shutil, time, urllib.request, urllib.error
-url = "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/resolve/59d61f3ce65a6d9863b86d2e96597125219dc754/tokenizer.json"
-dst = "data_agent_baseline/agents/tokenizer.json"
-delays = [0, 5, 10, 30, 60]
-for attempt, delay in enumerate(delays):
-    if delay:
-        print(f"retry {attempt}/{len(delays)-1} after {delay}s...")
-        time.sleep(delay)
-    try:
-        with urllib.request.urlopen(url) as resp, open(dst, "wb") as f:
-            shutil.copyfileobj(resp, f)
-        break
-    except urllib.error.URLError as exc:
-        if attempt == len(delays) - 1:
-            raise RuntimeError("tokenizer download failed after retries") from exc
+import json
+from pathlib import Path
+
+path = Path("agents/llm/tokenizer.json")
+if not path.is_file():
+    raise SystemExit(f"missing bundled tokenizer: {path}")
+if path.stat().st_size < 1_000_000:
+    raise SystemExit(
+        f"{path} is too small; Git LFS content was probably not checked out"
+    )
+with path.open("rb") as f:
+    json.load(f)
 PYEOF
 
 # Mount points (the judge mounts these via `docker run`, see §3.4):
@@ -78,4 +75,4 @@ PYEOF
 #   /output rw - prediction.csv targets, one dir per task
 #   /logs   rw - §3.7: minimal status only; never raw input rows / gold
 
-ENTRYPOINT ["python", "-m", "data_agent_baseline.submission"]
+ENTRYPOINT ["python", "-m", "agents.submission"]

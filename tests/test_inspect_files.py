@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from data_agent_baseline.tools import filesystem
-from data_agent_baseline.tools.filesystem import inspect_context_files
+from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from agents.tools import filesystem
+from agents.tools.filesystem import inspect_context_files
 
 
 def _make_task(tmp_path: Path) -> PublicTask:

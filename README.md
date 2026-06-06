@@ -53,7 +53,7 @@ JSON, SQLite/DB, and text files.
 ## Configuration
 
 The YAML schema is summarized in [`docs/cli.md`](docs/cli.md), with validation
-implemented on the frozen config dataclasses in `src/data_agent_baseline/config.py`.
+implemented on the frozen config dataclasses in `src/agents/config.py`.
 An example lives at
 [`configs/react_baseline.example.yaml`](configs/react_baseline.example.yaml).
 
@@ -92,7 +92,7 @@ uv run dabench <command> --config PATH [options]
 
 ## Tools
 
-The agent calls into the default tool inventory (registered in `src/data_agent_baseline/tools/registry.py`):
+The agent calls into the default tool inventory (registered in `src/agents/tools/registry.py`):
 
 | Tool | Inputs |
 | --- | --- |
@@ -126,9 +126,12 @@ artifacts/runs/<run_id>/
 
 | Module | Responsibility |
 | --- | --- |
-| `src/data_agent_baseline/benchmark/dataset.py` | Public dataset loader |
-| `src/data_agent_baseline/tools/{filesystem,sqlite,python_exec,registry}.py` | Tool inventory + sandboxed handlers |
-| `src/data_agent_baseline/agents/{react,protocol,dispatcher,recorder}.py` | ReAct loop |
-| `src/data_agent_baseline/agents/{model,rate_limit}.py` | OpenAI adapters + rate limiter |
-| `src/data_agent_baseline/run/{app,runner}.py` | App factory + subprocess runner |
-| `src/data_agent_baseline/cli.py` | `dabench` entrypoint |
+| `src/agents/benchmark/dataset.py` | Public dataset loader |
+| `src/agents/tools/{filesystem,sqlite,python_exec,registry}.py` | Tool inventory + sandboxed handlers |
+| `src/agents/agent.py` | ReAct loop driver |
+| `src/agents/runtime/{state,messages,media,budget,recorder}.py` | Run state, message replay, video attachment, budget guardrails, step records, and callbacks |
+| `src/agents/llm/{openai,protocol,rate_limit,token_bucket}.py` | OpenAI adapters, response protocol adapter, and rate limiter |
+| `src/agents/verification/{answer,terminal_policy}.py` | Optional answer self-check and terminal-answer fallback policy |
+| `src/agents/application.py` + `src/agents/runs/` | App factory + subprocess runner |
+| `src/agents/dashboard/` + `dashboard/frontend/` | Traces dashboard backend and Vite frontend source |
+| `src/agents/cli.py` | `dabench` entrypoint |

@@ -14,24 +14,21 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.agents.answer_verifier import AnswerVerifier
-from data_agent_baseline.agents.model import (
+from agents.agent import ReActAgent, ReActAgentConfig
+from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from agents.llm.openai import ToolCallParseError
+from agents.llm.protocol import extract_reasoning_tool_call_draft
+from agents.llm.types import (
     ModelMessage,
     ModelResponse,
     ModelToolCall,
     TokenUsage,
-    ToolCallParseError,
 )
-from data_agent_baseline.agents.prompt import build_task_prompt
-from data_agent_baseline.agents.react import (
-    ReActAgent,
-    ReActAgentConfig,
-    _extract_reasoning_tool_call_draft,
-)
-from data_agent_baseline.agents.runtime import AgentRuntimeState, StepRecord
-from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from data_agent_baseline.tools import handlers as _handlers
-from data_agent_baseline.tools.registry import create_default_tool_registry
+from agents.prompts import build_task_prompt
+from agents.runtime.state import AgentRuntimeState, StepRecord
+from agents.tools import handlers as _handlers
+from agents.tools.registry import create_default_tool_registry
+from agents.verification.answer import AnswerVerifier
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
 
@@ -96,7 +93,7 @@ print(sorted(os.listdir(".")))
 </tool_call>
 """
 
-    draft = _extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
+    draft = extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
 
     assert draft == {
         "function": "execute_python",
@@ -121,7 +118,7 @@ GROUP BY city
 </tool_call>
 """
 
-    draft = _extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
+    draft = extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
 
     assert draft == {
         "function": "execute_context_sql",
@@ -145,7 +142,7 @@ def test_reasoning_tool_call_draft_parser_handles_answer_json_arguments() -> Non
 </tool_call>
 """
 
-    draft = _extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
+    draft = extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
 
     assert draft == {
         "function": "answer",
@@ -172,7 +169,7 @@ def test_reasoning_tool_call_draft_parser_handles_answer_json_arguments() -> Non
     ],
 )
 def test_reasoning_tool_call_draft_parser_rejects_invalid_drafts(reasoning: str) -> None:
-    assert _extract_reasoning_tool_call_draft(reasoning, _default_tool_names()) is None
+    assert extract_reasoning_tool_call_draft(reasoning, _default_tool_names()) is None
 
 
 def test_native_multi_step_until_answer(task: PublicTask) -> None:
@@ -674,7 +671,7 @@ def test_native_build_messages_uses_tool_role(task: PublicTask) -> None:
         )
     )
 
-    messages = agent._build_messages(task, state, build_task_prompt(task))
+    messages = agent._build_messages(state, build_task_prompt(task))
 
     # 期望顺序：system, user(task), assistant(tool_calls=...), tool(tc1), tool(tc2)
     assert messages[0].role == "system"

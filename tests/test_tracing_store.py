@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from data_agent_baseline.tracing.store import SQLiteTraceStore
+from agents.tracing.store import SQLiteTraceStore
 
 
 def _make_trace(trace_id: str, run_id: str = "r1", task_id: str = "t1") -> dict:

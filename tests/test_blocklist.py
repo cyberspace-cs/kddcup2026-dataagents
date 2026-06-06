@@ -15,20 +15,20 @@ from typing import Any
 
 import pytest
 
-from data_agent_baseline.config import (
+from agents.config import (
     AgentConfig,
     AppConfig,
     DatasetConfig,
     RunConfig,
     load_app_config,
 )
-from data_agent_baseline.run import runner as runner_mod
-from data_agent_baseline.run.runner import TaskRunArtifacts, run_benchmark, run_single_task
-from data_agent_baseline.run.runner_artifacts import (
+from agents.runs import runner as runner_mod
+from agents.runs.artifacts import (
     BLOCKLIST_FAILURE_REASON,
     blocklist_payload,
     write_task_outputs,
 )
+from agents.runs.runner import TaskRunArtifacts, run_benchmark, run_single_task
 
 # ---------- Pydantic 校验层 ------------------------------------------------------
 

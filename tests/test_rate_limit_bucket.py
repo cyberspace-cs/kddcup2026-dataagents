@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.agents.rate_limit import FileTokenBucket
+from agents.llm.rate_limit import FileTokenBucket
 
 
 def _make_bucket(tmp_path: Path, *, rpm: int = 600, tpm: int = 1000) -> FileTokenBucket:
@@ -41,7 +41,7 @@ def test_over_capacity_returns_wait_without_consuming(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # 固定时钟：避免测试飘
-    monkeypatch.setattr("data_agent_baseline.agents.rate_limit.time.time", lambda: 1000.0)
+    monkeypatch.setattr("agents.llm.rate_limit.time.time", lambda: 1000.0)
     bucket = _make_bucket(tmp_path, rpm=60, tpm=60)
     # 先把桶里的令牌花光
     assert bucket.acquire(need_rpm=60, need_tpm=60) == 0.0
@@ -56,7 +56,7 @@ def test_over_capacity_returns_wait_without_consuming(
 def test_linear_refill_math(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # 模拟时钟跨过 0.5 秒：60 RPM/min 应补 0.5 个；60 TPM/min 同理
     now = [1000.0]
-    monkeypatch.setattr("data_agent_baseline.agents.rate_limit.time.time", lambda: now[0])
+    monkeypatch.setattr("agents.llm.rate_limit.time.time", lambda: now[0])
     bucket = _make_bucket(tmp_path, rpm=60, tpm=120)
     # 花光
     assert bucket.acquire(need_rpm=60, need_tpm=120) == 0.0

@@ -7,7 +7,7 @@ The `dabench` command is the only entrypoint. It is registered via
 uv run dabench <subcommand> --config <path/to/config.yaml> [options]
 ```
 
-> Do **not** invoke as `python -m data_agent_baseline.cli` — Typer + the module runner
+> Do **not** invoke as `python -m agents.cli` — Typer + the module runner
 > produces no output in this project. The supported executable entrypoint is the
 > `dabench` script declared in `pyproject.toml`.
 
@@ -57,7 +57,7 @@ uv run dabench dashboard --db artifacts/traces.db
 ## Config schema
 
 The supported YAML fields are validated by the frozen Pydantic dataclasses in
-`src/data_agent_baseline/config.py`; the example below mirrors
+`src/agents/config.py`; the example below mirrors
 `configs/react_baseline.example.yaml`.
 
 ```yaml

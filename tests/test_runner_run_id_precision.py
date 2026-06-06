@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.run.runner import create_run_id, create_run_output_dir
+from agents.runs.runner import create_run_id, create_run_output_dir
 
 _RUN_ID_PATTERN = re.compile(r"^\d{8}-\d{3}$")
 

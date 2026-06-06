@@ -4,22 +4,22 @@ import csv
 import json
 from pathlib import Path
 
-from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from data_agent_baseline.config import (
+from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from agents.config import (
     AgentConfig,
     AppConfig,
     DatasetConfig,
     RetrievalIndexConfig,
     RunConfig,
 )
-from data_agent_baseline.retrieval.index import (
+from agents.retrieval.index import (
     build_or_load_task_index,
     lookup_field,
     search_context,
 )
-from data_agent_baseline.run.runner_subprocess import run_single_task_core
-from data_agent_baseline.tools.filesystem import inspect_context_files
-from data_agent_baseline.tools.registry import create_default_tool_registry
+from agents.runs.subprocess import run_single_task_core
+from agents.tools.filesystem import inspect_context_files
+from agents.tools.registry import create_default_tool_registry
 from tests.helpers.scripted_adapters import ScriptedModelAdapter
 
 

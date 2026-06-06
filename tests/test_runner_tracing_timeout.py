@@ -6,9 +6,9 @@ from pathlib import Path
 from queue import Empty
 from typing import Any
 
-from data_agent_baseline.config import AgentConfig, AppConfig, RunConfig, TracingConfig
-from data_agent_baseline.run import runner_subprocess
-from data_agent_baseline.tracing.store import SQLiteTraceStore
+from agents.config import AgentConfig, AppConfig, RunConfig, TracingConfig
+from agents.runs import subprocess as runs_subprocess
+from agents.tracing.store import SQLiteTraceStore
 
 
 class _EmptyQueue:
@@ -64,10 +64,10 @@ def test_timeout_marks_running_sqlite_trace_error(tmp_path: Path, monkeypatch: A
     db_path = tmp_path / "traces.db"
     _make_running_trace(db_path)
 
-    monkeypatch.setattr(runner_subprocess.multiprocessing, "Queue", lambda: _EmptyQueue())
-    monkeypatch.setattr(runner_subprocess.multiprocessing, "Process", _TimeoutProcess)
+    monkeypatch.setattr(runs_subprocess.multiprocessing, "Queue", lambda: _EmptyQueue())
+    monkeypatch.setattr(runs_subprocess.multiprocessing, "Process", _TimeoutProcess)
     ticks = iter([0.0, 2.0])
-    monkeypatch.setattr(runner_subprocess, "perf_counter", lambda: next(ticks))
+    monkeypatch.setattr(runs_subprocess, "perf_counter", lambda: next(ticks))
 
     config = AppConfig(
         agent=AgentConfig(model="m", api_base="http://x", api_key="real-key"),
@@ -75,7 +75,7 @@ def test_timeout_marks_running_sqlite_trace_error(tmp_path: Path, monkeypatch: A
         tracing=TracingConfig(enabled=True, db_path=db_path),
     )
 
-    payload = runner_subprocess.run_single_task_with_timeout(task_id="task_1", config=config)
+    payload = runs_subprocess.run_single_task_with_timeout(task_id="task_1", config=config)
 
     assert payload["failure_reason"] == "Task timed out after 1 seconds."
     store = SQLiteTraceStore(db_path)

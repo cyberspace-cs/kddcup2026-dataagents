@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from data_agent_baseline.etl._detect import MIN_LINES, detect_prose_files
+from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from agents.etl._detect import MIN_LINES, detect_prose_files
 
 
 def _make_task(tmp_path: Path) -> PublicTask:

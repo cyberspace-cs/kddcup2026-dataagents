@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.config import load_app_config
+from agents.config import load_app_config
 
 
 def _write_config(path: Path, body: str) -> Path:

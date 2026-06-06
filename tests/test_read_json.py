@@ -17,10 +17,10 @@ from typing import Any
 
 import pytest
 
-from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from data_agent_baseline.tools import filesystem
-from data_agent_baseline.tools.filesystem import read_json_preview
-from data_agent_baseline.tools.registry import create_default_tool_registry
+from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from agents.tools import filesystem
+from agents.tools.filesystem import read_json_preview
+from agents.tools.registry import create_default_tool_registry
 
 
 def _make_task(tmp_path: Path) -> PublicTask:

@@ -2,7 +2,7 @@
 
 重点覆盖 `_maybe_raise_non_sqlite_path_error` 把 sqlite 的
 `file is not a database` 翻译成带路由提示的 ValueError——以便 driver
-（`react.py:374`）把它打包成下一轮的 `observation.error`，模型一步纠偏。
+把它打包成下一轮的 `observation.error`，模型一步纠偏。
 
 回归 run 20260430-013 task_16 类故障：模型对 `csv/trans.csv` 调
 execute_context_sql，原始观察只有"file is not a database"，下一步往往
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.tools.sqlite import (
+from agents.tools.sqlite import (
     execute_read_only_sql,
     inspect_sqlite_schema,
 )

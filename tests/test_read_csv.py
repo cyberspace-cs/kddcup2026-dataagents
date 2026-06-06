@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from data_agent_baseline.tools.filesystem import read_csv_preview
+from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from agents.tools.filesystem import read_csv_preview
 
 
 def _make_task(tmp_path: Path) -> PublicTask:

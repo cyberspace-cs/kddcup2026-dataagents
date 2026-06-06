@@ -1,4 +1,4 @@
-"""`run/app.py:_resolve_sampling_defaults` 的解析测试。
+"""`application.py:_resolve_sampling_defaults` 的解析测试。
 
 覆盖三个 mode 分支：
 - enable_thinking=True  → 填 Qwen3 thinking 兜底（0.6 / 0.95 / 20 / 0 / 0）
@@ -10,8 +10,8 @@
 
 from __future__ import annotations
 
-from data_agent_baseline.config import AgentConfig
-from data_agent_baseline.run.app import _resolve_sampling_defaults
+from agents.application import _resolve_sampling_defaults
+from agents.config import AgentConfig
 
 
 def _agent(**overrides: object) -> AgentConfig:

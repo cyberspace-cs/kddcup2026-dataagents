@@ -27,7 +27,7 @@ The repo ships four exit-code-clean gates. Each is independent and idempotent.
 | --- | --- | --- |
 | Format | `uv run ruff format --check .` | Exit `0`; reports zero files would be reformatted. |
 | Lint | `uv run ruff check .` | Exit `0`; `All checks passed`. |
-| Types | `uv run pyright` | Exit `0`. Strict mode on `src/data_agent_baseline`, basic on `tests/`. |
+| Types | `uv run pyright` | Exit `0`. Strict mode on `src/agents`, basic on `tests/`. |
 | Tests | `uv run pytest` | Exit `0`. Coverage ≥ 65% (gate fails below). |
 
 ### Pre-commit (opt-in)
@@ -40,38 +40,45 @@ uv run pre-commit install      # one-time, per clone
 uv run pre-commit run --all-files
 ```
 
-CI is intentionally not wired in this repo — the gates run locally only.
+GitHub Actions runs these gates on pull requests and pushes to `main`; local runs use the
+same commands.
 
 ## Project layout
 
 ```
-src/data_agent_baseline/
-├── __init__.py
+src/agents/
+├── __init__.py                  # Public ReAct/model exports
 ├── cli.py                       # Typer entrypoint (dabench)
 ├── config.py                    # Frozen config dataclasses + Pydantic validation
-├── agents/
-│   ├── react.py                 # Loop driver
+├── agent.py                     # ReAct loop driver
+├── runtime/                     # Run state, message/media helpers, budget, recording
+│   ├── state.py                 # StepRecord, AgentRuntimeState, AgentRunResult
+│   ├── messages.py              # System/user/replay message construction + trace serialization
+│   ├── media.py                 # Task-local video attachment
+│   ├── budget.py                # Budget warning prompts + final-step guardrail
+│   └── recorder.py              # Step events + step_callback
+├── llm/                         # Model adapters, token accounting, rate limits
+│   ├── types.py                 # Provider-neutral model protocol and response types
+│   ├── openai.py                # OpenAI-compatible adapters (text + native)
 │   ├── protocol.py              # Native ↔ text → ToolCall normalization
-│   ├── dispatcher.py            # Tool execution + terminal short-circuit
-│   ├── recorder.py              # StepRecord + step_callback
-│   ├── model.py                 # OpenAI adapters (text + native)
-│   ├── rate_limit.py            # FileTokenBucket + RateLimitedAdapter
-│   ├── prompt.py                # System / task / observation prompts
-│   └── runtime.py               # AgentRuntimeState, AgentRunResult
-├── tools/
-│   ├── registry.py              # ToolDefinition + immutable ToolRegistry
-│   ├── filesystem.py            # inspect_files, read_csv, read_doc, read_json
-│   ├── sqlite.py                # inspect_sqlite_schema, execute_context_sql
-│   └── python_exec.py           # execute_python (subprocess + queue)
-├── benchmark/
-│   ├── dataset.py               # DABenchPublicDataset
-│   └── schema.py                # PublicTask
-└── run/
-    ├── app.py                   # build_application(config) -> AgentApp
-    ├── runner.py                # Public run_single_task / run_benchmark API
-    ├── runner_subprocess.py     # Subprocess + timeout isolation
-    └── runner_artifacts.py      # Run ids, summary/prediction writes
+│   ├── rate_limit.py            # RateLimitedAdapter
+│   ├── token_bucket.py          # Cross-process token bucket
+│   └── tokenizer.py             # Qwen tokenizer loader
+├── prompts/                     # System, task, observation, and recovery prompts
+├── tools/                       # ToolDefinition, dispatcher, handlers, filesystem previews
+├── verification/                # Answer self-check + terminal-answer fallback policy
+├── benchmark/                   # DABenchPublicDataset and task schemas
+├── application.py               # AgentApp factory
+├── runs/                        # Runner, subprocess isolation, artifact writing
+├── tracing/                     # Trace/span capture and SQLite store
+├── dashboard/                   # FastAPI traces dashboard backend
+├── etl/                         # Optional prose-to-CSV ETL helpers
+└── retrieval/                   # Task-local retrieval index
 ```
+
+The dashboard frontend source lives outside the Python package under
+`dashboard/frontend/`. Its Vite build writes ignored static assets into
+`src/agents/dashboard/static/` for `dabench dashboard` to serve.
 
 Tests live under `tests/`, with shared fixtures in `tests/helpers/` (notably
 `scripted_adapters.py`).

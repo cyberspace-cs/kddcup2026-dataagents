@@ -16,7 +16,7 @@ import threading
 import time
 from pathlib import Path
 
-from data_agent_baseline.agents.rate_limit import FileTokenBucket
+from agents.llm.rate_limit import FileTokenBucket
 
 
 def test_concurrent_reads_observe_only_valid_json(tmp_path: Path) -> None:

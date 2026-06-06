@@ -1,6 +1,6 @@
 # Architecture
 
-`data_agent_baseline` is a single-process ReAct loop that drives an OpenAI-compatible LLM
+`agents` is a single-process ReAct loop that drives an OpenAI-compatible LLM
 through a fixed set of tools, scoped to a per-task `context/` directory. The runner wraps
 each task in a subprocess so wall-clock timeouts and crashes can be cleanly bounded.
 
@@ -15,12 +15,12 @@ each task in a subprocess so wall-clock timeouts and crashes can be cleanly boun
                 └────────┬────────┘
                          │
               ┌──────────▼──────────┐
-              │  build_application  │   src/data_agent_baseline/run/app.py
+              │  build_application  │   src/agents/application.py
               └──────────┬──────────┘
                          │  AgentApp{ dataset, registry, model_adapter,
                          │            agent_config, protocol }
               ┌──────────▼──────────┐
-              │     ReActAgent      │   src/data_agent_baseline/agents/react.py
+              │     ReActAgent      │   src/agents/agent.py
               │  ┌───────┐ ┌──────┐ │
               │  │protoco│→│dispat│ │
               │  │l adapt│ │ cher │ │
@@ -41,18 +41,22 @@ These are the current implementation anchors for the main runtime surfaces.
 
 | Capability | Implementation | What lives there |
 | --- | --- | --- |
-| ReAct loop | `src/data_agent_baseline/agents/react.py` | Bounded loop, message replay, budget guardrails, tool dispatch, answer verifier integration, and step callbacks. |
-| Protocol adapter | `src/data_agent_baseline/agents/protocol.py` | Text-fenced JSON and native function-calling responses normalized into a common turn shape. |
-| Model I/O | `src/data_agent_baseline/agents/model.py` | OpenAI-compatible `chat.completions` adapters, Qwen3 `<think>` stripping, usage capture, latency capture, and native tool-call parsing. |
-| Tool inventory | `src/data_agent_baseline/tools/registry.py` | `ToolDefinition`, immutable `ToolRegistry`, default tool inventory, Pydantic input validation, and OpenAI tool schema export. |
-| Subprocess runner | `src/data_agent_baseline/run/runner.py` plus `run/runner_subprocess.py` and `run/runner_artifacts.py` | Per-task subprocess timeout isolation, deterministic key pinning, task artifacts, and `summary.json`. |
-| SQLite tracing | `src/data_agent_baseline/tracing/` plus `src/data_agent_baseline/dashboard/` | Opt-in span capture to `tracing.db_path` and the FastAPI/React dashboard that reads it. |
-| Rate limiting | `src/data_agent_baseline/agents/rate_limit.py` plus `agents/token_bucket.py` | Cross-process RPM/TPM token buckets with `filelock`, atomic state writes, and Retry-After handling. |
+| ReAct loop | `src/agents/agent.py` | Bounded loop, model-call state machine, tool dispatch, and step callbacks. |
+| Runtime support | `src/agents/runtime/` | **Agent runtime** (not infrastructure runtime): run state, step records, message replay, media attachment, budget guardrails, step events, and callback notification. Deliberately depends upward on `prompts/` and `tools/` because it assembles agent-facing messages from both. |
+| Protocol adapter | `src/agents/llm/protocol.py` | Text-fenced JSON and native function-calling responses normalized into a common turn shape. |
+| Model types | `src/agents/llm/types.py` | Provider-neutral message, response, tool-call, usage, and adapter protocol types shared by runtime, tracing, verification, and tests. |
+| Model I/O | `src/agents/llm/openai.py` | OpenAI-compatible `chat.completions` adapters, Qwen3 `<think>` stripping, usage capture, latency capture, and native tool-call parsing. |
+| Tool inventory | `src/agents/tools/registry.py` plus `src/agents/tools/dispatcher.py` | `ToolDefinition`, immutable `ToolRegistry`, default tool inventory, Pydantic input validation, OpenAI tool schema export, and tool-call dispatch. |
+| Answer verification | `src/agents/verification/` | Optional no-tools answer-table verifier plus terminal-answer rejection/fallback policy. |
+| Application factory | `src/agents/application.py` | Wires dataset, registry, model adapter, verifier, loop config, and protocol into `AgentApp`. |
+| Subprocess runner | `src/agents/runs/runner.py` plus `runs/subprocess.py` and `runs/artifacts.py` | Per-task subprocess timeout isolation, deterministic key pinning, task artifacts, and `summary.json`. |
+| SQLite tracing | `src/agents/tracing/`, `src/agents/dashboard/`, and `dashboard/frontend/` | Opt-in span capture to `tracing.db_path`, FastAPI dashboard routes, and the Vite frontend that reads them. |
+| Rate limiting | `src/agents/llm/rate_limit.py` plus `src/agents/llm/token_bucket.py` | Cross-process RPM/TPM token buckets with `filelock`, atomic state writes, and Retry-After handling. |
 
 ## Two protocols, one loop
 
 The agent supports both legacy text-fenced JSON and OpenAI native function calling. The
-response normalization lives in `agents/protocol.py:adapt_model_response`:
+response normalization lives in `agents/llm/protocol.py:adapt_model_response`:
 
 - **Text** — model emits a single JSON object (optionally inside a fenced block) with
   `thought`, `action`, `action_input`. The dispatcher picks one tool per turn.

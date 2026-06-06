@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import pytest
 
-from data_agent_baseline.agents.model import TokenUsage
-from data_agent_baseline.agents.protocol import (
+from agents.llm.protocol import (
     EMPTY_TOOL_CALL_ERROR,
     REASONING_DRAFT_RELAY_INSTRUCTION,
 )
-from data_agent_baseline.agents.recorder import (
+from agents.llm.types import TokenUsage
+from agents.runtime.recorder import (
     EmptyToolCallsEvent,
     ModelErrorEvent,
     ObservationEvent,
@@ -24,7 +24,7 @@ from data_agent_baseline.agents.recorder import (
     ToolErrorEvent,
     record_step_event,
 )
-from data_agent_baseline.agents.runtime import AgentRuntimeState
+from agents.runtime.state import AgentRuntimeState
 
 
 def _record_one(event, *, step_index: int = 1, turn_index: int = 1):

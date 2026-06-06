@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.tracing.store import SQLiteTraceStore
+from agents.tracing.store import SQLiteTraceStore
 
 
 def test_stream_timestamp_advances_to_latest_returned_span_timestamp() -> None:
-    from data_agent_baseline.dashboard.api import _advance_stream_timestamp
+    from agents.dashboard.api import _advance_stream_timestamp
 
     last_ts = "2026-01-01T00:00:00+00:00"
     spans = [
@@ -26,7 +26,7 @@ def test_stream_timestamp_advances_to_latest_returned_span_timestamp() -> None:
 
 
 def test_stream_timestamp_stays_put_when_no_spans_returned() -> None:
-    from data_agent_baseline.dashboard.api import _advance_stream_timestamp
+    from agents.dashboard.api import _advance_stream_timestamp
 
     last_ts = "2026-01-01T00:00:00+00:00"
 
@@ -65,7 +65,7 @@ def store_and_client(tmp_path: Path):
     from starlette.testclient import TestClient
 
     app = FastAPI()
-    from data_agent_baseline.dashboard.api import create_api_routes
+    from agents.dashboard.api import create_api_routes
 
     create_api_routes(app, store)
 

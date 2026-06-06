@@ -16,7 +16,7 @@ from types import MappingProxyType
 
 import pytest
 
-from data_agent_baseline.tools.registry import (
+from agents.tools.registry import (
     ToolDefinition,
     ToolExecutionResult,
     ToolRegistry,

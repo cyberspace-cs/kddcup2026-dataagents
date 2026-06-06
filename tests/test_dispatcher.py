@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from data_agent_baseline.agents.dispatcher import dispatch_tool_call
-from data_agent_baseline.agents.model import ModelToolCall
-from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from data_agent_baseline.tools.registry import create_default_tool_registry
+from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from agents.llm.types import ModelToolCall
+from agents.tools.dispatcher import dispatch_tool_call
+from agents.tools.registry import create_default_tool_registry
 
 
 @pytest.fixture

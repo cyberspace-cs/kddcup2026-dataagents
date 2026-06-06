@@ -185,66 +185,6 @@ toml = [
 ]
 
 [[package]]
-name = "data-agent-baseline"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "filelock" },
-    { name = "huggingface-hub" },
-    { name = "ijson" },
-    { name = "numpy" },
-    { name = "openai" },
-    { name = "openpyxl" },
-    { name = "pandas" },
-    { name = "polars" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "rich" },
-    { name = "tokenizers" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "fastapi" },
-    { name = "pandas-stubs" },
-    { name = "pre-commit" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "uvicorn" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.100.0" },
-    { name = "filelock", specifier = ">=3.13" },
-    { name = "huggingface-hub", specifier = ">=0.29.3" },
-    { name = "ijson", specifier = ">=3.3.0" },
-    { name = "numpy", specifier = ">=2.2.6" },
-    { name = "openai", specifier = ">=2.28.0" },
-    { name = "openpyxl", specifier = ">=3.1.5" },
-    { name = "pandas", specifier = ">=2.3.3" },
-    { name = "pandas-stubs", marker = "extra == 'dev'", specifier = ">=2.2.0" },
-    { name = "polars", specifier = ">=1.39.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7.0" },
-    { name = "pyarrow", specifier = ">=23.0.1" },
-    { name = "pydantic", specifier = ">=2.10.6" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.400" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.5" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
-    { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "rich", specifier = ">=13.9.4" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11.0" },
-    { name = "tokenizers", specifier = ">=0.21" },
-    { name = "typer", specifier = ">=0.15.2" },
-    { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.20.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "distlib"
 version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -585,6 +525,66 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c4/10/528b439290763bff3d939268085d03382471b442f212dca4ff5f12802d43/jiter-0.13.0-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ab44b178f7981fcaea7e0a5df20e773c663d06ffda0198f1a524e91b2fde7e59", size = 337384, upload-time = "2026-02-02T12:37:53.582Z" },
     { url = "https://files.pythonhosted.org/packages/67/8a/a342b2f0251f3dac4ca17618265d93bf244a2a4d089126e81e4c1056ac50/jiter-0.13.0-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7bb00b6d26db67a05fe3e12c76edc75f32077fb51deed13822dc648fa373bc19", size = 343768, upload-time = "2026-02-02T12:37:55.055Z" },
 ]
+
+[[package]]
+name = "kddcup2026-agents"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "filelock" },
+    { name = "huggingface-hub" },
+    { name = "ijson" },
+    { name = "numpy" },
+    { name = "openai" },
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "polars" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "tokenizers" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "fastapi" },
+    { name = "pandas-stubs" },
+    { name = "pre-commit" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.100.0" },
+    { name = "filelock", specifier = ">=3.13" },
+    { name = "huggingface-hub", specifier = ">=0.29.3" },
+    { name = "ijson", specifier = ">=3.3.0" },
+    { name = "numpy", specifier = ">=2.2.6" },
+    { name = "openai", specifier = ">=2.28.0" },
+    { name = "openpyxl", specifier = ">=3.1.5" },
+    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pandas-stubs", marker = "extra == 'dev'", specifier = ">=2.2.0" },
+    { name = "polars", specifier = ">=1.39.0" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7.0" },
+    { name = "pyarrow", specifier = ">=23.0.1" },
+    { name = "pydantic", specifier = ">=2.10.6" },
+    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.400" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.5" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.2" },
+    { name = "rich", specifier = ">=13.9.4" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11.0" },
+    { name = "tokenizers", specifier = ">=0.21" },
+    { name = "typer", specifier = ">=0.15.2" },
+    { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.20.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "markdown-it-py"

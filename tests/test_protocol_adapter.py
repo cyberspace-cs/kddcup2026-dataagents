@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import pytest
 
-from data_agent_baseline.agents.model import ModelResponse, ModelToolCall
-from data_agent_baseline.agents.protocol import (
+from agents.llm.protocol import (
     ProtocolTurn,
     adapt_model_response,
     extract_reasoning_tool_call_draft,
     parse_model_step,
 )
+from agents.llm.types import ModelResponse, ModelToolCall
 
 
 def _resp(

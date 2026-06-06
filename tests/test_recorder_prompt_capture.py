@@ -11,10 +11,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from data_agent_baseline.agents.model import ModelResponse, ModelToolCall, TokenUsage
-from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
-from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from data_agent_baseline.tools.registry import create_default_tool_registry
+from agents.agent import ReActAgent, ReActAgentConfig
+from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
+from agents.llm.types import ModelResponse, ModelToolCall, TokenUsage
+from agents.tools.registry import create_default_tool_registry
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
 
@@ -113,7 +113,7 @@ def test_parallel_tool_calls_only_lead_step_carries_prompt_and_response(
 
     动机：完整 messages + response 落到每条 StepRecord 会让数据体积线性膨胀
     （N 倍），且回放时只需读首条即可还原。该约定与 `raw_tool_calls` / `usage` /
-    `reasoning` 保持一致——见 `react.py` 中 `is_lead` 判定。
+    `reasoning` 保持一致——见 `agent.py` 中 `is_lead` 判定。
     """
     task = _make_task(tmp_path)
 
