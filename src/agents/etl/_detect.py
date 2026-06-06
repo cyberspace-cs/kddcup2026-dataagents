@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from agents.benchmark.schema import PublicTask
 
 MIN_LINES = 200
-PROSE_EXTS = frozenset({".md", ".txt"})
+PROSE_EXTS = frozenset({".md", ".txt", ".pdf"})
 ENTITY_LINE = re.compile(r"^ID:\s*", re.MULTILINE)
 _SECTION_HEADING = re.compile(r"^(#{2,4})\s+(.+)$", re.MULTILINE)
 
@@ -66,6 +66,11 @@ def detect_prose_files(task: PublicTask, *, force: bool = False) -> list[Path]:
             if resolved in seen:
                 continue
             seen.add(resolved)
+            if f.suffix.lower() == ".pdf":
+                if f.stat().st_size == 0:
+                    continue
+                results.append(f)
+                continue
             try:
                 with f.open(encoding="utf-8", errors="replace") as handle:
                     line_count = sum(1 for _ in handle)

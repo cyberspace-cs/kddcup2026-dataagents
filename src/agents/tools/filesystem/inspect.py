@@ -12,6 +12,7 @@ from agents.tools.filesystem import constants
 from agents.tools.filesystem.csv_preview import profile_columns, summarize_csv
 from agents.tools.filesystem.doc_preview import summarize_doc
 from agents.tools.filesystem.json_preview import summarize_json
+from agents.tools.filesystem.pdf_preview import summarize_pdf
 
 
 def _summarize_sqlite(path: Path) -> dict[str, Any]:
@@ -79,6 +80,11 @@ def _format_for_inspect(rel_path: str, abs_path: Path) -> dict[str, Any]:
         base["supported"] = True
         base["schema"] = _summarize_sqlite(abs_path)
         return base
+    if suffix in constants.PDF_EXTS:
+        base["format"] = "pdf"
+        base["supported"] = True
+        base["schema"] = summarize_pdf(abs_path)
+        return base
     if suffix in constants.DOC_EXTS:
         base["format"] = "markdown" if suffix == ".md" else "text"
         base["supported"] = True
@@ -116,7 +122,9 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
     for child in context_root.rglob("*"):
         if not child.is_file():
             continue
-        if child.suffix == ".md" and child.stem in etl_csv:
+        if any(part.startswith(".") for part in child.relative_to(context_root).parts):
+            continue
+        if child.suffix.lower() in {".md", ".pdf"} and child.stem in etl_csv:
             csv_path = etl_csv[child.stem]
             candidates.append((str(csv_path), csv_path))
             continue

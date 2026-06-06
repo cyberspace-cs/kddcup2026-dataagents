@@ -33,7 +33,6 @@ _EXPECTED_ORDER = [
     "inspect_sqlite_schema",
     "execute_context_sql",
     "execute_python",
-    "validate_answer",
     "answer",
 ]
 

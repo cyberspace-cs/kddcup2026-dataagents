@@ -10,6 +10,7 @@
 - `csv_preview`   CSV 预览与列级 profiling
 - `json_preview`  JSON 预览与流式 schema 抽取
 - `doc_preview`   文档（markdown/txt）预览
+- `pdf_preview`   PDF 预览与元信息提取
 - `inspect`       inspect_context_files 及格式分流
 """
 

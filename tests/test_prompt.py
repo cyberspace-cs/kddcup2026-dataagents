@@ -180,32 +180,16 @@ def test_native_system_prompt_warns_execute_python_is_stateless() -> None:
 
 
 def test_execute_python_tool_description_pins_sqlite_in_python_idiom() -> None:
-    """`.db` 文件在 `execute_python` 里必须 sqlite3.connect + pd.read_sql_query。
-
-    回归 run 20260430-013 task_16：模型先试 `pd.read_sql_query(q, "sqlite:///...")`
-    吃 ImportError，下一步才回落到 `sqlite3.connect`。本环境不安装 SQLAlchemy，
-    URI 形式永远不可达——`do NOT` 反向框定行为，消除"先尝试再 fallback"的浪费步。
-
-    规则只落在 `ToolDefinition.description`（不在 prompt.py Decision tree
-    里复述），因为该字段经两条通道**每轮**下发：
-      - 文本协议的 `Available tools` 列表（经 `describe_for_prompt`）
-      - 原生 function calling 的 `tools=[...]` schema 的 `description` 字段
-    既然每轮必到，就没有"漏发"的失败模式，prompt 里再写一份只是冗余。
-    """
+    """`.db` 文件的两条合法路径都在 `execute_python` 描述中列出。"""
     from agents.tools.registry import create_default_tool_registry
 
     desc = create_default_tool_registry().definitions["execute_python"].description
     lower = desc.lower()
 
-    # 推荐路径：sqlite3 连接对象 + pandas 读
     assert "sqlite3.connect(path)" in desc
     assert "pd.read_sql_query(query, conn)" in desc
-    # 反向框定 + 失败原因：URI 形式 + SQLAlchemy 未安装 + ImportError
-    assert "do not try the pandas uri form" in lower
     assert "sqlite:///" in lower
     assert "sqlalchemy" in lower
-    assert "not installed" in lower
-    assert "importerror" in lower
 
 
 def test_native_system_prompt_enforces_format_tolerance() -> None:

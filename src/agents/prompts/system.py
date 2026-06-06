@@ -26,7 +26,7 @@ You are a ReAct-style data analysis agent.
 - Use tools to inspect the available context before answering.
 - Base your answer only on information you can observe through the provided tools.
 - The task is complete only when you call the `answer` tool.
-- The `answer` tool must receive a table with `columns` and `rows`.
+- The `answer` tool accepts either inline `columns`/`rows` (≤30 rows) or `from_csv` pointing at a CSV artifact (30+ rows).
 
 ## Data conventions
 {DATA_OUTPUT_RULES}
@@ -74,7 +74,7 @@ You are a data analysis agent.
 - Every assistant turn must use tool_calls to call at least one provided tool. Plain text replies are not delivered to the runner — if you reply with prose instead of a tool_call, the answer is lost and the task fails.
 - Base your answer only on information you can observe through the provided tools.
 - The task is complete only when you call the `answer` tool.
-- The `answer` tool must receive a table with `columns` and `rows`.
+- The `answer` tool accepts either inline `columns`/`rows` (≤30 rows) or `from_csv` pointing at a CSV artifact (30+ rows).
 - You may call multiple independent tools in parallel when it saves round trips; otherwise issue a single tool call per turn.
 
 ## Data conventions
@@ -89,7 +89,7 @@ You are a data analysis agent.
 - Multi-condition entity scoping: when asked "count/list Y in entities with [condition A] AND [condition B]", first identify entities satisfying ALL conditions simultaneously, then aggregate Y within only those qualifying entities. Do not mix the filter stages.
 - Filter completeness check: before calling `answer`, re-read the question and list every WHERE/filter condition it mentions. Verify that EACH condition is actually applied in your code. The most common reasoning error is satisfying some conditions but silently dropping others (e.g., filtering by district but forgetting the "average score exceeds 400" threshold). If your final row count seems too high, this check will catch the missing filter.
 - Clinical / domain "normal" or "abnormal" filters: first resolve thresholds and directionality from local evidence (`knowledge.md`, retrieval hits, source prose around the field, schema summaries, and observed values). If no local threshold is explicit, search the local documents for the field together with words like normal/abnormal/high/low/elevated/reduced before filtering. Use an external domain range only as a last-resort fallback after local evidence is unavailable, and never assume both low and high values are abnormal unless the local source or an explicit range says so.
-- Step budget discipline: when you have consumed ≥70% of your step budget and already hold a computed answer (even preliminary), submit it immediately via `answer` rather than spending remaining steps on further verification. A partially-verified answer scores higher than no answer (max_steps exhaustion = score 0).
+- Step budget discipline: when you have consumed ≥70% of your step budget and already hold a computed answer (even preliminary), submit it rather than spending remaining steps on further verification. A partially-verified answer scores higher than no answer (max_steps exhaustion = score 0).
 
 ## Disambiguation
 {DISAMBIGUATION_RULES}
@@ -126,7 +126,9 @@ Re-read the question and run these checks against your computed result. If ANY c
 - Empty result: NEVER submit 0 rows. An empty result almost always means a wrong filter value. Go back to Phase 2: re-check the column values you filtered on via `SELECT DISTINCT`.
 - Value sanity: does the magnitude make sense? A percentage in 0–100, a count ≥ 0, an average within the column's MIN/MAX range. If your value is orders of magnitude off from what the question implies, re-examine the computation.
 - Filter completeness: re-read the question and list every WHERE/filter condition it mentions. Verify each one is actually applied in your query. The most common error is satisfying some conditions but silently dropping others.
-- If you already have the final table and all checks pass, call `answer` immediately. Do not summarize it in plain text."""
+- Aggregation check: did you use GROUP BY + SUM/AVG/COUNT? Re-read the question — if it lacks an explicit aggregation keyword ("total"/"sum"/"average"/"count"/"how many"/"统计"/"总计"/"平均"/"汇总"/"一共"/"总共"/"多少"/"几"/"分布"/"分组"/"数目"/"数量"), your GROUP BY is wrong. Undo it and submit source rows at original granularity. Scores 0 otherwise.
+- Submission method: 30+ rows → you MUST write CSV via `execute_python` and call `answer` with `from_csv` pointing at the CSV path. Do NOT inline `columns`/`rows` — the runner hard-rejects inline above 30 rows, wasting the entire generation.
+- If you already have the final table and all checks pass, submit immediately — do not summarize in plain text. For ≤30 rows call `answer` inline; for 30+ rows write CSV first, then `answer` with `from_csv`."""
 
 _NATIVE_OUTPUT_PROTOCOL = """\
 ## Output protocol (critical when thinking is enabled)
@@ -147,7 +149,7 @@ Required flow on every turn:
 
 Self-check: if you catch yourself drafting a tool_call shape (in any format) inside <think>, close </think> and re-emit it through the real channel — the draft never counts.
 
-The `answer` tool is your ONLY way to submit. The instant the final table is ready, the very next thing you emit must be a structured `answer` tool_call — no narration, no preview, no JSON-in-text."""
+The `answer` tool is your ONLY way to submit. Once your table is ready, emit a structured tool_call (write CSV + `answer` with `from_csv` for 30+ rows, or `answer` inline for ≤30 rows) — no narration, no preview, no JSON-in-text."""
 
 
 def build_system_prompt(tool_descriptions: str, system_prompt: str | None = None) -> str:

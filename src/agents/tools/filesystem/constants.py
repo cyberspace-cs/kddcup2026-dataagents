@@ -8,6 +8,8 @@ INSPECT_FILES_JSON_SIZE_LIMIT = 100 * 1024 * 1024
 INSPECT_FILES_DTYPE_SAMPLE = 5
 INSPECT_FILES_PROFILE_SAMPLE = 100
 INSPECT_FILES_DOC_HEAD_LINES = 3
+INSPECT_FILES_PDF_HEAD_PAGES = 2
+INSPECT_FILES_PDF_HEAD_CHARS = 500
 KNOWLEDGE_MD_PRELOAD_LIMIT = 32 * 1024
 SQLITE_PROFILE_MAX_COLUMNS = 50
 
@@ -44,6 +46,7 @@ SQLITE_EXTS = frozenset({".sqlite", ".sqlite3", ".db"})
 CSV_EXTS = frozenset({".csv"})
 JSON_EXTS = frozenset({".json"})
 DOC_EXTS = frozenset({".md", ".txt"})
+PDF_EXTS = frozenset({".pdf"})
 
 UNSUPPORTED_HINT_BY_EXT: dict[str, str] = {
     ".xlsx": "Use execute_python with pandas/openpyxl to read .xlsx.",
