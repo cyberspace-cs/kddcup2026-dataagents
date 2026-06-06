@@ -60,7 +60,7 @@ _DIRECT_EXTRACT_CHAR_LIMIT = 60_000
 
 
 def _parse_knowledge_schema(
-    task: PublicTask, prose_path: Path, adapter: ModelAdapter
+    task: PublicTask, prose_path: Path, adapter: ModelAdapter, prose_text: str
 ) -> tuple[list[str], str] | None:
     """Use LLM to extract column names and primary key from knowledge.md.
 
@@ -77,15 +77,7 @@ def _parse_knowledge_schema(
     except OSError:
         return None
 
-    prose_sample = ""
-    try:
-        if prose_path.suffix.lower() == ".pdf":
-            prose_text: str = pdf_to_markdown(prose_path)  # pyright: ignore[reportUnknownVariableType]
-        else:
-            prose_text = prose_path.read_text(encoding="utf-8")
-        prose_sample = sample_paragraphs_by_section(prose_text, per_section=1)
-    except OSError:
-        pass
+    prose_sample = sample_paragraphs_by_section(prose_text, per_section=1) if prose_text else ""
 
     prose_stem = prose_path.stem
     prose_section = ""
@@ -289,6 +281,7 @@ def extract_prose_file(
     adapter: ModelAdapter,
     path: Path,
     task: PublicTask,
+    prose_text: str,
     schema_columns: list[str] | None = None,
     primary_key: str | None = None,
 ) -> ETLResult | None:
@@ -300,14 +293,11 @@ def extract_prose_file(
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
     etl_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
+    full_text = prose_text
 
     if path.suffix.lower() == ".pdf":
-        logger.info("ETL PDF→markdown: %s", path.name)
-        full_text: str = pdf_to_markdown(path)  # pyright: ignore[reportUnknownVariableType]
         md_path = etl_dir / f"{path.stem}.md"
         md_path.write_text(full_text, encoding="utf-8")
-    else:
-        full_text = path.read_text(encoding="utf-8")
 
     cached = validate_csv(csv_path)
     if cached:
@@ -469,12 +459,19 @@ def run_etl_for_task(
     adapter = _make_text_adapter(model_adapter)
 
     def _process(pf: Path) -> ETLResult | None:
-        parsed = _parse_knowledge_schema(task, pf, adapter)
+        if pf.suffix.lower() == ".pdf":
+            logger.info("ETL PDF→markdown: %s", pf.name)
+            text: str = pdf_to_markdown(pf)  # pyright: ignore[reportUnknownVariableType]
+        else:
+            text = pf.read_text(encoding="utf-8")
+        parsed = _parse_knowledge_schema(task, pf, adapter, text)
         if parsed:
             schema, pk = parsed
-            return extract_prose_file(adapter, pf, task, schema_columns=schema, primary_key=pk)
+            return extract_prose_file(
+                adapter, pf, task, text, schema_columns=schema, primary_key=pk
+            )
         logger.info("ETL: no knowledge.md schema for %s, will infer from sample", pf.name)
-        return extract_prose_file(adapter, pf, task)
+        return extract_prose_file(adapter, pf, task, text)
 
     if len(prose_files) == 1:
         result = _process(prose_files[0])
