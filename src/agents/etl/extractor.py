@@ -14,7 +14,10 @@ Fallback (no schema): LLM direct extraction → code-generation.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import re
 import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -32,6 +35,7 @@ from agents.etl._codegen import (
 from agents.etl._compress import (
     compress_prose,
     direct_extract_csv,
+    infer_schema_field_types,
     sample_paragraphs_by_section,
 )
 from agents.etl._detect import (
@@ -57,17 +61,146 @@ _MAX_WORKERS = 4
 _LLM_CALL_TIMEOUT = 180
 _ETL_HTTP_TIMEOUT = 300.0
 _DIRECT_EXTRACT_CHAR_LIMIT = 60_000
+_CACHE_VERSION = 2
+_LOCAL_RECORD_ID_RE = re.compile(
+    r"(?:档案|记录|条目|战略单元|Record|File|Case)\s*[：:#-]?\s*(\d{1,8})",
+    re.IGNORECASE,
+)
+_LOCAL_RECORD_ID_FIELDS = frozenset(
+    {
+        "record_id",
+        "archive_id",
+        "file_id",
+        "case_id",
+        "entry_id",
+        "local_id",
+        "unit_id",
+    }
+)
+
+
+def _cache_signature(
+    path: Path,
+    task: PublicTask,
+    prose_text: str,
+    schema_columns: list[str] | None,
+    anchor_keys: list[str] | None,
+    schema_field_types: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Build the cache signature for one prose extraction request."""
+    return {
+        "version": _CACHE_VERSION,
+        "source_file": path.name,
+        "question": task.question,
+        "text_sha256": hashlib.sha256(prose_text.encode("utf-8")).hexdigest(),
+        "schema_columns": schema_columns,
+        "anchor_keys": anchor_keys,
+        "schema_field_types": schema_field_types,
+    }
+
+
+def _validated_cached_csv(
+    csv_path: Path,
+    meta_path: Path,
+    expected_signature: dict[str, Any],
+) -> tuple[list[str], int] | None:
+    """Return cached CSV metadata only when the sidecar signature still matches."""
+    cached = validate_csv(csv_path)
+    if not cached:
+        return None
+    try:
+        actual_signature = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.info("ETL cache miss: %s has no valid signature sidecar", csv_path)
+        return None
+    if actual_signature != expected_signature:
+        logger.info("ETL cache miss: %s signature changed", csv_path)
+        return None
+    return cached
+
+
+def _write_cache_signature(meta_path: Path, signature: dict[str, Any]) -> None:
+    meta_path.write_text(
+        json.dumps(signature, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _has_local_record_ids(prose_text: str) -> bool:
+    """Return whether prose uses a repeated document-local record identifier."""
+    matches = _LOCAL_RECORD_ID_RE.findall(prose_text)
+    return len(set(matches)) >= 3
+
+
+def _ensure_local_record_anchor(
+    prose_text: str,
+    columns: list[str],
+    anchor_keys: list[str],
+) -> tuple[list[str], list[str]]:
+    """Add a document-local record ID anchor when prose is sectioned by one.
+
+    Some generated prose files describe the same row across multiple sections
+    using labels like "档案 353" or "战略单元 353".  Those labels are not domain
+    keys such as ``personalcode``; they are a local row key needed to merge the
+    partial facts before downstream analysis.
+    """
+    known_fields = {c.lower() for c in columns} | {a.lower() for a in anchor_keys}
+    if known_fields & _LOCAL_RECORD_ID_FIELDS:
+        return columns, anchor_keys
+    if not _has_local_record_ids(prose_text):
+        return columns, anchor_keys
+
+    columns = ["record_id", *columns]
+    anchor_keys = ["record_id", *anchor_keys]
+    logger.info("ETL schema: added local record_id anchor from prose record labels")
+    return columns, anchor_keys
+
+
+def _parse_schema_types_line(line: str) -> dict[str, str]:
+    """Parse TYPES: field=type, field=type output from schema extraction."""
+    if not line.upper().startswith("TYPES"):
+        return {}
+    raw = line.split(":", 1)[-1]
+    parsed: dict[str, str] = {}
+    for item in re.split(r"[,;]", raw):
+        item = item.strip()
+        if not item:
+            continue
+        field, sep, field_type = item.partition("=")
+        if not sep:
+            field, sep, field_type = item.partition(":")
+        if sep and field.strip() and field_type.strip():
+            parsed[field.strip()] = field_type.strip()
+    return parsed
+
+
+def _complete_schema_field_types(
+    columns: list[str],
+    anchor_keys: list[str],
+    explicit_types: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Fill missing field types with deterministic hints from field names."""
+    derived = infer_schema_field_types(columns, anchor_keys)
+    canonical = {column.lower(): column for column in columns}
+    for field, field_type in (explicit_types or {}).items():
+        column = canonical.get(field.lower())
+        if column:
+            derived[column] = field_type
+    return derived
 
 
 def _parse_knowledge_schema(
     task: PublicTask, prose_path: Path, adapter: ModelAdapter, prose_text: str
-) -> tuple[list[str], str] | None:
-    """Use LLM to extract column names and primary key from knowledge.md.
+) -> tuple[list[str], list[str], dict[str, str]] | None:
+    """Use LLM to extract column names and anchor keys from knowledge.md.
 
     Samples the prose file so the LLM can discover fields present in the data
     but missing from the governance document (e.g. record IDs).
 
-    Returns (columns, primary_key) or None if no matching entity.
+    Returns (columns, anchor_keys, field_types) or None if no matching entity.
+    ``anchor_keys[0]`` is the canonical primary key; subsequent entries are
+    secondary identity fields (name, label, secondary ID) that can uniquely
+    identify an entity when the PK takes different forms across sections.
     """
     km_path = task.context_dir / "knowledge.md"
     if not km_path.is_file():
@@ -97,18 +230,34 @@ def _parse_knowledge_schema(
 
         If NO entity in the governance document matches, output exactly: NONE
 
-        Otherwise output exactly TWO lines:
+        Otherwise output exactly FOUR lines:
         Line 1: PK: <primary_key_field_name>
-        Line 2: all field names as a comma-separated list (including the primary key)
+        Line 2: ANCHORS: <comma-separated identity fields that can uniquely \
+        identify an entity — includes PK plus name/label/secondary ID fields>
+        Line 3: TYPES: <field=type, field=type, ... for every field>
+        Line 4: all field names as a comma-separated list (must include all ANCHORS)
 
         IMPORTANT:
         - PK and column names must be SHORT GENERIC FIELD NAMES (like "event_id", \
         "molecule_id", "patient_id"), NEVER a specific data value.
+        - ANCHORS should include the PK and any name/label/secondary identifier \
+        field that could be used to recognize the same entity across different \
+        sections of the document (e.g. a person's name, a record label).
         - Start with fields from the governance document.
+        - Use simple type labels such as integer_scalar_id, scalar_id, date, time, \
+        number, integer_count, integer_rank, string, category, boolean, url.
+        - For document-local record_id fields use type "integer_scalar local_record_id"; \
+        record_id values must be a single scalar number, not a range or list.
         - ALSO scan the prose sample for ADDITIONAL structured data fields \
         that are present in the data but MISSING from the governance document. \
         Add these to the list with descriptive short names matching the \
         abbreviations used in the prose.
+        - If paragraphs are keyed by repeated document-local labels such as \
+        "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353", \
+        "File 353", or "Case 353", include a field named "record_id" and \
+        put it FIRST in PK and ANCHORS. This local record ID is the row key \
+        for merging sections; it is NOT the same as domain IDs such as \
+        personalcode, innercode, fundcode, or secucode.
         - Do NOT add narrative/filler fields — only structured data fields.
 
         Governance document:
@@ -116,7 +265,7 @@ def _parse_knowledge_schema(
     messages = [
         ModelMessage(
             role="system",
-            content="You extract database schema. Output PK line then comma-separated columns.",
+            content="You extract database schema. Output PK, ANCHORS, TYPES, then comma-separated columns.",
         ),
         ModelMessage(role="user", content=prompt),
     ]
@@ -136,24 +285,55 @@ def _parse_knowledge_schema(
 
     pk_line = lines[0]
     pk = pk_line.split(":", 1)[-1].strip() if pk_line.upper().startswith("PK") else None
-    columns = [c.strip() for c in lines[1].split(",") if c.strip()]
+
+    anchor_keys: list[str] = [pk] if pk else []
+    col_line_idx = 1
+    if len(lines) >= 3 and lines[1].upper().startswith("ANCHORS"):
+        raw_anchors = [a.strip() for a in lines[1].split(":", 1)[-1].split(",") if a.strip()]
+        if raw_anchors:
+            anchor_keys = raw_anchors
+            if pk and pk not in anchor_keys:
+                anchor_keys.insert(0, pk)
+        col_line_idx = 2
+
+    explicit_types: dict[str, str] = {}
+    if len(lines) > col_line_idx and lines[col_line_idx].upper().startswith("TYPES"):
+        explicit_types = _parse_schema_types_line(lines[col_line_idx])
+        col_line_idx += 1
+
+    columns = [c.strip() for c in lines[col_line_idx].split(",") if c.strip()]
     if len(columns) < 2 or not pk:
         return None
-    logger.info("Schema from knowledge.md (LLM) for '%s': pk=%s, cols=%s", prose_stem, pk, columns)
-    return columns, pk
+
+    for ak in anchor_keys:
+        if ak not in columns:
+            columns.append(ak)
+
+    columns, anchor_keys = _ensure_local_record_anchor(prose_text, columns, anchor_keys)
+    field_types = _complete_schema_field_types(columns, anchor_keys, explicit_types)
+
+    logger.info(
+        "Schema from knowledge.md (LLM) for '%s': pk=%s, anchors=%s, types=%s, cols=%s",
+        prose_stem,
+        anchor_keys[0],
+        anchor_keys,
+        field_types,
+        columns,
+    )
+    return columns, anchor_keys, field_types
 
 
 def _infer_schema_from_sample(
     adapter: ModelAdapter,
     prose_text: str,
     question: str,
-) -> tuple[list[str], str] | None:
+) -> tuple[list[str], list[str], dict[str, str]] | None:
     """Infer a unified schema by sampling the raw prose text before compression.
 
     Sends a representative sample to the LLM to discover structured data fields
-    and produce a canonical column list + primary key.
+    and produce a canonical column list + anchor keys.
 
-    Returns (columns, primary_key) or None.
+    Returns (columns, anchor_keys, field_types) or None.
     """
     sample = sample_paragraphs_by_section(prose_text, per_section=2)
     if not sample or len(sample) < 50:
@@ -180,20 +360,35 @@ def _infer_schema_from_sample(
            "effective_date", "reserve_ratio", "target_entity").
         4. Identify the primary key field (the field that uniquely identifies
            each entity — usually an ID number).
+        5. Identify ANCHOR fields — identity fields (including PK) that can
+           uniquely identify an entity even when the PK is missing or takes
+           a different form (e.g. a name, label, or secondary ID).
 
-        Output exactly TWO lines:
+        Output exactly FOUR lines:
         Line 1: PK: <primary_key_field_name>
-        Line 2: all field names as a comma-separated list (including the PK)
+        Line 2: ANCHORS: <comma-separated identity fields including PK>
+        Line 3: TYPES: <field=type, field=type, ... for every field>
+        Line 4: all field names as a comma-separated list (must include all ANCHORS)
 
         Rules:
         - Column names must be SHORT GENERIC FIELD NAMES, NEVER specific data values.
         - Only include fields that carry actual structured data values.
+        - Use simple type labels such as integer_scalar_id, scalar_id, date, time,
+          number, integer_count, integer_rank, string, category, boolean, url.
+        - If paragraphs are keyed by repeated document-local labels such as
+          "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353",
+          "File 353", or "Case 353", include a field named "record_id" and
+          put it FIRST in PK and ANCHORS. This local record ID is the row key
+          for merging sections; it is NOT the same as domain IDs such as
+          personalcode, innercode, fundcode, or secucode.
+          Give record_id type "integer_scalar local_record_id"; record_id values
+          must be a single scalar number, not a range or list.
         - Do NOT include narrative/context/filler fields.""")
 
     messages = [
         ModelMessage(
             role="system",
-            content="You extract database schema from prose samples. Output PK line then columns.",
+            content="You extract database schema from prose samples. Output PK, ANCHORS, TYPES, then columns.",
         ),
         ModelMessage(role="user", content=prompt),
     ]
@@ -210,12 +405,41 @@ def _infer_schema_from_sample(
 
     pk_line = lines[0]
     pk = pk_line.split(":", 1)[-1].strip() if pk_line.upper().startswith("PK") else None
-    columns = [c.strip() for c in lines[1].split(",") if c.strip()]
+
+    anchor_keys: list[str] = [pk] if pk else []
+    col_line_idx = 1
+    if len(lines) >= 3 and lines[1].upper().startswith("ANCHORS"):
+        raw_anchors = [a.strip() for a in lines[1].split(":", 1)[-1].split(",") if a.strip()]
+        if raw_anchors:
+            anchor_keys = raw_anchors
+            if pk and pk not in anchor_keys:
+                anchor_keys.insert(0, pk)
+        col_line_idx = 2
+
+    explicit_types: dict[str, str] = {}
+    if len(lines) > col_line_idx and lines[col_line_idx].upper().startswith("TYPES"):
+        explicit_types = _parse_schema_types_line(lines[col_line_idx])
+        col_line_idx += 1
+
+    columns = [c.strip() for c in lines[col_line_idx].split(",") if c.strip()]
     if len(columns) < 2 or not pk:
         return None
 
-    logger.info("Schema inferred from sample: pk=%s, cols=%s", pk, columns)
-    return columns, pk
+    for ak in anchor_keys:
+        if ak not in columns:
+            columns.append(ak)
+
+    columns, anchor_keys = _ensure_local_record_anchor(prose_text, columns, anchor_keys)
+    field_types = _complete_schema_field_types(columns, anchor_keys, explicit_types)
+
+    logger.info(
+        "Schema inferred from sample: pk=%s, anchors=%s, types=%s, cols=%s",
+        anchor_keys[0],
+        anchor_keys,
+        field_types,
+        columns,
+    )
+    return columns, anchor_keys, field_types
 
 
 def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
@@ -283,23 +507,48 @@ def extract_prose_file(
     task: PublicTask,
     prose_text: str,
     schema_columns: list[str] | None = None,
-    primary_key: str | None = None,
+    anchor_keys: list[str] | None = None,
+    schema_field_types: dict[str, str] | None = None,
 ) -> ETLResult | None:
     """Extract structured data from a prose file.
 
     Pipeline: compress → pre-merge → normalize → deterministic CSV.
     Fallback: LLM direct extraction → code-gen.
     """
+    primary_key = anchor_keys[0] if anchor_keys else None
+
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
     etl_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
+    meta_path = etl_dir / f"{path.stem}.meta.json"
     full_text = prose_text
 
     if path.suffix.lower() == ".pdf":
         md_path = etl_dir / f"{path.stem}.md"
         md_path.write_text(full_text, encoding="utf-8")
 
-    cached = validate_csv(csv_path)
+    if not full_text.strip():
+        logger.info("ETL skip: no extractable text in %s", path.name)
+        return None
+
+    # ---- Phase 0: infer schema from prose sample (when no schema from knowledge.md) ----
+    if not schema_columns:
+        inferred = _infer_schema_from_sample(adapter, full_text, task.question)
+        if inferred:
+            schema_columns, anchor_keys, schema_field_types = inferred
+            primary_key = anchor_keys[0] if anchor_keys else None
+    elif not schema_field_types:
+        schema_field_types = infer_schema_field_types(schema_columns, anchor_keys)
+
+    cache_signature = _cache_signature(
+        path,
+        task,
+        full_text,
+        schema_columns,
+        anchor_keys,
+        schema_field_types,
+    )
+    cached = _validated_cached_csv(csv_path, meta_path, cache_signature)
     if cached:
         header, row_count = cached
         logger.info("ETL cache hit: %s (%d cols, %d rows)", csv_path, len(header), row_count)
@@ -310,20 +559,14 @@ def extract_prose_file(
             row_count=row_count,
         )
 
-    if not full_text.strip():
-        logger.info("ETL skip: no extractable text in %s", path.name)
-        return None
-
-    # ---- Phase 0: infer schema from prose sample (when no schema from knowledge.md) ----
-    if not schema_columns:
-        inferred = _infer_schema_from_sample(adapter, full_text, task.question)
-        if inferred:
-            schema_columns, primary_key = inferred
-
     # ---- Phase 1: compress ----
     logger.info("ETL compress: %s (%d chars)", path.name, len(full_text))
     compressed = compress_prose(
-        adapter, full_text, schema_columns=schema_columns, primary_key=primary_key
+        adapter,
+        full_text,
+        schema_columns=schema_columns,
+        anchor_keys=anchor_keys,
+        schema_field_types=schema_field_types,
     )
     compressed_path = etl_dir / f"{path.stem}_clean.md"
     compressed_path.write_text(compressed, encoding="utf-8")
@@ -337,18 +580,27 @@ def extract_prose_file(
     if not primary_key:
         compressed = resolve_id_conflicts(compressed)
 
-    compressed = pre_merge_entity_lines(compressed, primary_key=primary_key)
+    compressed = pre_merge_entity_lines(
+        compressed,
+        primary_key=primary_key,
+        anchor_keys=anchor_keys,
+    )
     if schema_columns:
         compressed = normalize_entity_lines(compressed, schema_columns, primary_key)
     compressed_path.write_text(compressed, encoding="utf-8")
 
     # ---- Phase 2a: deterministic KV→CSV (when normalized) ----
     if schema_columns:
-        csv_text = deterministic_kv_to_csv(compressed, schema_columns, primary_key)
+        csv_text = deterministic_kv_to_csv(
+            compressed,
+            schema_columns,
+            primary_key,
+        )
         if csv_text:
             csv_path.write_text(csv_text, encoding="utf-8")
             result = validate_csv(csv_path)
             if result:
+                _write_cache_signature(meta_path, cache_signature)
                 header, row_count = result
                 logger.info(
                     "ETL deterministic: %s → %s (%d cols, %d rows)",
@@ -380,6 +632,7 @@ def extract_prose_file(
             result = validate_csv(csv_path)
             if result:
                 header, row_count = result
+                _write_cache_signature(meta_path, cache_signature)
                 logger.info(
                     "ETL direct: %s → %s (%d cols, %d rows)",
                     path.name,
@@ -431,6 +684,7 @@ def extract_prose_file(
         return None
 
     header, row_count = result
+    _write_cache_signature(meta_path, cache_signature)
     logger.info(
         "ETL codegen: %s → %s (%d cols, %d rows)",
         path.name,
@@ -470,9 +724,15 @@ def run_etl_for_task(
             text = pf.read_text(encoding="utf-8")
         parsed = _parse_knowledge_schema(task, pf, adapter, text)
         if parsed:
-            schema, pk = parsed
+            schema, anchors, field_types = parsed
             return extract_prose_file(
-                adapter, pf, task, text, schema_columns=schema, primary_key=pk
+                adapter,
+                pf,
+                task,
+                text,
+                schema_columns=schema,
+                anchor_keys=anchors,
+                schema_field_types=field_types,
             )
         logger.info("ETL: no knowledge.md schema for %s, will infer from sample", pf.name)
         return extract_prose_file(adapter, pf, task, text)

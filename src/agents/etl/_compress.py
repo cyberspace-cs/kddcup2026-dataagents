@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
@@ -21,6 +22,176 @@ EXTRACT_CHUNK_LINES = 30
 
 MAX_WORKERS = 4
 LLM_CALL_TIMEOUT = 180
+RECORD_ID_FIELDS = frozenset(
+    {"record_id", "archive_id", "file_id", "case_id", "entry_id", "local_id", "unit_id"}
+)
+RECORD_ID_LABEL = re.compile(
+    r"^(?:档案|记录|条目|战略单元|Record|File|Case)\s*[：:#-]?\s*(\d{1,8})$",
+    re.IGNORECASE,
+)
+RECORD_ID_RANGE = re.compile(
+    r"(?:档案|记录|条目|战略单元|Record|File|Case)?\s*\d{1,8}\s*(?:至|到|[-~–—])\s*\d{1,8}",
+    re.IGNORECASE,
+)
+
+
+def infer_schema_field_types(
+    schema_columns: list[str] | None,
+    anchor_keys: list[str] | None = None,
+) -> dict[str, str]:
+    """Infer lightweight type hints for compression from canonical field names."""
+    if not schema_columns:
+        return {}
+
+    anchor_set = {anchor.lower() for anchor in anchor_keys or []}
+    field_types: dict[str, str] = {}
+    for field in schema_columns:
+        name = field.lower()
+        if name in RECORD_ID_FIELDS:
+            field_types[field] = "integer_scalar local_record_id"
+        elif "date" in name or name in {"enddate", "startdate"}:
+            field_types[field] = "date"
+        elif "time" in name:
+            field_types[field] = "time"
+        elif name.endswith("count") or "_count" in name:
+            field_types[field] = "integer_count"
+        elif "rank" in name:
+            field_types[field] = "integer_rank"
+        elif "id" in name or "code" in name:
+            field_types[field] = "scalar_id"
+        elif any(token in name for token in ("name", "province", "city", "type", "status")):
+            field_types[field] = "string"
+        elif any(
+            token in name
+            for token in (
+                "gdp",
+                "nv",
+                "amount",
+                "ratio",
+                "rate",
+                "growth",
+                "value",
+                "assets",
+                "liability",
+                "price",
+                "weight",
+                "height",
+            )
+        ):
+            field_types[field] = "number"
+        elif name in anchor_set:
+            field_types[field] = "scalar_identity"
+        else:
+            field_types[field] = "value"
+    return field_types
+
+
+def _field_type_instruction(field: str, field_type: str) -> str:
+    type_text = field_type.lower()
+    if "local_record_id" in type_text or "integer_scalar" in type_text:
+        return (
+            f"- {field}: {field_type}. Extract one scalar integer only. "
+            'Convert labels like "档案 286" or "Record 286" to "286". '
+            'Reject ranges/groups/lists such as "197至217"; if the paragraph only '
+            "states missing values for such a range/group, skip the paragraph."
+        )
+    if "number" in type_text or "integer" in type_text:
+        return (
+            f"- {field}: {field_type}. Extract only an explicit numeric scalar that "
+            "matches this exact field; remove unit suffixes."
+        )
+    if "date" in type_text:
+        return (
+            f"- {field}: {field_type}. Extract only an explicit reporting date/period; "
+            "use the final corrected value when corrections are described."
+        )
+    if "time" in type_text:
+        return f"- {field}: {field_type}. Extract only an explicit clock/timestamp value."
+    if "id" in type_text or "identity" in type_text:
+        return (
+            f"- {field}: {field_type}. Extract one scalar identity value only; "
+            "do not use ranges, grouped labels, or narrative descriptions."
+        )
+    return f"- {field}: {field_type}. Extract only explicit values of this type."
+
+
+def _format_schema_type_hint(
+    schema_columns: list[str] | None,
+    schema_field_types: dict[str, str] | None,
+    anchor_keys: list[str] | None,
+) -> str:
+    if not schema_columns:
+        return ""
+    field_types = schema_field_types or infer_schema_field_types(schema_columns, anchor_keys)
+    if not field_types:
+        return ""
+    lines = [
+        _field_type_instruction(field, field_types[field])
+        for field in schema_columns
+        if field in field_types
+    ]
+    if not lines:
+        return ""
+    return (
+        "\nField type constraints (obey strictly; omit values that violate the type):\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
+def _clean_compressed_entity_lines(
+    text: str,
+    schema_columns: list[str] | None = None,
+    schema_field_types: dict[str, str] | None = None,
+) -> str:
+    """Clean schema-specific mistakes while still in the compression stage."""
+    if not schema_columns:
+        return text
+
+    field_map = {field.lower(): field for field in schema_columns}
+    field_types = schema_field_types or infer_schema_field_types(schema_columns)
+    cleaned: list[str] = []
+    dropped = 0
+    normalized = 0
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or ":" not in stripped:
+            cleaned.append(line)
+            continue
+
+        parts: list[str] = []
+        drop_line = False
+        changed = False
+        for part in stripped.split("|"):
+            if ":" not in part:
+                parts.append(part.strip())
+                continue
+            key, _, val = part.partition(":")
+            key = field_map.get(key.strip().lower(), key.strip())
+            val = val.strip()
+            field_type = field_types.get(key, "").lower()
+            if key.lower() in RECORD_ID_FIELDS or "local_record_id" in field_type:
+                if RECORD_ID_RANGE.search(val):
+                    drop_line = True
+                    break
+                if m := RECORD_ID_LABEL.match(val):
+                    val = m.group(1)
+                    changed = True
+            parts.append(f"{key}: {val}")
+
+        if drop_line:
+            dropped += 1
+            continue
+        if changed:
+            normalized += 1
+        cleaned.append(" | ".join(parts))
+
+    if dropped:
+        logger.info("ETL compress-clean: dropped %d grouped/range record-id lines", dropped)
+    if normalized:
+        logger.info("ETL compress-clean: normalized %d local record labels", normalized)
+    return "\n".join(cleaned)
 
 
 def sample_paragraphs(text: str, first_n: int = 3, stride_n: int = 10) -> str:
@@ -74,27 +245,44 @@ def compress_chunk(
     chunk_text: str,
     schema_columns: list[str] | None = None,
     primary_key: str | None = None,
+    anchor_keys: list[str] | None = None,
+    schema_field_types: dict[str, str] | None = None,
 ) -> str:
     """Ask LLM to extract labeled key-value pairs from prose paragraphs."""
+    if not primary_key and anchor_keys:
+        primary_key = anchor_keys[0]
     if schema_columns and primary_key:
         cols = ", ".join(schema_columns)
         schema_hint = (
             f"\nUse EXACTLY these field names: {cols}\n"
-            "Map every extracted value to the closest matching field name from this list. "
-            "Do NOT invent synonyms or alternative names.\n"
+            "Map a value to a field only when it explicitly matches that field's "
+            "meaning. Do NOT force narrative text into the closest field, and "
+            "do NOT invent synonyms or alternative names.\n"
         )
+        type_hint = _format_schema_type_hint(schema_columns, schema_field_types, anchor_keys)
         format_hint = (
             f"Format — one line per entity-paragraph, pipe-separated key-value pairs:\n"
             f"  {primary_key}: <value> | field_a: <value> | field_b: <value> | ...\n"
             "ONLY include fields that have actual values in the paragraph. "
-            "OMIT fields not mentioned — do NOT output empty fields.\n"
+            "OMIT non-identity fields with no suitable value; downstream "
+            "normalization will fill them as empty cells.\n"
         )
-        anchor_rule = (
-            f"- Start each line with {primary_key} as stated in the paragraph. "
-            "This field anchors every line."
-        )
+        if anchor_keys and len(anchor_keys) > 1:
+            anchor_names = ", ".join(anchor_keys)
+            anchor_rule = (
+                f"- Start each line with these identity fields: {anchor_names}. "
+                "Include ALL of them when mentioned in the paragraph. "
+                "If a field's value is not stated in the paragraph, include its "
+                "key with an empty value."
+            )
+        else:
+            anchor_rule = (
+                f"- Start each line with {primary_key} as stated in the paragraph. "
+                "This field anchors every line."
+            )
     else:
         schema_hint = ""
+        type_hint = ""
         format_hint = (
             "Format — one line per entity-paragraph:\n"
             "  ID: <number> | entity_name: <name> | <field>: <value> | ...\n"
@@ -124,10 +312,34 @@ def compress_chunk(
 
         Task: for each paragraph, extract data as labeled key-value pairs.
         {schema_hint}
+        {type_hint}
         {format_hint}
         Rules:
         {anchor_rule}
         - Every value MUST have a descriptive field label before it.
+        - If a schema field has no explicit, suitable value in this paragraph, \
+        leave it empty by omitting that non-identity field. Do NOT substitute \
+        background descriptions, business strengths, culture, plans, or prose \
+        summaries just because they are loosely related to the field name.
+        - If a paragraph only says values are missing/not provided/unavailable \
+        for an entity or a range/group of entities, SKIP that paragraph entirely. \
+        Do NOT output a row that contains only identity fields and empty data fields.
+        - Field-name qualifiers are binding. Do NOT map an overall/global \
+        total, count, rank, or average into a qualified/category-specific \
+        field unless the paragraph explicitly states the same qualifier for \
+        that value; omit the field instead.
+        - Local document labels such as "档案 353", "记录 353", "条目 353", \
+        "战略单元 353", "Record 353", "File 353", or "Case 353" are \
+        record identifiers. Put only the scalar numeric portion (for example, \
+        "353") in fields such as record_id/archive_id/file_id/case_id/local_id. \
+        NEVER output ranges like "197至217" or grouped labels as a single \
+        record_id, and never put a local record label into domain ID fields such \
+        as personalcode, innercode, fundcode, or secucode unless the paragraph \
+        explicitly labels it as that domain ID.
+        - personalcode/PersonalCode fields are person identifiers. Do NOT \
+        fill them with a manager name or with a local document record number; \
+        leave personalcode empty unless an explicit personal/manager code is \
+        stated.
         - Output numeric values WITHOUT unit suffixes (e.g. 193.0, not 193.0 cm).
         {placeholder_rule}
         - For corrections: output the FINAL corrected value directly — e.g. \
@@ -154,6 +366,8 @@ def compress_prose(
     text: str,
     schema_columns: list[str] | None = None,
     primary_key: str | None = None,
+    anchor_keys: list[str] | None = None,
+    schema_field_types: dict[str, str] | None = None,
 ) -> str:
     """Compress prose by stripping noise. All chunks across all sections run in one pool."""
     sections = detect_sections(text)
@@ -177,10 +391,21 @@ def compress_prose(
     if not work:
         return text
 
+    if not primary_key and anchor_keys:
+        primary_key = anchor_keys[0]
+
     compressed: list[str | None] = [None] * len(work)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futs = {
-            pool.submit(compress_chunk, adapter, item[1], schema_columns, primary_key): idx
+            pool.submit(
+                compress_chunk,
+                adapter,
+                item[1],
+                schema_columns,
+                primary_key,
+                anchor_keys,
+                schema_field_types,
+            ): idx
             for idx, item in enumerate(work)
         }
         try:
@@ -202,7 +427,11 @@ def compress_prose(
         chunk_result = compressed[idx]
         if chunk_result:
             parts.append(chunk_result)
-    return "\n\n".join(parts)
+    return _clean_compressed_entity_lines(
+        "\n\n".join(parts),
+        schema_columns,
+        schema_field_types,
+    )
 
 
 def extract_csv_from_text(
