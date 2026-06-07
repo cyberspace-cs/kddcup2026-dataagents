@@ -61,6 +61,15 @@ class InspectFilesInput(BaseModel):
         return {}
 
 
+# `explore` 入参与 `inspect_files` 同构——空模型，无配置全量探索。
+class ExploreInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {}
+
+
 class ReadCsvInput(BaseModel):
     """`read_csv` 入参：仅 path，**刻意没有** max_rows / head / tail 旋钮。
 
@@ -257,6 +266,38 @@ class ExecuteContextSqlInput(BaseModel):
             "sql": "SELECT ...",
             "limit": 200,
         }
+
+
+class GrepContextInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pattern: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Regex pattern to search for across all context files. "
+                "Case-insensitive. Supports full Python regex syntax."
+            ),
+        ),
+    ]
+    path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Optional path substring filter. When set, only files whose "
+                "path contains this string are searched."
+            ),
+        ),
+    ] = None
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {"pattern": "search term or regex", "path": None}
+
+
+GREP_CONTEXT_SCHEMA = normalize_for_vllm(GrepContextInput.model_json_schema())
 
 
 class ExecutePythonInput(BaseModel):

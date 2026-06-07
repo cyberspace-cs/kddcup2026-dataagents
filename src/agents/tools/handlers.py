@@ -33,11 +33,13 @@ from agents.tools.filesystem import (
     read_json_preview,
     resolve_context_path,
 )
+from agents.tools.filesystem.grep import grep_context
 from agents.tools.inputs import (
     EXECUTE_PYTHON_TIMEOUT_SECONDS,
     AnswerInput,
     ExecuteContextSqlInput,
     ExecutePythonInput,
+    GrepContextInput,
     InspectFilesInput,
     InspectSqliteSchemaInput,
     LookupFieldInput,
@@ -144,6 +146,12 @@ def handle_execute_context_sql(
             "Query returned 0 rows. Verify filter values with "
             "SELECT DISTINCT or check for case/format mismatches."
         )
+    return ToolExecutionResult(ok=True, content=content)
+
+
+def handle_grep_context(task: PublicTask, args: GrepContextInput) -> ToolExecutionResult:
+    """`grep_context`: regex search across all context files (csv/json/md/db)."""
+    content = grep_context(task, pattern=args.pattern, path_filter=args.path)
     return ToolExecutionResult(ok=True, content=content)
 
 

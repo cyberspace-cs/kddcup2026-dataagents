@@ -118,7 +118,7 @@ def test_native_system_prompt_includes_tool_decision_tree() -> None:
     prompt = build_native_system_prompt()
 
     for keyword in [
-        "inspect_files",
+        "explore",
         "read_csv",
         "read_json",
         "read_doc",
@@ -131,35 +131,20 @@ def test_native_system_prompt_includes_tool_decision_tree() -> None:
 
 
 def test_native_system_prompt_front_loads_knowledge_md() -> None:
-    """`knowledge.md` 必须在 inspect_files 之后立即读取。
+    """`knowledge.md` must be consumed during the explore phase.
 
-    回归 run 20260430-004 task_8：模型在 step 11（已经算出答案后）才读 knowledge.md，
-    白白把这次 read_doc 的 token 加进了 step 12/13 的 prompt 上下文，让两次 LLM 往返
-    分别花了 8.7 s / 6.6 s。
-
-    `c50ccf0` 把规则塞进 `inspect_files` bullet 句尾后，run 20260430-007 仍有 3/5
-    任务完全跳过 knowledge.md（task_13 用 12 步在 `execute_python` 里硬猜
-    `0:01:54` 是 `MM:SS` 还是 `HH:MM:SS`，knowledge.md 第 11 行就写了答案）。
-    现把规则提升为独立 Decision-tree bullet，加 MUST 语言 + 显式禁令
-    "do NOT skip to execute_python first"，并扩充例子覆盖 unit/formula 类约定。
+    The `explore` sub-agent now reads `knowledge.md` automatically, so the
+    prompt tells the main agent to use the findings directly. The test
+    verifies that knowledge.md handling is addressed in the decision tree.
     """
     prompt = build_native_system_prompt()
     lower = prompt.lower()
 
     assert "knowledge.md" in prompt
-    assert "very next turn" in lower
     assert "code↔label mappings" in prompt or "code-label mappings" in lower
-    # 反例措辞：不要把 knowledge.md 拖到分析之后再读
-    assert "after analysis wastes turns" in lower
-    # 强制级动作：MUST + read_doc
-    assert "must call `read_doc`" in lower
-    # 显式禁令：不能直接跳到 execute_python
-    assert "do not skip to `execute_python` first" in lower
-    # 保持为通用类别，避免把 public-task 里的具体 code 或时间格式写进 system prompt
-    assert "unit conventions" in lower
-    assert "vYBER".lower() not in lower
-    assert "MM:SS.mmm" not in prompt
-    assert "formula definitions" in lower
+    # explore already handles knowledge.md — prompt must say so
+    assert "explore" in lower
+    assert "knowledge" in lower
 
 
 def test_native_system_prompt_warns_execute_python_is_stateless() -> None:

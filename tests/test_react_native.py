@@ -1193,7 +1193,7 @@ def test_preact_planning_message_on_first_turn(task: PublicTask) -> None:
         m for m in first_messages if "Before acting, outline a brief plan" in (m.content or "")
     ]
     assert len(planning_msgs) == 1
-    assert "inspect_files" in planning_msgs[0].content
+    assert "explore" in planning_msgs[0].content
 
 
 def test_preact_disabled_no_planning_message(task: PublicTask) -> None:

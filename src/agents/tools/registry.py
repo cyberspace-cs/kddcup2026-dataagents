@@ -34,6 +34,7 @@ from agents.tools.handlers import (
     handle_answer,
     handle_execute_context_sql,
     handle_execute_python,
+    handle_grep_context,
     handle_inspect_files,
     handle_inspect_sqlite_schema,
     handle_lookup_field,
@@ -47,6 +48,7 @@ from agents.tools.inputs import (
     EXECUTE_CONTEXT_SQL_SCHEMA,
     EXECUTE_PYTHON_SCHEMA,
     EXECUTE_PYTHON_TIMEOUT_SECONDS,
+    GREP_CONTEXT_SCHEMA,
     INSPECT_FILES_SCHEMA,
     INSPECT_SQLITE_SCHEMA,
     LOOKUP_FIELD_SCHEMA,
@@ -57,6 +59,8 @@ from agents.tools.inputs import (
     AnswerInput,
     ExecuteContextSqlInput,
     ExecutePythonInput,
+    ExploreInput,
+    GrepContextInput,
     InspectFilesInput,
     InspectSqliteSchemaInput,
     LookupFieldInput,
@@ -107,6 +111,7 @@ class ToolDefinition:
 # 工具名 → 对应入参模型；ToolRegistry.execute 用这张表把原始 dict 翻译成已验证模型实例。
 # 仅内置工具登记于此；未登记的（用户自定义）工具走原始 dict 透传，保留向后兼容。
 _INPUT_MODELS: dict[str, type[BaseModel]] = {
+    "explore": ExploreInput,
     "inspect_files": InspectFilesInput,
     "read_csv": ReadCsvInput,
     "read_json": ReadJsonInput,
@@ -115,6 +120,7 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "lookup_field": LookupFieldInput,
     "inspect_sqlite_schema": InspectSqliteSchemaInput,
     "execute_context_sql": ExecuteContextSqlInput,
+    "grep_context": GrepContextInput,
     "execute_python": ExecutePythonInput,
     "answer": AnswerInput,
 }
@@ -240,11 +246,14 @@ class ToolRegistry:
         return tools
 
 
-def create_default_tool_registry() -> ToolRegistry:
+def create_default_tool_registry(
+    *,
+    explore_tool: ToolDefinition | None = None,
+) -> ToolRegistry:
     """构造默认工具注册表。
 
     注册顺序（按规范固定）：
-    1. inspect_files          一次性回传所有文件的轻量 schema（首步探查的零决策入口）
+    1. explore / inspect_files  首步探查入口（传 explore_tool 时替换 inspect_files）
     2. read_csv               预览 CSV
     3. read_doc               预览文本文档
     4. search_context         Local Retrieval Index 全文检索
@@ -255,23 +264,28 @@ def create_default_tool_registry() -> ToolRegistry:
     9. execute_python         子进程执行任意 Python
     10. answer                终止 + 提交答案（唯一终止工具）
 
+    When ``explore_tool`` is provided, it replaces ``inspect_files`` in slot 1.
+    When omitted, the registry falls back to ``inspect_files`` (backward compat
+    for tests and non-production paths).
+
     `input_schema` 里的示例值是"演示"形式（不是真实 JSON Schema），模型看到
     `"columns": ["column_name"]` 会按模式填自己的数据，实测比严谨 schema 更不易出错。
     `json_schema` 则是给 OpenAI function calling 用的严格 schema。
     """
-    definitions: list[ToolDefinition] = [
-        ToolDefinition(
-            name="inspect_files",
-            description=(
-                "Use first to bootstrap context exploration: returns a one-shot summary "
-                "of every file under context (columns, dtypes, row counts, table schemas). "
-                "This replaces the usual sequence of read_csv / read_json / "
-                "inspect_sqlite_schema calls for initial discovery."
-            ),
-            input_schema=InspectFilesInput.example_value(),
-            json_schema=INSPECT_FILES_SCHEMA,
-            handler=handle_inspect_files,
+    first_tool = explore_tool or ToolDefinition(
+        name="inspect_files",
+        description=(
+            "Use first to bootstrap context exploration: returns a one-shot summary "
+            "of every file under context (columns, dtypes, row counts, table schemas). "
+            "This replaces the usual sequence of read_csv / read_json / "
+            "inspect_sqlite_schema calls for initial discovery."
         ),
+        input_schema=InspectFilesInput.example_value(),
+        json_schema=INSPECT_FILES_SCHEMA,
+        handler=handle_inspect_files,
+    )
+    definitions: list[ToolDefinition] = [
+        first_tool,
         ToolDefinition(
             name="read_csv",
             description=(
@@ -379,6 +393,20 @@ def create_default_tool_registry() -> ToolRegistry:
             input_schema=ExecuteContextSqlInput.example_value(),
             json_schema=EXECUTE_CONTEXT_SQL_SCHEMA,
             handler=handle_execute_context_sql,
+        ),
+        ToolDefinition(
+            name="grep_context",
+            description=(
+                "Search for a regex pattern across ALL context files at once: "
+                "CSV column values, JSON fields, Markdown/text content, and SQLite "
+                "text columns. Returns matching lines/rows with file path and location. "
+                "Use this to check whether a specific value exists in the data "
+                "(e.g., does province column contain '全国'?) without needing to "
+                "read each file individually."
+            ),
+            input_schema=GrepContextInput.example_value(),
+            json_schema=GREP_CONTEXT_SCHEMA,
+            handler=handle_grep_context,
         ),
         ToolDefinition(
             name="execute_python",

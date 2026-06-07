@@ -14,6 +14,7 @@ Fallback (no schema): LLM direct extraction → code-generation.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -203,6 +204,74 @@ def _complete_schema_field_types(
     return result
 
 
+_UNIT_VOTES = 1
+
+
+def _vote_target_units(
+    adapter: ModelAdapter,
+    km_text: str,
+    field_units: dict[str, str],
+) -> dict[str, str]:
+    """Determine the target unit for each field by majority vote.
+
+    Sends the knowledge.md text together with the field→source-unit mapping
+    to the LLM ``_UNIT_VOTES`` times.  Each call returns a field=target_unit
+    mapping; the final answer for each field is the most common response.
+
+    Only fields whose source unit is a recognized measurement are included
+    in the prompt; purely dimensionless fields (like boolean flags) are skipped.
+    """
+    from collections import Counter
+
+    source_fields = {
+        f: u
+        for f, u in field_units.items()
+        if not f.startswith("_") and u and not u.startswith("_")
+    }
+    if not source_fields:
+        return {}
+
+    field_list = ", ".join(f"{f}={u}" for f, u in source_fields.items())
+    prompt = (
+        "Below is a data governance document and a list of fields with their "
+        "current units as found in the source data.\n\n"
+        f"Fields: {field_list}\n\n"
+        "For each field, determine the TARGET unit that the governance document "
+        "says answers should use. If the document declares a default unit "
+        "(e.g. '万元'), apply it to all monetary fields. If a field's source "
+        "unit already matches the target, repeat it unchanged. "
+        "Dimensionless fields (price indices, ratios, ranks) must keep their "
+        "source unit as-is — do NOT replace with '_default' or any placeholder.\n\n"
+        "Output ONLY field=unit pairs, one per field, comma-separated. "
+        "Example: gdp=万元, rate=%\n\n"
+        f"Governance document:\n{km_text[:3000]}"
+    )
+    messages = [
+        ModelMessage(
+            role="system",
+            content="Map each field to its target unit per the governance document. Output only field=unit pairs.",
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+
+    all_votes: dict[str, list[str]] = {f: [] for f in source_fields}
+    for _ in range(_UNIT_VOTES):
+        try:
+            response: ModelResponse = adapter.complete(messages)
+            parsed = _parse_kv_line("UNITS: " + response.content.strip())
+            for field, unit in parsed.items():
+                if field in all_votes and unit and not unit.startswith("_"):
+                    all_votes[field].append(unit)
+        except Exception:
+            continue
+
+    result: dict[str, str] = {}
+    for field, votes in all_votes.items():
+        if votes:
+            result[field] = Counter(votes).most_common(1)[0][0]
+    return result
+
+
 def _write_units_sidecar(
     task: PublicTask,
     prose_stem: str,
@@ -292,9 +361,12 @@ def _parse_knowledge_schema(
         - Do NOT add narrative/filler fields — only structured data fields.
         - For the UNITS line: scan the prose sample for unit suffixes attached \
         to numeric values (e.g. "2478.76亿元" → gdp=亿元, "15.3%" → rate=%). \
-        Also check the governance document for a declared default monetary unit \
-        (e.g. "expressed in 万元") and output it as _default=<unit>. \
-        Omit fields whose prose values have no unit suffix.
+        Only output a field=unit pair when you find a CONCRETE unit suffix \
+        (e.g. 元, 万元, 亿元, %, 万吨, 万人, 公斤) in the actual data values \
+        or governance document. Dimensionless fields (price indices, ratios, \
+        ranks, counts without unit) and fields with no visible unit suffix \
+        must be OMITTED entirely — do NOT write them with "_default", \
+        "currency", "units", "amount", "count", or any placeholder.
 
         Governance document:
         {km_text}{prose_section}""")
@@ -389,8 +461,11 @@ def _infer_schema_from_sample(
         Line 2: ANCHORS: <comma-separated identity fields including PK>
         Line 3: TYPES: <field=type, field=type, ... for every field>
         Line 4: UNITS: <field=unit for each numeric field whose values carry \
-        a unit suffix in the prose sample, e.g. gdp=亿元, rate=%. \
-        Omit fields with no unit suffix.>
+        a CONCRETE unit suffix in the prose sample (e.g. gdp=亿元, rate=%). \
+        Only use real unit suffixes visible in the data values. Dimensionless \
+        fields (price indices, ratios, ranks, counts without unit) and fields \
+        with no visible unit suffix must be OMITTED — do NOT write them with \
+        "_default", "currency", "units", "amount", or any placeholder.>
         Line 5: all field names as a comma-separated list (must include all ANCHORS)
 
         Rules:
@@ -714,6 +789,13 @@ def run_etl_for_task(
 
     adapter = _make_text_adapter(model_adapter)
 
+    # Read knowledge.md once for target-unit voting (shared across all files).
+    km_path = task.context_dir / "knowledge.md"
+    km_text = ""
+    if km_path.is_file():
+        with contextlib.suppress(OSError):
+            km_text = km_path.read_text(encoding="utf-8")
+
     def _process(pf: Path) -> ETLResult | None:
         if pf.suffix.lower() == ".pdf":
             logger.info("ETL PDF→markdown: %s", pf.name)
@@ -723,6 +805,13 @@ def run_etl_for_task(
         parsed = _parse_knowledge_schema(task, pf, adapter, text)
         if parsed:
             schema, anchors, field_types, units = parsed
+            units.pop("_default", None)
+            if km_text and units:
+                targets = _vote_target_units(adapter, km_text, units)
+                if targets:
+                    for field, target_unit in targets.items():
+                        units[f"_target_{field}"] = target_unit
+                    logger.info("ETL: voted target units for %s: %s", pf.stem, targets)
             return extract_prose_file(
                 adapter,
                 pf,

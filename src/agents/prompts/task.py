@@ -9,7 +9,7 @@ _PREACT_PLAN_PROMPT = (
     "(1) which files/tables contain the needed data, "
     "(2) what joins/filters/aggregations are needed, "
     "(3) what the final answer columns should be. "
-    "Then start with inspect_files."
+    "Then start with explore."
 )
 
 

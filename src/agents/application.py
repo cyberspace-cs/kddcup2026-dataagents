@@ -29,6 +29,7 @@ from agents.llm import (
 )
 from agents.runtime import StepCallback
 from agents.tools import ToolRegistry, create_default_tool_registry
+from agents.tools.explore import create_explore_tool_definition
 from agents.verification import AnswerVerifier
 
 # Qwen3 model card Best Practices 推荐的两套采样组合：
@@ -182,6 +183,53 @@ def build_no_tools_model_adapter(config: AppConfig) -> ModelAdapter:
     return _maybe_wrap_rate_limiter(config, inner)
 
 
+def _build_explorer_adapter(config: AppConfig) -> ModelAdapter:
+    """Build a model adapter for the Explorer sub-agent.
+
+    Uses the same model/API/sampling config as the main agent. The Explorer's
+    tool registry is internal (created inside ``run_explorer``), so this adapter
+    needs no ``tools`` argument — the Explorer runner wires its own registry.
+
+    Rate limiting is shared: both adapters use the same ``api_key`` →
+    ``FileTokenBucket`` automatically deduplicates on the same bucket file.
+    """
+    sampling = _resolve_sampling_defaults(config.agent)
+    reject_placeholder_api_key(config.agent.api_key, field="agent.api_key")
+    has_rate_limiter = _has_rate_limiter(config)
+
+    if config.agent.tool_protocol == "native":
+        from agents.explorer.registry import create_explorer_tool_registry
+
+        explorer_registry = create_explorer_tool_registry()
+        inner: NativeToolsOpenAIAdapter | OpenAIModelAdapter = NativeToolsOpenAIAdapter(
+            model=config.agent.model,
+            api_base=config.agent.api_base,
+            api_key=config.agent.api_key,
+            tools=ToolRegistry(
+                definitions={d.name: d for d in explorer_registry.definitions.values()}
+            ),
+            allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
+            max_tokens=config.agent.max_tokens,
+            enable_thinking=config.agent.enable_thinking,
+            backend_kind=config.agent.backend_kind,
+            max_retries=0 if has_rate_limiter else 2,
+            **sampling,
+        )
+    else:
+        inner = OpenAIModelAdapter(
+            model=config.agent.model,
+            api_base=config.agent.api_base,
+            api_key=config.agent.api_key,
+            max_tokens=config.agent.max_tokens,
+            enable_thinking=config.agent.enable_thinking,
+            backend_kind=config.agent.backend_kind,
+            max_retries=0 if has_rate_limiter else 2,
+            **sampling,
+        )
+
+    return _maybe_wrap_rate_limiter(config, inner)
+
+
 def build_answer_verifier(config: AppConfig) -> AnswerVerifier:
     """Build the no-tools answer verifier used by online application wiring."""
     return AnswerVerifier(model=build_no_tools_model_adapter(config), max_rejections=1)
@@ -242,7 +290,14 @@ def build_application(
     子进程内调用——主进程只跨进程传递 `AppConfig`。
     """
     dataset = DABenchPublicDataset(config.dataset.root_path)
-    registry = tools if tools is not None else create_default_tool_registry()
+
+    if tools is not None:
+        registry = tools
+    else:
+        explorer_adapter = _build_explorer_adapter(config)
+        explore_def = create_explore_tool_definition(explorer_adapter, config.agent.tool_protocol)
+        registry = create_default_tool_registry(explore_tool=explore_def)
+
     model_adapter = model if model is not None else build_model_adapter(config, tools=registry)
     verifier = answer_verifier
     if verifier is None and model is None:
