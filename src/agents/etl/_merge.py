@@ -9,27 +9,38 @@ import re
 from pathlib import Path
 
 from agents.etl._detect import ENTITY_LINE
+from agents.etl._types import (
+    DATE_SCALAR,
+    NUMERIC_SCALAR,
+    is_placeholder,
+    normalize_boolean,
+)
 
 logger = logging.getLogger(__name__)
 
 KV_LINE = re.compile(r"^ID:\s*(\d+)\s*\|\s*entity_name:\s*(.+?)\s*\|", re.MULTILINE)
+TEMP_ANCHOR_PREFIX = "__anchor__:"
 
-PLACEHOLDER_VALS = frozenset(
-    {
-        "",
-        "-",
-        "none",
-        "nan",
-        "n/a",
-        "placeholder",
-        "none (placeholder)",
-        "nan (placeholder)",
-        "- (placeholder)",
-        "0.0 (placeholder)",
-        "redacted",
-    }
-)
-UNIT_SUFFIX = re.compile(r"^([\d.]+)\s*(?:cm|kg|U/L|mg/dL|mmHg|%)\s*$")
+UNIT_SUFFIX = re.compile(r"^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)\s+\S+\s*$")
+
+
+def _canonical_key_map(keys: list[str]) -> dict[str, str]:
+    """Map lower-cased field names to their canonical schema spelling."""
+    return {key.lower(): key for key in keys}
+
+
+def _canonicalize_key(key: str, key_map: dict[str, str]) -> str:
+    return key_map.get(key.strip().lower(), key.strip())
+
+
+def _line_has_kv_key(line: str, key: str) -> bool:
+    """Return whether a pipe-separated KV line contains ``key`` as a full field."""
+    target = key.lower()
+    for part in line.split("|"):
+        raw_key, sep, _value = part.partition(":")
+        if sep and raw_key.strip().lower() == target:
+            return True
+    return False
 
 
 def resolve_id_conflicts(compressed: str) -> str:
@@ -85,14 +96,20 @@ def resolve_id_conflicts(compressed: str) -> str:
 def pre_merge_entity_lines(
     text: str,
     primary_key: str | None = None,
+    anchor_keys: list[str] | None = None,
 ) -> str:
     """Merge multi-line entity records into one line per unique entity.
 
     Compression can produce several lines for the same entity (each carrying
     a different attribute subset).  This collapses them so downstream
     extraction sees one complete record per entity.
+
+    Round 1: group by primary key (existing behavior).
+    Round 2: merge groups that share a secondary anchor value (e.g. same
+    ``chinesename`` but different ``personalcode`` across sections).
     """
     pk_token = f"{primary_key}:" if primary_key else None
+    key_map = _canonical_key_map([k for k in [primary_key, *(anchor_keys or [])] if k])
 
     entity_lines: list[str] = []
     header_lines: list[str] = []
@@ -100,7 +117,9 @@ def pre_merge_entity_lines(
         stripped = line.strip()
         if not stripped:
             continue
-        is_entity = (pk_token in stripped) if pk_token else ENTITY_LINE.match(stripped)
+        is_entity = (
+            _line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
+        )
         if is_entity:
             entity_lines.append(stripped)
         elif not entity_lines:
@@ -109,8 +128,7 @@ def pre_merge_entity_lines(
     if len(entity_lines) <= 1:
         return text
 
-    def _is_placeholder(val: str) -> bool:
-        return val.lower().strip() in PLACEHOLDER_VALS or "(placeholder)" in val.lower()
+    _is_placeholder = is_placeholder
 
     def _parse_kv(line: str) -> tuple[str | None, list[tuple[str, str]]]:
         parts = line.split("|")
@@ -120,30 +138,104 @@ def pre_merge_entity_lines(
             if ":" not in part:
                 continue
             key, _, val = part.partition(":")
-            key = key.strip()
+            key = _canonicalize_key(key, key_map)
             val = val.strip()
-            if (pk_token and key == primary_key) or (not pk_token and key.upper() == "ID"):
+            if (primary_key and key == primary_key) or (not pk_token and key.upper() == "ID"):
                 pk_val = val
             pairs.append((key, val))
         return pk_val, pairs
 
+    def _group_key(pk_val: str | None, pairs: list[tuple[str, str]]) -> str | None:
+        """Pick a stable grouping key for one entity line.
+
+        LLM compression sometimes emits the primary key label with an empty
+        value while still providing a secondary identity anchor such as a
+        person's name.  Grouping all blank-PK lines together loses fields across
+        entities; use the first available secondary anchor as a temporary key
+        and let round-2 anchor merge attach it to the canonical primary-key row.
+        """
+        if pk_val is not None and not _is_placeholder(pk_val):
+            return pk_val
+        if anchor_keys and len(anchor_keys) > 1:
+            pair_map = dict(pairs)
+            for anchor in anchor_keys[1:]:
+                anchor_val = pair_map.get(anchor, "").strip()
+                if anchor_val and not _is_placeholder(anchor_val):
+                    return f"{TEMP_ANCHOR_PREFIX}{anchor}:{anchor_val}"
+        return None
+
+    # Round 1: group by primary key
     groups: dict[str, dict[str, str]] = {}
     order: list[str] = []
 
     for line in entity_lines:
         pk_val, pairs = _parse_kv(line)
-        if pk_val is None:
+        group_key = _group_key(pk_val, pairs)
+        if group_key is None:
             continue
-        if pk_val not in groups:
-            groups[pk_val] = {}
-            order.append(pk_val)
-        rec = groups[pk_val]
+        if group_key not in groups:
+            groups[group_key] = {}
+            order.append(group_key)
+        rec = groups[group_key]
         for k, v in pairs:
             if k not in rec or (_is_placeholder(rec[k]) and not _is_placeholder(v)):
                 rec[k] = v
 
+    # Round 2: merge groups that share secondary anchor values
+    if anchor_keys and len(anchor_keys) > 1:
+        groups_before_r2 = len(groups)
+        for anchor in anchor_keys[1:]:
+            anchor_to_pks: dict[str, list[str]] = {}
+            for pk_val in list(groups.keys()):
+                a_val = groups[pk_val].get(anchor, "").strip()
+                if a_val and not _is_placeholder(a_val):
+                    anchor_to_pks.setdefault(a_val, []).append(pk_val)
+
+            for _a_val, pk_list in anchor_to_pks.items():
+                if len(pk_list) <= 1:
+                    continue
+                temp_pks = [pk for pk in pk_list if pk.startswith(TEMP_ANCHOR_PREFIX)]
+                real_pks = [pk for pk in pk_list if not pk.startswith(TEMP_ANCHOR_PREFIX)]
+                if not temp_pks or len(real_pks) != 1:
+                    continue
+
+                canonical = real_pks[0]
+                for pk in temp_pks:
+                    conflict = False
+                    for a in anchor_keys[1:]:
+                        t_val = groups[pk].get(a, "").strip()
+                        c_val = groups[canonical].get(a, "").strip()
+                        if (
+                            t_val
+                            and c_val
+                            and not _is_placeholder(t_val)
+                            and not _is_placeholder(c_val)
+                            and t_val != c_val
+                        ):
+                            conflict = True
+                            break
+                    if conflict:
+                        continue
+                    for k, v in groups[pk].items():
+                        if (
+                            k not in groups[canonical] or _is_placeholder(groups[canonical][k])
+                        ) and not _is_placeholder(v):
+                            groups[canonical][k] = v
+                    del groups[pk]
+
+        groups_after_r2 = len(groups)
+        if groups_before_r2 != groups_after_r2:
+            logger.info(
+                "ETL anchor-merge: %d groups → %d unique entities (anchors: %s)",
+                groups_before_r2,
+                groups_after_r2,
+                anchor_keys,
+            )
+
     merged: list[str] = []
     for pk_val in order:
+        if pk_val not in groups:
+            continue
         parts = [f"{k}: {v}" for k, v in groups[pk_val].items()]
         merged.append(" | ".join(parts))
 
@@ -167,7 +259,7 @@ def normalize_entity_lines(
     Drops fields not in the schema and fills missing fields with empty
     values, so downstream CSV extraction sees a uniform tabular layout.
     """
-    pk_token = f"{primary_key}:" if primary_key else None
+    field_map = _canonical_key_map(schema_columns)
     col_set = set(schema_columns)
 
     normalized: list[str] = []
@@ -175,7 +267,9 @@ def normalize_entity_lines(
         stripped = line.strip()
         if not stripped:
             continue
-        is_entity = (pk_token in stripped) if pk_token else ENTITY_LINE.match(stripped)
+        is_entity = (
+            _line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
+        )
         if not is_entity:
             normalized.append(line)
             continue
@@ -185,7 +279,7 @@ def normalize_entity_lines(
             if ":" not in part:
                 continue
             key, _, val = part.partition(":")
-            key = key.strip()
+            key = _canonicalize_key(key, field_map)
             if key in col_set:
                 fields[key] = val.strip()
 
@@ -197,7 +291,7 @@ def normalize_entity_lines(
 
 def clean_cell(val: str) -> str:
     """Normalize a single KV value into a CSV-ready cell."""
-    if not val or val.lower().strip() in PLACEHOLDER_VALS or "(placeholder)" in val.lower():
+    if not val or is_placeholder(val):
         return ""
     m = UNIT_SUFFIX.match(val)
     if m:
@@ -205,10 +299,29 @@ def clean_cell(val: str) -> str:
     return val
 
 
+def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
+    """Normalize a KV value and enforce lightweight schema field types."""
+    cleaned = clean_cell(val)
+    if not cleaned:
+        return ""
+    type_text = (field_type or "").lower()
+    if "number" in type_text or "integer" in type_text:
+        normalized = cleaned.replace(",", "")
+        if normalized.endswith("%"):
+            normalized = normalized[:-1].strip()
+        return normalized if NUMERIC_SCALAR.match(normalized) else ""
+    if "date" in type_text:
+        return cleaned if DATE_SCALAR.match(cleaned) else ""
+    if "boolean" in type_text:
+        return normalize_boolean(cleaned) or ""
+    return cleaned
+
+
 def deterministic_kv_to_csv(
     text: str,
     schema_columns: list[str],
     primary_key: str | None = None,
+    schema_field_types: dict[str, str] | None = None,
 ) -> str | None:
     """Parse normalized KV entity lines directly into CSV without LLM.
 
@@ -216,7 +329,7 @@ def deterministic_kv_to_csv(
       col_a: val | col_b: val | ...
     with columns in schema_columns order (produced by normalize_entity_lines).
     """
-    pk_token = f"{primary_key}:" if primary_key else None
+    field_map = _canonical_key_map(schema_columns)
     col_set = set(schema_columns)
 
     rows: list[list[str]] = []
@@ -224,7 +337,9 @@ def deterministic_kv_to_csv(
         stripped = line.strip()
         if not stripped:
             continue
-        is_entity = (pk_token in stripped) if pk_token else ENTITY_LINE.match(stripped)
+        is_entity = (
+            _line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
+        )
         if not is_entity:
             continue
 
@@ -233,9 +348,12 @@ def deterministic_kv_to_csv(
             if ":" not in part:
                 continue
             key, _, val = part.partition(":")
-            key = key.strip()
+            key = _canonicalize_key(key, field_map)
             if key in col_set:
-                fields[key] = clean_cell(val.strip())
+                fields[key] = clean_cell_for_type(
+                    val.strip(),
+                    schema_field_types.get(key) if schema_field_types else None,
+                )
 
         row = [fields.get(c, "") for c in schema_columns]
         if any(row):
