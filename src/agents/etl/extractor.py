@@ -75,6 +75,7 @@ def _ensure_local_record_anchor(
     prose_text: str,
     columns: list[str],
     anchor_keys: list[str],
+    explicit_types: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Add a document-local record ID anchor when prose is sectioned by one.
 
@@ -86,6 +87,10 @@ def _ensure_local_record_anchor(
     known_fields = {c.lower() for c in columns} | {a.lower() for a in anchor_keys}
     if known_fields & RECORD_ID_FIELDS:
         return columns, anchor_keys
+    if explicit_types:
+        for field, ftype in explicit_types.items():
+            if field.lower() in known_fields and "local_record_id" in ftype.lower():
+                return columns, anchor_keys
     if not _has_local_record_ids(prose_text):
         return columns, anchor_keys
 
@@ -271,9 +276,14 @@ def _parse_knowledge_schema(
     parsed = _parse_schema_response(raw)
     if not parsed:
         return None
-    _pk, anchor_keys, explicit_types, columns = parsed
+    _, anchor_keys, explicit_types, columns = parsed
 
-    columns, anchor_keys = _ensure_local_record_anchor(prose_text, columns, anchor_keys)
+    columns, anchor_keys = _ensure_local_record_anchor(
+        prose_text,
+        columns,
+        anchor_keys,
+        explicit_types,
+    )
     field_types = _complete_schema_field_types(columns, explicit_types)
 
     logger.info(
@@ -365,9 +375,14 @@ def _infer_schema_from_sample(
     parsed = _parse_schema_response(response.content)
     if not parsed:
         return None
-    _pk, anchor_keys, explicit_types, columns = parsed
+    _, anchor_keys, explicit_types, columns = parsed
 
-    columns, anchor_keys = _ensure_local_record_anchor(prose_text, columns, anchor_keys)
+    columns, anchor_keys = _ensure_local_record_anchor(
+        prose_text,
+        columns,
+        anchor_keys,
+        explicit_types,
+    )
     field_types = _complete_schema_field_types(columns, explicit_types)
 
     logger.info(
@@ -493,6 +508,7 @@ def extract_prose_file(
         adapter,
         full_text,
         schema_columns=schema_columns,
+        primary_key=primary_key,
         anchor_keys=anchor_keys,
         schema_field_types=schema_field_types,
     )

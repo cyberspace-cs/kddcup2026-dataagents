@@ -326,6 +326,8 @@ def compress_chunk(
             "as stated in the paragraph. These two fields anchor every line."
         )
 
+    id_field_label = primary_key or "ID"
+
     sparse = bool(schema_columns and len(schema_columns) > 10)
     if sparse:
         placeholder_rule = (
@@ -366,11 +368,11 @@ def compress_chunk(
         - Local document labels such as "档案 353", "记录 353", "条目 353", \
         "战略单元 353", "Record 353", "File 353", or "Case 353" are \
         record identifiers. Put only the scalar numeric portion (for example, \
-        "353") in fields such as record_id/archive_id/file_id/case_id/local_id. \
+        "353") in the {id_field_label} field. \
         NEVER output ranges like "197至217" or grouped labels as a single \
-        record_id, and never put a local record label into domain ID fields such \
-        as personalcode, innercode, fundcode, or secucode unless the paragraph \
-        explicitly labels it as that domain ID.
+        {id_field_label} value, and never put a local record label into domain ID \
+        fields such as personalcode, innercode, fundcode, or secucode unless \
+        the paragraph explicitly labels it as that domain ID.
         - personalcode/PersonalCode fields are person identifiers. Do NOT \
         fill them with a manager name or with a local document record number; \
         leave personalcode empty unless an explicit personal/manager code is \
