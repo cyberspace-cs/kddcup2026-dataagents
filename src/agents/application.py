@@ -200,14 +200,11 @@ def _build_explorer_adapter(config: AppConfig) -> ModelAdapter:
     if config.agent.tool_protocol == "native":
         from agents.explorer.registry import create_explorer_tool_registry
 
-        explorer_registry = create_explorer_tool_registry()
         inner: NativeToolsOpenAIAdapter | OpenAIModelAdapter = NativeToolsOpenAIAdapter(
             model=config.agent.model,
             api_base=config.agent.api_base,
             api_key=config.agent.api_key,
-            tools=ToolRegistry(
-                definitions={d.name: d for d in explorer_registry.definitions.values()}
-            ),
+            tools=create_explorer_tool_registry(),
             allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
             max_tokens=config.agent.max_tokens,
             enable_thinking=config.agent.enable_thinking,
