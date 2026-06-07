@@ -225,10 +225,10 @@ def _vote_target_units(
 
     field_list = ", ".join(f"{f}={u}" for f, u in source_fields.items())
     prompt = (
-        "Below is a data governance document and a list of fields with their "
+        "Below is knowledge.md and a list of fields with their "
         "current units as found in the source data.\n\n"
         f"Fields: {field_list}\n\n"
-        "For each field, determine the TARGET unit that the governance document "
+        "For each field, determine the TARGET unit that knowledge.md "
         "says answers should use. If the document declares a default unit "
         "(e.g. '万元'), apply it to all monetary fields. If a field's source "
         "unit already matches the target, repeat it unchanged. "
@@ -244,13 +244,13 @@ def _vote_target_units(
         "  gdp=万元*10000, revenue=万元*10000, rate=%\n"
         "  (gdp source was 亿元, target is 万元, so factor=10000)\n"
         "  (rate source was %, target is %, so no factor)\n\n"
-        f"Governance document:\n{km_text[:3000]}"
+        f"knowledge.md:\n{km_text}"
     )
     messages = [
         ModelMessage(
             role="system",
             content=(
-                "Map each field to its target unit per the governance document. "
+                "Map each field to its target unit per knowledge.md. "
                 "Output field=unit*factor pairs. Omit *factor when source==target."
             ),
         ),
