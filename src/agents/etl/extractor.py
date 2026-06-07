@@ -47,7 +47,7 @@ from agents.etl._merge import (
     validate_csv,
 )
 from agents.etl._pdf import pdf_to_markdown
-from agents.etl._types import RECORD_ID_FIELDS
+from agents.etl._types import RECORD_ID_FIELDS, RECORD_ID_KEYWORDS
 from agents.llm import ModelAdapter, ModelMessage, ModelResponse, OpenAIModelAdapter
 
 if TYPE_CHECKING:
@@ -60,7 +60,7 @@ _LLM_CALL_TIMEOUT = 180
 _ETL_HTTP_TIMEOUT = 300.0
 _DIRECT_EXTRACT_CHAR_LIMIT = 60_000
 _LOCAL_RECORD_ID_RE = re.compile(
-    r"(?:档案|记录|条目|战略单元|Record|File|Case)\s*[：:#-]?\s*(\d{1,8})",
+    rf"(?:{RECORD_ID_KEYWORDS})\s*[：:#-]?\s*(\d{{1,8}})",
     re.IGNORECASE,
 )
 

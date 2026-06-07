@@ -15,6 +15,7 @@ from agents.etl._types import (
     DATE_SCALAR,
     NUMERIC_SCALAR,
     RECORD_ID_FIELDS,
+    RECORD_ID_KEYWORDS,
     is_placeholder,
     normalize_boolean,
 )
@@ -30,11 +31,11 @@ EXTRACT_CHUNK_LINES = 30
 MAX_WORKERS = 4
 LLM_CALL_TIMEOUT = 180
 RECORD_ID_LABEL = re.compile(
-    r"^(?:档案|记录|条目|战略单元|Record|File|Case)\s*[：:#-]?\s*(\d{1,8})$",
+    rf"^(?:{RECORD_ID_KEYWORDS})\s*[：:#-]?\s*(\d{{1,8}})$",
     re.IGNORECASE,
 )
 RECORD_ID_RANGE = re.compile(
-    r"(?:档案|记录|条目|战略单元|Record|File|Case)?\s*\d{1,8}\s*(?:至|到|[-~–—])\s*\d{1,8}",
+    rf"(?:{RECORD_ID_KEYWORDS})?\s*\d{{1,8}}\s*(?:至|到|[-~–—])\s*\d{{1,8}}",
     re.IGNORECASE,
 )
 

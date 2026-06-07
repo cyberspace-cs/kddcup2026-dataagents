@@ -8,6 +8,8 @@ RECORD_ID_FIELDS = frozenset(
     {"record_id", "archive_id", "file_id", "case_id", "entry_id", "local_id", "unit_id"}
 )
 
+RECORD_ID_KEYWORDS = r"档案|记录|条目|战略单元|Record|File|Case"
+
 NUMERIC_SCALAR = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$")
 DATE_SCALAR = re.compile(r"^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$")
 
