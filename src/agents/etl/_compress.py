@@ -46,9 +46,9 @@ def _clean_numeric_scalar(val: str) -> str | None:
     normalized = stripped.replace(",", "")
     if normalized.endswith("%"):
         normalized = normalized[:-1].strip()
-    unit_match = re.match(r"^(.+?)\s*(?:cm|kg|U/L|mg/dL|mmHg)$", normalized, re.IGNORECASE)
+    unit_match = re.match(r"^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)\s+\S+$", normalized)
     if unit_match:
-        normalized = unit_match.group(1).strip()
+        normalized = unit_match.group(1)
     return normalized if NUMERIC_SCALAR.match(normalized) else None
 
 

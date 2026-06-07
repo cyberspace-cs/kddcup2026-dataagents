@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 KV_LINE = re.compile(r"^ID:\s*(\d+)\s*\|\s*entity_name:\s*(.+?)\s*\|", re.MULTILINE)
 TEMP_ANCHOR_PREFIX = "__anchor__:"
 
-UNIT_SUFFIX = re.compile(r"^([\d.]+)\s*(?:cm|kg|U/L|mg/dL|mmHg|%)\s*$")
+UNIT_SUFFIX = re.compile(r"^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)\s+\S+\s*$")
 
 
 def _canonical_key_map(keys: list[str]) -> dict[str, str]:
