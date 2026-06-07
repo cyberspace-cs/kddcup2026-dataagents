@@ -10,7 +10,6 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
 from openai import APIError, OpenAI
-from openai.types.chat import ChatCompletion, ChatCompletionMessage
 
 from agents.llm.types import (
     ModelMessage,
@@ -269,11 +268,11 @@ class _BaseOpenAIAdapter(abc.ABC):
 
     def _call_and_parse_base(
         self, request_kwargs: dict[str, Any]
-    ) -> tuple[ModelResponse, ChatCompletionMessage]:
-        """Execute the API call and return (base_response, raw_message).
+    ) -> tuple[ModelResponse, list[_ToolCallDump]]:
+        """Execute a streaming API call, accumulate chunks, and return the result.
 
-        The raw_message is the SDK message object from choices[0], exposed so
-        subclasses can extract tool_calls from it.
+        Returns (base_response, raw_tool_call_dicts) so subclasses can do
+        protocol-specific post-processing on tool calls.
         """
         if not self.api_key:
             raise RuntimeError("Missing model API key in config.agent.api_key.")
@@ -285,29 +284,81 @@ class _BaseOpenAIAdapter(abc.ABC):
             max_retries=self.max_retries,
         )
 
+        request_kwargs["stream"] = True
+        request_kwargs["stream_options"] = {"include_usage": True}
+
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_calls_acc: dict[int, dict[str, Any]] = {}
+        usage = TokenUsage()
+
         started = perf_counter()
         try:
-            response = cast(ChatCompletion, client.chat.completions.create(**request_kwargs))
+            stream = client.chat.completions.create(**request_kwargs)  # pyright: ignore[reportUnknownVariableType]
+            for chunk in cast(list[Any], stream):
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage = _extract_usage(chunk)
+
+                choices: list[Any] = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+
+                delta: Any = choices[0].delta
+
+                if getattr(delta, "content", None):
+                    content_parts.append(str(delta.content))
+
+                rc = _extract_reasoning_content(delta)
+                if rc:
+                    reasoning_parts.append(rc)
+
+                delta_tool_calls: list[Any] | None = getattr(delta, "tool_calls", None)
+                if delta_tool_calls:
+                    for tc in delta_tool_calls:
+                        idx: int = tc.index
+                        if idx not in tool_calls_acc:
+                            fn: Any = getattr(tc, "function", None)
+                            tool_calls_acc[idx] = {
+                                "id": str(getattr(tc, "id", "") or ""),
+                                "type": str(getattr(tc, "type", "function") or "function"),
+                                "function": {
+                                    "name": (str(getattr(fn, "name", "") or "")) if fn else "",
+                                    "arguments": (str(getattr(fn, "arguments", "") or ""))
+                                    if fn
+                                    else "",
+                                },
+                            }
+                        else:
+                            entry = tool_calls_acc[idx]
+                            if getattr(tc, "id", None):
+                                entry["id"] = str(tc.id)
+                            fn = getattr(tc, "function", None)
+                            if fn:
+                                if getattr(fn, "name", None):
+                                    entry["function"]["name"] = str(fn.name)
+                                if getattr(fn, "arguments", None):
+                                    entry["function"]["arguments"] += str(fn.arguments)
         except APIError as exc:
             raise RuntimeError(f"Model request failed: {exc}") from exc
         latency_ms = int((perf_counter() - started) * 1000)
 
-        choices = response.choices or []
-        if not choices:
-            raise RuntimeError("Model response missing choices.")
-        message = choices[0].message
-        content = message.content or ""
+        content = "".join(content_parts)
         cleaned = _strip_think_tags(content)
+        raw_tool_calls: list[_ToolCallDump] = [
+            cast(_ToolCallDump, tool_calls_acc[i]) for i in sorted(tool_calls_acc)
+        ]
+
         base_response = ModelResponse(
             content=cleaned,
             tool_calls=[],
             raw_response=cleaned,
-            raw_tool_calls=[],
-            reasoning_content=_extract_reasoning_content(message),
-            usage=_extract_usage(response),
+            raw_tool_calls=cast(list[dict[str, Any]], raw_tool_calls),
+            reasoning_content="".join(reasoning_parts),
+            usage=usage,
             latency_ms=latency_ms,
         )
-        return base_response, message
+        return base_response, raw_tool_calls
 
 
 class OpenAIModelAdapter(_BaseOpenAIAdapter):
@@ -321,7 +372,7 @@ class OpenAIModelAdapter(_BaseOpenAIAdapter):
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。"""
         request_kwargs = self._build_request_kwargs(messages)
-        base_response, _message = self._call_and_parse_base(request_kwargs)
+        base_response, _ = self._call_and_parse_base(request_kwargs)
         return base_response
 
 
@@ -405,27 +456,11 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         """发起一次 chat.completions 请求，返回解析好的 `ModelResponse`。"""
         request_kwargs = self._build_request_kwargs(messages)
-        base_response, message = self._call_and_parse_base(request_kwargs)
+        base_response, raw_tool_calls = self._call_and_parse_base(request_kwargs)
 
-        raw_tool_calls_payload: list[dict[str, Any]] = []
         parsed_calls: list[ModelToolCall] = []
 
-        sdk_tool_calls = message.tool_calls or []
-        for tool_call in sdk_tool_calls:
-            try:
-                dumped: _ToolCallDump = cast(_ToolCallDump, tool_call.model_dump(exclude_none=True))
-            except AttributeError:
-                fn_obj = cast(Any, tool_call).function
-                dumped = {
-                    "id": str(getattr(tool_call, "id", "")),
-                    "type": "function",
-                    "function": {
-                        "name": str(getattr(fn_obj, "name", "")),
-                        "arguments": cast("str | dict[str, Any]", getattr(fn_obj, "arguments", "")),
-                    },
-                }
-            raw_tool_calls_payload.append(cast(dict[str, Any], dumped))
-
+        for dumped in raw_tool_calls:
             function_payload: _ToolCallFunctionDump = dumped.get("function") or {}
             name = str(function_payload.get("name", ""))
             arguments_raw = function_payload.get("arguments", "")
@@ -446,7 +481,7 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
                                 content=base_response.content,
                                 tool_calls=[],
                                 raw_response=base_response.raw_response,
-                                raw_tool_calls=raw_tool_calls_payload,
+                                raw_tool_calls=base_response.raw_tool_calls,
                                 reasoning_content=base_response.reasoning_content,
                                 usage=base_response.usage,
                                 latency_ms=base_response.latency_ms,
@@ -466,7 +501,7 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
             content=base_response.content,
             tool_calls=parsed_calls,
             raw_response=base_response.raw_response,
-            raw_tool_calls=raw_tool_calls_payload,
+            raw_tool_calls=base_response.raw_tool_calls,
             reasoning_content=base_response.reasoning_content,
             usage=base_response.usage,
             latency_ms=base_response.latency_ms,

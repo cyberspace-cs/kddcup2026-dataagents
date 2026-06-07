@@ -46,6 +46,19 @@ class ExplorerResult:
         }
 
 
+def _maybe_trace(model: ModelAdapter, registry: Any) -> tuple[ModelAdapter, Any]:
+    """Wrap model and registry with tracing if a trace context is active."""
+    from agents.tracing.create import get_current_trace
+    from agents.tracing.instrument import TracedModelAdapter, TracedToolRegistry
+
+    if get_current_trace() is not None:
+        if not isinstance(model, TracedModelAdapter):
+            model = TracedModelAdapter(model)
+        if not isinstance(registry, TracedToolRegistry):
+            registry = TracedToolRegistry(registry)
+    return model, registry
+
+
 def run_explorer(
     task: PublicTask,
     question: str,  # reserved for future prompt override
@@ -61,10 +74,11 @@ def run_explorer(
     and terminates via a `report` tool. It aims to complete in 3-6 steps.
     """
     registry = create_explorer_tool_registry()
+    traced_model, traced_registry = _maybe_trace(model, registry)
 
     agent = ReActAgent(
-        model=model,
-        tools=registry,
+        model=traced_model,
+        tools=traced_registry,
         config=ReActAgentConfig(
             max_steps=max_steps,
             max_empty_tool_call_retries=3,
