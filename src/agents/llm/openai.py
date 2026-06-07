@@ -57,9 +57,10 @@ def _strip_think_tags(text: str) -> str:
 BackendKind = Literal["vllm", "dashscope"]
 
 # 推断 dashscope 用的 host 关键字。命中即判 dashscope，否则归 vllm。
-# 选这两个：DashScope 兼容模式入口稳定为 `dashscope.aliyuncs.com`；vLLM 自部署
-# 通常是 IP/localhost/内网域名。误判时调用方显式写 backend_kind 即可覆盖。
-_DASHSCOPE_HOST_HINTS = ("aliyuncs.com", "dashscope")
+# DashScope 兼容模式入口 `dashscope.aliyuncs.com`、讯飞 MaaS `xf-yun.com` 均走
+# 顶层 enable_thinking；vLLM 自部署通常是 IP/localhost/内网域名。
+# 误判时调用方显式写 backend_kind 即可覆盖。
+_DASHSCOPE_HOST_HINTS = ("aliyuncs.com", "dashscope", "xf-yun.com")
 
 
 def _resolve_backend_kind(backend_kind: BackendKind | None, api_base: str) -> BackendKind:
