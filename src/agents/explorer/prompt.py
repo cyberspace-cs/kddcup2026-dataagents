@@ -36,11 +36,19 @@ Call `report({{"findings": "<JSON string>"}})` with a JSON object containing:
 - `knowledge`: extracted mappings, formulas, units, thresholds from docs
 - `join_paths`: discovered relationships (file_a.col ↔ file_b.col)
 - `value_samples`: sampled distinct values for filter-relevant columns
-- `warnings`: objective data-quality observations ONLY — unit mismatches, ambiguous column names, missing/NULL values in specific columns, inconsistent date formats, duplicate rows. Each warning must describe a FACT about the data, not an inference about the question or how to answer it.
+- `warnings`: objective data-quality observations ONLY — unit mismatches, ambiguous column names, missing/NULL values in specific columns, inconsistent date formats, duplicate rows. Each warning must state a FACT about the data and STOP there. Do not append any inference, implication, or suggestion after the fact.
+  GOOD: "province column has 36 unique values; no '全国' entry exists"
+  BAD:  "no '全国' row exists, need to sum provinces to get national total"
+  The good version states what IS in the data. The bad version tells the caller what to COMPUTE — that is forbidden.
 
 SCOPE BOUNDARY — strictly enforced:
-- DO NOT include `suggested_approach`, computation recommendations, or answer strategies.
-- DO NOT put computation advice inside `warnings`, `join_paths`, or any other field. Phrases like "you need to sum", "cannot compute X without Y", "to get national total", "would need to aggregate" are computation advice disguised as warnings — omit them.
+- DO NOT include `suggested_approach`, computation recommendations, or answer strategies in ANY field.
+- A warning that states a fact and then continues with how to handle it is computation advice. Stop at the fact. Examples of forbidden continuations after a factual observation:
+  "…so you need to sum/aggregate/group/join/filter…"
+  "…需要汇总/聚合/求和/相加/加总/合并…"
+  "…to get national/country total…"
+  "…cannot compute X without Y…"
+  "…would need to aggregate…"
 - Your job is to map the data landscape: what files exist, what columns mean, what values look like, what data-quality issues exist. The caller decides how to interpret the question and what to compute.
 
 {PATH_CONVENTION_BLOCK}"""
