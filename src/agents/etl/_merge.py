@@ -9,28 +9,18 @@ import re
 from pathlib import Path
 
 from agents.etl._detect import ENTITY_LINE
-from agents.etl._types import DATE_SCALAR, NUMERIC_SCALAR, normalize_boolean
+from agents.etl._types import (
+    DATE_SCALAR,
+    NUMERIC_SCALAR,
+    is_placeholder,
+    normalize_boolean,
+)
 
 logger = logging.getLogger(__name__)
 
 KV_LINE = re.compile(r"^ID:\s*(\d+)\s*\|\s*entity_name:\s*(.+?)\s*\|", re.MULTILINE)
 TEMP_ANCHOR_PREFIX = "__anchor__:"
 
-PLACEHOLDER_VALS = frozenset(
-    {
-        "",
-        "-",
-        "none",
-        "nan",
-        "n/a",
-        "placeholder",
-        "none (placeholder)",
-        "nan (placeholder)",
-        "- (placeholder)",
-        "0.0 (placeholder)",
-        "redacted",
-    }
-)
 UNIT_SUFFIX = re.compile(r"^([\d.]+)\s*(?:cm|kg|U/L|mg/dL|mmHg|%)\s*$")
 
 
@@ -138,8 +128,7 @@ def pre_merge_entity_lines(
     if len(entity_lines) <= 1:
         return text
 
-    def _is_placeholder(val: str) -> bool:
-        return val.lower().strip() in PLACEHOLDER_VALS or "(placeholder)" in val.lower()
+    _is_placeholder = is_placeholder
 
     def _parse_kv(line: str) -> tuple[str | None, list[tuple[str, str]]]:
         parts = line.split("|")
@@ -302,7 +291,7 @@ def normalize_entity_lines(
 
 def clean_cell(val: str) -> str:
     """Normalize a single KV value into a CSV-ready cell."""
-    if not val or val.lower().strip() in PLACEHOLDER_VALS or "(placeholder)" in val.lower():
+    if not val or is_placeholder(val):
         return ""
     m = UNIT_SUFFIX.match(val)
     if m:

@@ -10,10 +10,29 @@ RECORD_ID_FIELDS = frozenset(
 
 NUMERIC_SCALAR = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$")
 DATE_SCALAR = re.compile(r"^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$")
-BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "1", "0", "是", "否"})
+
+PLACEHOLDER_VALS = frozenset(
+    {
+        "",
+        "-",
+        "none",
+        "nan",
+        "n/a",
+        "placeholder",
+        "none (placeholder)",
+        "nan (placeholder)",
+        "- (placeholder)",
+        "0.0 (placeholder)",
+        "redacted",
+    }
+)
 
 _BOOL_TRUE = frozenset(("true", "yes", "1", "是"))
 _BOOL_FALSE = frozenset(("false", "no", "0", "否"))
+
+
+def is_placeholder(val: str) -> bool:
+    return val.lower().strip() in PLACEHOLDER_VALS or "(placeholder)" in val.lower()
 
 
 def normalize_boolean(val: str) -> str | None:

@@ -15,6 +15,7 @@ from agents.etl._types import (
     DATE_SCALAR,
     NUMERIC_SCALAR,
     RECORD_ID_FIELDS,
+    is_placeholder,
     normalize_boolean,
 )
 
@@ -39,8 +40,7 @@ RECORD_ID_RANGE = re.compile(
 
 
 def _is_placeholder_value(val: str) -> bool:
-    normalized = val.lower().strip()
-    return not normalized or normalized in {"-", "none", "nan", "n/a", "placeholder", "redacted"}
+    return is_placeholder(val)
 
 
 def _clean_numeric_scalar(val: str) -> str | None:
@@ -50,7 +50,7 @@ def _clean_numeric_scalar(val: str) -> str | None:
     normalized = stripped.replace(",", "")
     if normalized.endswith("%"):
         normalized = normalized[:-1].strip()
-    unit_match = re.match(r"^(.+?)\s*(?:cm|kg|U/L|mg/dL|mmHg|%)$", normalized, re.IGNORECASE)
+    unit_match = re.match(r"^(.+?)\s*(?:cm|kg|U/L|mg/dL|mmHg)$", normalized, re.IGNORECASE)
     if unit_match:
         normalized = unit_match.group(1).strip()
     return normalized if NUMERIC_SCALAR.match(normalized) else None

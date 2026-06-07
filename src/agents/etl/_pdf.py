@@ -153,9 +153,9 @@ def _stitch_page_paragraphs(pages: list[tuple[int, list[str]]]) -> list[tuple[in
             and not _is_structural_line(stitched[-1][1][-1])
             and not _is_structural_line(remaining[0])
         ):
-            prev_page_no, prev_paragraphs = stitched[-1]
+            prev_paragraphs = list(stitched[-1][1])
             prev_paragraphs[-1] = _join_prose_lines([prev_paragraphs[-1], remaining.pop(0)])
-            stitched[-1] = (prev_page_no, prev_paragraphs)
+            stitched[-1] = (stitched[-1][0], prev_paragraphs)
         if remaining:
             stitched.append((page_no, remaining))
     return stitched

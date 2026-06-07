@@ -142,8 +142,10 @@ def _parse_schema_response(
                 anchor_keys = raw
         elif upper.startswith("TYPE"):
             explicit_types = _parse_schema_types_line(line)
-        elif "," in line and not columns:
-            columns = [c.strip() for c in line.split(",") if c.strip()]
+        elif "," in line and not columns and "=" not in line:
+            tokens = [c.strip() for c in line.split(",") if c.strip()]
+            if all(len(t.split()) <= 3 for t in tokens):
+                columns = tokens
 
     if not pk or len(columns) < 2:
         return None
@@ -462,10 +464,6 @@ def extract_prose_file(
         md_path = etl_dir / f"{path.stem}.md"
         md_path.write_text(full_text, encoding="utf-8")
 
-    if not full_text.strip():
-        logger.info("ETL skip: no extractable text in %s", path.name)
-        return None
-
     # ---- Cache: reuse existing CSV if present and valid ----
     cached = validate_csv(csv_path)
     if cached:
@@ -477,6 +475,10 @@ def extract_prose_file(
             columns=header,
             row_count=row_count,
         )
+
+    if not full_text.strip():
+        logger.info("ETL skip: no extractable text in %s", path.name)
+        return None
 
     # ---- Phase 0: infer schema from prose sample (when no schema from knowledge.md) ----
     if not schema_columns:
