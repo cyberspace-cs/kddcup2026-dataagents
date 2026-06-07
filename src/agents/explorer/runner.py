@@ -76,13 +76,7 @@ def run_explorer(
 
     result = agent.run(task)
 
-    if result.answer is not None:
-        # report tool returns findings in the answer table's first row
-        # but we stored it in ToolExecutionResult.content, not answer table.
-        # Extract from the last successful step instead.
-        pass
-
-    # Extract findings from steps: find the answer tool call
+    # Extract findings from steps: find the report tool call
     findings = _extract_findings(result.steps)
 
     if findings is not None:
