@@ -52,7 +52,7 @@ class ReportInput(BaseModel):
         description=(
             "Structured JSON string containing exploration findings: "
             "files, schema_map, knowledge, join_paths, value_samples, "
-            "warnings, suggested_approach."
+            "warnings."
         ),
     )
 
@@ -184,7 +184,7 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "Submit your exploration findings. This is the ONLY way to complete "
                 "the exploration — call it when you have mapped the data landscape. "
                 "Pass a structured JSON string with keys: files, schema_map, knowledge, "
-                "join_paths, value_samples, warnings, suggested_approach."
+                "join_paths, value_samples, warnings."
             ),
             input_schema=ReportInput.example_value(),
             json_schema=REPORT_SCHEMA,
