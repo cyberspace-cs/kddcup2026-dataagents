@@ -14,6 +14,7 @@ Fallback (no schema): LLM direct extraction → code-generation.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import textwrap
@@ -118,15 +119,31 @@ def _parse_schema_types_line(line: str) -> dict[str, str]:
     return parsed
 
 
+def _parse_kv_line(line: str) -> dict[str, str]:
+    """Parse ``field=value, field=value`` from any prefixed line."""
+    raw = line.split(":", 1)[-1]
+    parsed: dict[str, str] = {}
+    for item in re.split(r"[,;]", raw):
+        item = item.strip()
+        if not item:
+            continue
+        field, sep, val = item.partition("=")
+        if not sep:
+            field, sep, val = item.partition(":")
+        if sep and field.strip() and val.strip():
+            parsed[field.strip()] = val.strip()
+    return parsed
+
+
 def _parse_schema_response(
     text: str,
-) -> tuple[str, list[str], dict[str, str], list[str]] | None:
+) -> tuple[str, list[str], dict[str, str], list[str], dict[str, str]] | None:
     """Parse LLM schema output by line prefix, not position.
 
-    Looks for PK:, ANCHORS:, TYPES: prefixes in any order.  The first
-    non-prefixed line with commas is treated as the column list.
+    Looks for PK:, ANCHORS:, TYPES:, UNITS: prefixes in any order.
+    The first non-prefixed line with commas is treated as the column list.
 
-    Returns (pk, anchor_keys, explicit_types, columns) or None.
+    Returns (pk, anchor_keys, explicit_types, columns, field_units) or None.
     """
     lines = [line.strip() for line in text.strip().strip("`").splitlines() if line.strip()]
     if len(lines) < 2:
@@ -135,6 +152,7 @@ def _parse_schema_response(
     pk: str | None = None
     anchor_keys: list[str] = []
     explicit_types: dict[str, str] = {}
+    field_units: dict[str, str] = {}
     columns: list[str] = []
 
     for line in lines:
@@ -147,6 +165,8 @@ def _parse_schema_response(
                 anchor_keys = raw
         elif upper.startswith("TYPE"):
             explicit_types = _parse_schema_types_line(line)
+        elif upper.startswith("UNIT"):
+            field_units = _parse_kv_line(line)
         elif "," in line and not columns and "=" not in line:
             tokens = [c.strip() for c in line.split(",") if c.strip()]
             if all(len(t.split()) <= 3 for t in tokens):
@@ -164,7 +184,7 @@ def _parse_schema_response(
         if ak not in columns:
             columns.append(ak)
 
-    return pk, anchor_keys, explicit_types, columns
+    return pk, anchor_keys, explicit_types, columns, field_units
 
 
 def _complete_schema_field_types(
@@ -183,15 +203,29 @@ def _complete_schema_field_types(
     return result
 
 
+def _write_units_sidecar(
+    task: PublicTask,
+    prose_stem: str,
+    field_units: dict[str, str],
+) -> None:
+    """Write per-field unit metadata to a sidecar JSON in _cache/."""
+    if not field_units:
+        return
+    cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    units_path = cache_dir / f"{prose_stem}_units.json"
+    units_path.write_text(json.dumps(field_units, ensure_ascii=False), encoding="utf-8")
+
+
 def _parse_knowledge_schema(
     task: PublicTask, prose_path: Path, adapter: ModelAdapter, prose_text: str
-) -> tuple[list[str], list[str], dict[str, str]] | None:
-    """Use LLM to extract column names and anchor keys from knowledge.md.
+) -> tuple[list[str], list[str], dict[str, str], dict[str, str]] | None:
+    """Use LLM to extract column names, anchor keys, and units from knowledge.md.
 
     Samples the prose file so the LLM can discover fields present in the data
     but missing from the governance document (e.g. record IDs).
 
-    Returns (columns, anchor_keys, field_types) or None if no matching entity.
+    Returns (columns, anchor_keys, field_types, field_units) or None.
     ``anchor_keys[0]`` is the canonical primary key; subsequent entries are
     secondary identity fields (name, label, secondary ID) that can uniquely
     identify an entity when the PK takes different forms across sections.
@@ -224,12 +258,15 @@ def _parse_knowledge_schema(
 
         If NO entity in the governance document matches, output exactly: NONE
 
-        Otherwise output exactly FOUR lines:
+        Otherwise output exactly FIVE lines:
         Line 1: PK: <primary_key_field_name>
         Line 2: ANCHORS: <comma-separated identity fields that can uniquely \
         identify an entity — includes PK plus name/label/secondary ID fields>
         Line 3: TYPES: <field=type, field=type, ... for every field>
-        Line 4: all field names as a comma-separated list (must include all ANCHORS)
+        Line 4: UNITS: <field=unit for each numeric field whose values carry \
+        a unit in the prose sample or governance document. Use _default=<unit> \
+        for the governance document's declared default monetary unit.>
+        Line 5: all field names as a comma-separated list (must include all ANCHORS)
 
         IMPORTANT:
         - PK and column names must be SHORT GENERIC FIELD NAMES (like "event_id", \
@@ -253,13 +290,21 @@ def _parse_knowledge_schema(
         for merging sections; it is NOT the same as domain IDs such as \
         personalcode, innercode, fundcode, or secucode.
         - Do NOT add narrative/filler fields — only structured data fields.
+        - For the UNITS line: scan the prose sample for unit suffixes attached \
+        to numeric values (e.g. "2478.76亿元" → gdp=亿元, "15.3%" → rate=%). \
+        Also check the governance document for a declared default monetary unit \
+        (e.g. "expressed in 万元") and output it as _default=<unit>. \
+        Omit fields whose prose values have no unit suffix.
 
         Governance document:
         {km_text}{prose_section}""")
     messages = [
         ModelMessage(
             role="system",
-            content="You extract database schema. Output PK, ANCHORS, TYPES, then comma-separated columns.",
+            content=(
+                "You extract database schema. "
+                "Output PK, ANCHORS, TYPES, UNITS, then comma-separated columns."
+            ),
         ),
         ModelMessage(role="user", content=prompt),
     ]
@@ -276,7 +321,7 @@ def _parse_knowledge_schema(
     parsed = _parse_schema_response(raw)
     if not parsed:
         return None
-    _, anchor_keys, explicit_types, columns = parsed
+    _, anchor_keys, explicit_types, columns, field_units = parsed
 
     columns, anchor_keys = _ensure_local_record_anchor(
         prose_text,
@@ -287,27 +332,28 @@ def _parse_knowledge_schema(
     field_types = _complete_schema_field_types(columns, explicit_types)
 
     logger.info(
-        "Schema from knowledge.md (LLM) for '%s': pk=%s, anchors=%s, types=%s, cols=%s",
+        "Schema from knowledge.md (LLM) for '%s': pk=%s, anchors=%s, types=%s, units=%s, cols=%s",
         prose_stem,
         anchor_keys[0],
         anchor_keys,
         field_types,
+        field_units,
         columns,
     )
-    return columns, anchor_keys, field_types
+    return columns, anchor_keys, field_types, field_units
 
 
 def _infer_schema_from_sample(
     adapter: ModelAdapter,
     prose_text: str,
     question: str,
-) -> tuple[list[str], list[str], dict[str, str]] | None:
+) -> tuple[list[str], list[str], dict[str, str], dict[str, str]] | None:
     """Infer a unified schema by sampling the raw prose text before compression.
 
     Sends a representative sample to the LLM to discover structured data fields
     and produce a canonical column list + anchor keys.
 
-    Returns (columns, anchor_keys, field_types) or None.
+    Returns (columns, anchor_keys, field_types, field_units) or None.
     """
     sample = sample_paragraphs_by_section(prose_text, per_section=2)
     if not sample or len(sample) < 50:
@@ -338,11 +384,14 @@ def _infer_schema_from_sample(
            uniquely identify an entity even when the PK is missing or takes
            a different form (e.g. a name, label, or secondary ID).
 
-        Output exactly FOUR lines:
+        Output exactly FIVE lines:
         Line 1: PK: <primary_key_field_name>
         Line 2: ANCHORS: <comma-separated identity fields including PK>
         Line 3: TYPES: <field=type, field=type, ... for every field>
-        Line 4: all field names as a comma-separated list (must include all ANCHORS)
+        Line 4: UNITS: <field=unit for each numeric field whose values carry \
+        a unit suffix in the prose sample, e.g. gdp=亿元, rate=%. \
+        Omit fields with no unit suffix.>
+        Line 5: all field names as a comma-separated list (must include all ANCHORS)
 
         Rules:
         - Column names must be SHORT GENERIC FIELD NAMES, NEVER specific data values.
@@ -362,7 +411,7 @@ def _infer_schema_from_sample(
     messages = [
         ModelMessage(
             role="system",
-            content="You extract database schema from prose samples. Output PK, ANCHORS, TYPES, then columns.",
+            content="You extract database schema from prose samples. Output PK, ANCHORS, TYPES, UNITS, then columns.",
         ),
         ModelMessage(role="user", content=prompt),
     ]
@@ -375,7 +424,7 @@ def _infer_schema_from_sample(
     parsed = _parse_schema_response(response.content)
     if not parsed:
         return None
-    _, anchor_keys, explicit_types, columns = parsed
+    _, anchor_keys, explicit_types, columns, field_units = parsed
 
     columns, anchor_keys = _ensure_local_record_anchor(
         prose_text,
@@ -392,7 +441,7 @@ def _infer_schema_from_sample(
         field_types,
         columns,
     )
-    return columns, anchor_keys, field_types
+    return columns, anchor_keys, field_types, field_units
 
 
 def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
@@ -462,6 +511,7 @@ def extract_prose_file(
     schema_columns: list[str] | None = None,
     anchor_keys: list[str] | None = None,
     schema_field_types: dict[str, str] | None = None,
+    field_units: dict[str, str] | None = None,
 ) -> ETLResult | None:
     """Extract structured data from a prose file.
 
@@ -472,11 +522,13 @@ def extract_prose_file(
 
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
     etl_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
     full_text = prose_text
 
     if path.suffix.lower() == ".pdf":
-        md_path = etl_dir / f"{path.stem}.md"
+        md_path = cache_dir / f"{path.stem}.md"
         md_path.write_text(full_text, encoding="utf-8")
 
     # ---- Cache: reuse existing CSV if present and valid ----
@@ -499,7 +551,7 @@ def extract_prose_file(
     if not schema_columns:
         inferred = _infer_schema_from_sample(adapter, full_text, task.question)
         if inferred:
-            schema_columns, anchor_keys, schema_field_types = inferred
+            schema_columns, anchor_keys, schema_field_types, field_units = inferred
             primary_key = anchor_keys[0] if anchor_keys else None
 
     # ---- Phase 1: compress ----
@@ -512,7 +564,7 @@ def extract_prose_file(
         anchor_keys=anchor_keys,
         schema_field_types=schema_field_types,
     )
-    compressed_path = etl_dir / f"{path.stem}_clean.md"
+    compressed_path = cache_dir / f"{path.stem}_clean.md"
     compressed_path.write_text(compressed, encoding="utf-8")
     logger.info(
         "ETL compressed: %d → %d chars (%.0f%%)",
@@ -532,6 +584,9 @@ def extract_prose_file(
     if schema_columns:
         compressed = normalize_entity_lines(compressed, schema_columns, primary_key)
     compressed_path.write_text(compressed, encoding="utf-8")
+
+    if field_units:
+        _write_units_sidecar(task, path.stem, field_units)
 
     # ---- Phase 2a: deterministic KV→CSV (when normalized) ----
     if schema_columns:
@@ -667,7 +722,7 @@ def run_etl_for_task(
             text = pf.read_text(encoding="utf-8")
         parsed = _parse_knowledge_schema(task, pf, adapter, text)
         if parsed:
-            schema, anchors, field_types = parsed
+            schema, anchors, field_types, units = parsed
             return extract_prose_file(
                 adapter,
                 pf,
@@ -676,6 +731,7 @@ def run_etl_for_task(
                 schema_columns=schema,
                 anchor_keys=anchors,
                 schema_field_types=field_types,
+                field_units=units,
             )
         logger.info("ETL: no knowledge.md schema for %s, will infer from sample", pf.name)
         return extract_prose_file(adapter, pf, task, text)
