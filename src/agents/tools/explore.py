@@ -29,22 +29,15 @@ logger = logging.getLogger(__name__)
 
 EXPLORE_SCHEMA = normalize_for_vllm(ExploreInput.model_json_schema())  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
 
-_UNIT_FACTORS: dict[tuple[str, str], float] = {}
-_SCALE = {"元": 1, "万元": 1e4, "百万元": 1e6, "亿元": 1e8}
-for _src, _sv in _SCALE.items():
-    for _tgt, _tv in _SCALE.items():
-        if _src != _tgt:
-            _UNIT_FACTORS[(_src, _tgt)] = _sv / _tv
-
 
 def _detect_unit_conversions(task: PublicTask) -> list[dict[str, Any]]:
     """Compare each field's source unit against its ``_target_<field>`` unit.
 
-    The ETL stage writes per-field target units (via majority-vote LLM
-    extraction from knowledge.md) as ``_target_<field>=<unit>`` entries
-    in ``_cache/*_units.json``.
+    The ETL stage writes per-field target units and LLM-determined conversion
+    factors as ``_target_<field>`` and ``_factor_<field>`` entries in
+    ``_cache/*_units.json``.
 
-    Returns a list of conversion instructions, one per (file, source_unit) group.
+    Returns a list of conversion instructions, one per (file, from_unit, to_unit) group.
     """
     from agents.config import ETL_SCRATCH_ROOT
 
@@ -58,19 +51,24 @@ def _detect_unit_conversions(task: PublicTask) -> list[dict[str, Any]]:
             units = json.loads(units_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        # Group fields by (source_unit, target_unit) pair
-        by_pair: dict[tuple[str, str], list[str]] = {}
+        # Group fields by (source_unit, target_unit, factor) triple
+        by_group: dict[tuple[str, str, float], list[str]] = {}
         for field, source_unit in units.items():
             if field.startswith("_"):
                 continue
             target_unit = units.get(f"_target_{field}")
-            if not target_unit or source_unit == target_unit:
+            factor_str = units.get(f"_factor_{field}")
+            if not target_unit or source_unit == target_unit or not factor_str:
                 continue
-            if (source_unit, target_unit) in _UNIT_FACTORS:
-                by_pair.setdefault((source_unit, target_unit), []).append(field)
+            try:
+                factor = float(factor_str)
+            except (ValueError, TypeError):
+                continue
+            if factor == 0 or factor == 1:
+                continue
+            by_group.setdefault((source_unit, target_unit, factor), []).append(field)
         stem = units_path.stem.removesuffix("_units")
-        for (from_unit, to_unit), columns in by_pair.items():
-            factor = _UNIT_FACTORS[(from_unit, to_unit)]
+        for (from_unit, to_unit, factor), columns in by_group.items():
             conversions.append(
                 {
                     "file": stem,

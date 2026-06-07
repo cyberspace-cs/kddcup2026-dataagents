@@ -204,25 +204,17 @@ def _complete_schema_field_types(
     return result
 
 
-_UNIT_VOTES = 1
-
-
 def _vote_target_units(
     adapter: ModelAdapter,
     km_text: str,
     field_units: dict[str, str],
-) -> dict[str, str]:
-    """Determine the target unit for each field by majority vote.
+) -> dict[str, tuple[str, float]]:
+    """Ask the LLM for each field's target unit and conversion factor.
 
-    Sends the knowledge.md text together with the field→source-unit mapping
-    to the LLM ``_UNIT_VOTES`` times.  Each call returns a field=target_unit
-    mapping; the final answer for each field is the most common response.
-
-    Only fields whose source unit is a recognized measurement are included
-    in the prompt; purely dimensionless fields (like boolean flags) are skipped.
+    Returns {field: (target_unit, factor)} where factor is the multiplier
+    to convert source values to target values (e.g. 亿元→万元 = 10000).
+    Fields whose source unit already matches the target are excluded.
     """
-    from collections import Counter
-
     source_fields = {
         f: u
         for f, u in field_units.items()
@@ -242,33 +234,73 @@ def _vote_target_units(
         "unit already matches the target, repeat it unchanged. "
         "Dimensionless fields (price indices, ratios, ranks) must keep their "
         "source unit as-is — do NOT replace with '_default' or any placeholder.\n\n"
-        "Output ONLY field=unit pairs, one per field, comma-separated. "
-        "Example: gdp=万元, rate=%\n\n"
+        "For each field where source ≠ target, also output the numeric "
+        "multiplication factor to convert from source to target.\n\n"
+        "Output format — one field per entry, comma-separated:\n"
+        "  field=target_unit*factor\n"
+        "If source == target (no conversion needed), omit the *factor part:\n"
+        "  field=target_unit\n\n"
+        "Examples:\n"
+        "  gdp=万元*10000, revenue=万元*10000, rate=%\n"
+        "  (gdp source was 亿元, target is 万元, so factor=10000)\n"
+        "  (rate source was %, target is %, so no factor)\n\n"
         f"Governance document:\n{km_text[:3000]}"
     )
     messages = [
         ModelMessage(
             role="system",
-            content="Map each field to its target unit per the governance document. Output only field=unit pairs.",
+            content=(
+                "Map each field to its target unit per the governance document. "
+                "Output field=unit*factor pairs. Omit *factor when source==target."
+            ),
         ),
         ModelMessage(role="user", content=prompt),
     ]
 
-    all_votes: dict[str, list[str]] = {f: [] for f in source_fields}
-    for _ in range(_UNIT_VOTES):
-        try:
-            response: ModelResponse = adapter.complete(messages)
-            parsed = _parse_kv_line("UNITS: " + response.content.strip())
-            for field, unit in parsed.items():
-                if field in all_votes and unit and not unit.startswith("_"):
-                    all_votes[field].append(unit)
-        except Exception:
-            continue
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception:
+        return {}
 
-    result: dict[str, str] = {}
-    for field, votes in all_votes.items():
-        if votes:
-            result[field] = Counter(votes).most_common(1)[0][0]
+    return _parse_unit_factor_response(response.content.strip(), source_fields)
+
+
+def _parse_unit_factor_response(
+    text: str,
+    source_fields: dict[str, str],
+) -> dict[str, tuple[str, float]]:
+    """Parse ``field=unit*factor`` response into {field: (unit, factor)}.
+
+    Only returns entries where source_unit != target_unit and factor is valid.
+    """
+    result: dict[str, tuple[str, float]] = {}
+    raw = text.split(":", 1)[-1] if ":" in text else text
+    for item in re.split(r"[,;\n]", raw):
+        item = item.strip()
+        if not item:
+            continue
+        field, sep, rest = item.partition("=")
+        if not sep:
+            continue
+        field = field.strip()
+        if field not in source_fields:
+            continue
+        rest = rest.strip()
+        unit_part, star, factor_part = rest.partition("*")
+        unit_part = unit_part.strip()
+        if not unit_part or unit_part.startswith("_"):
+            continue
+        if unit_part == source_fields[field]:
+            continue
+        if not star:
+            continue
+        try:
+            factor = float(factor_part.strip())
+        except (ValueError, TypeError):
+            continue
+        if factor == 0 or factor == 1:
+            continue
+        result[field] = (unit_part, factor)
     return result
 
 
@@ -809,8 +841,9 @@ def run_etl_for_task(
             if km_text and units:
                 targets = _vote_target_units(adapter, km_text, units)
                 if targets:
-                    for field, target_unit in targets.items():
+                    for field, (target_unit, factor) in targets.items():
                         units[f"_target_{field}"] = target_unit
+                        units[f"_factor_{field}"] = str(factor)
                     logger.info("ETL: voted target units for %s: %s", pf.stem, targets)
             return extract_prose_file(
                 adapter,
