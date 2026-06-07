@@ -134,20 +134,27 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
     candidates.sort(key=lambda item: item[0])
 
     cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
-    etl_prefix = str(etl_dir)
 
     truncated = len(candidates) > constants.INSPECT_FILES_MAX_FILES
     for rel_path, abs_path in candidates[: constants.INSPECT_FILES_MAX_FILES]:
         entry = _format_for_inspect(rel_path, abs_path)
         if not entry["supported"]:
             unsupported_formats.add(str(entry["format"]))
-        if rel_path.startswith(etl_prefix) and cache_dir.is_dir():
+        if abs_path.is_relative_to(etl_dir) and cache_dir.is_dir():
             units_path = cache_dir / f"{abs_path.stem}_units.json"
             if units_path.is_file():
                 try:
                     units_meta = json.loads(units_path.read_text(encoding="utf-8"))
-                    if isinstance(entry.get("schema"), dict):
-                        entry["schema"]["unit_hint"] = units_meta
+                    schema: dict[str, Any] | None = entry.get("schema")
+                    if isinstance(schema, dict) and "columns" in schema:
+                        reordered: dict[str, Any] = {}
+                        for key in schema:
+                            reordered[key] = schema[key]
+                            if key == "columns":
+                                reordered["unit_hint"] = units_meta
+                        entry["schema"] = reordered
+                    elif isinstance(schema, dict):
+                        schema["unit_hint"] = units_meta
                 except (OSError, json.JSONDecodeError):
                     pass
         files_summary.append(entry)
