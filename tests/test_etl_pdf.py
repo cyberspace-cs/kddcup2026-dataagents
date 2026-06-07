@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -10,7 +9,7 @@ import pytest
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.etl import extractor
 from agents.etl._pdf import (
-    _page_to_markdown,
+    _page_to_paragraphs,
     _stitch_page_paragraphs,
     _unwrap_soft_line_breaks,
 )
@@ -25,14 +24,6 @@ class ExplodingAdapter:
 class StaticAdapter:
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         return ModelResponse(content="ID: 1 | value: fresh")
-
-
-class SequenceAdapter:
-    def __init__(self, responses: list[str]) -> None:
-        self.responses = responses
-
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
-        return ModelResponse(content=self.responses.pop(0))
 
 
 class _FakePage:
@@ -86,32 +77,19 @@ def test_extract_prose_file_returns_none_for_textless_pdf(
     assert result is None
 
 
-def test_extract_prose_file_ignores_unsigned_stale_cache(
+def test_extract_prose_file_reuses_existing_csv_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     task = _make_task(tmp_path)
     monkeypatch.setattr(extractor, "ETL_SCRATCH_ROOT", tmp_path / "etl")
 
     prose_path = task.context_dir / "patient.md"
-    prose_path.write_text("ID 1 has value fresh.", encoding="utf-8")
+    prose_path.write_text("ID 1 has value cached.", encoding="utf-8")
 
     etl_dir = tmp_path / "etl" / task.task_id / "_etl"
     etl_dir.mkdir(parents=True)
     csv_path = etl_dir / "patient.csv"
-    csv_path.write_text("id,value\n1,stale\n", encoding="utf-8")
-
-    result = extractor.extract_prose_file(
-        StaticAdapter(),
-        prose_path,
-        task,
-        prose_path.read_text(encoding="utf-8"),
-        schema_columns=["id", "value"],
-        anchor_keys=["id"],
-    )
-
-    assert result is not None
-    assert csv_path.read_text(encoding="utf-8").splitlines() == ["id,value", "1,fresh"]
-    assert (etl_dir / "patient.meta.json").is_file()
+    csv_path.write_text("id,value\n1,cached\n", encoding="utf-8")
 
     cached = extractor.extract_prose_file(
         ExplodingAdapter(),
@@ -124,60 +102,30 @@ def test_extract_prose_file_ignores_unsigned_stale_cache(
 
     assert cached is not None
     assert cached.row_count == 1
+    assert csv_path.read_text(encoding="utf-8").strip() == "id,value\n1,cached"
 
 
-def test_extract_prose_file_cache_signature_uses_inferred_schema(
+def test_extract_prose_file_extracts_when_no_csv_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     task = _make_task(tmp_path)
     monkeypatch.setattr(extractor, "ETL_SCRATCH_ROOT", tmp_path / "etl")
 
-    prose_path = task.context_dir / "treatment.md"
-    prose_text = (
-        "The clinical intervention documented under treatment protocol 9606 "
-        "was directly associated with patient unit stay identifier 1688094. "
-        "The intervention for treatment 9606 is recorded as oxygen therapy."
-    )
-    prose_path.write_text(prose_text, encoding="utf-8")
+    prose_path = task.context_dir / "patient.md"
+    prose_path.write_text("ID 1 has value fresh.", encoding="utf-8")
 
     result = extractor.extract_prose_file(
-        SequenceAdapter(
-            [
-                (
-                    "PK: treatment_id\n"
-                    "ANCHORS: treatment_id, patient_unit_stay_id\n"
-                    "TYPES: treatment_id=integer_scalar_id, "
-                    "patient_unit_stay_id=integer_scalar_id, procedure_type=string\n"
-                    "treatment_id,patient_unit_stay_id,procedure_type"
-                ),
-                (
-                    "treatment_id: 9606 | patient_unit_stay_id: 1688094 "
-                    "| procedure_type: oxygen therapy"
-                ),
-            ]
-        ),
+        StaticAdapter(),
         prose_path,
         task,
-        prose_text,
+        prose_path.read_text(encoding="utf-8"),
+        schema_columns=["id", "value"],
+        anchor_keys=["id"],
     )
 
     assert result is not None
-    meta = json.loads(
-        (tmp_path / "etl" / task.task_id / "_etl" / "treatment.meta.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert meta["schema_columns"] == [
-        "treatment_id",
-        "patient_unit_stay_id",
-        "procedure_type",
-    ]
-    assert meta["anchor_keys"] == ["treatment_id", "patient_unit_stay_id"]
-    assert meta["schema_field_types"] == {
-        "treatment_id": "integer_scalar_id",
-        "patient_unit_stay_id": "integer_scalar_id",
-        "procedure_type": "string",
-    }
+    csv_path = tmp_path / "etl" / task.task_id / "_etl" / "patient.csv"
+    assert csv_path.is_file()
 
 
 def test_unwrap_soft_line_breaks_joins_prose_inside_entity_paragraph() -> None:
@@ -253,7 +201,7 @@ def test_unwrap_soft_line_breaks_preserves_markdown_structures() -> None:
     assert "普通段落第一行，普通段落第二行。" in unwrapped
 
 
-def test_page_to_markdown_uses_layout_gaps_as_paragraphs() -> None:
+def test_page_to_paragraphs_uses_layout_gaps_as_paragraphs() -> None:
     page = _FakePage(
         [
             (0, 50, 100, 60, "第二段第一行，"),
@@ -263,9 +211,9 @@ def test_page_to_markdown_uses_layout_gaps_as_paragraphs() -> None:
         ]
     )
 
-    markdown = _page_to_markdown(page)
+    paragraphs = _page_to_paragraphs(page)
 
-    assert markdown == "第一段第一行，第一段第二行。\n\n第二段第一行，第二段第二行。"
+    assert paragraphs == ["第一段第一行，第一段第二行。", "第二段第一行，第二段第二行。"]
 
 
 def test_stitch_page_paragraphs_joins_incomplete_sentence_across_pages() -> None:

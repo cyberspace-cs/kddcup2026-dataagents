@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 from agents.etl._detect import ENTITY_LINE
+from agents.etl._types import DATE_SCALAR, NUMERIC_SCALAR, normalize_boolean
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +32,6 @@ PLACEHOLDER_VALS = frozenset(
     }
 )
 UNIT_SUFFIX = re.compile(r"^([\d.]+)\s*(?:cm|kg|U/L|mg/dL|mmHg|%)\s*$")
-NUMERIC_SCALAR = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$")
-DATE_SCALAR = re.compile(r"^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$")
-BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "1", "0", "是", "否"})
 
 
 def _canonical_key_map(keys: list[str]) -> dict[str, str]:
@@ -196,6 +194,7 @@ def pre_merge_entity_lines(
 
     # Round 2: merge groups that share secondary anchor values
     if anchor_keys and len(anchor_keys) > 1:
+        groups_before_r2 = len(groups)
         for anchor in anchor_keys[1:]:
             anchor_to_pks: dict[str, list[str]] = {}
             for pk_val in list(groups.keys()):
@@ -235,13 +234,12 @@ def pre_merge_entity_lines(
                             groups[canonical][k] = v
                     del groups[pk]
 
-        merge2_before = len(entity_lines)
-        merge2_after = len(groups)
-        if merge2_before != merge2_after:
+        groups_after_r2 = len(groups)
+        if groups_before_r2 != groups_after_r2:
             logger.info(
-                "ETL anchor-merge: %d entity lines → %d unique entities (anchors: %s)",
-                merge2_before,
-                merge2_after,
+                "ETL anchor-merge: %d groups → %d unique entities (anchors: %s)",
+                groups_before_r2,
+                groups_after_r2,
                 anchor_keys,
             )
 
@@ -326,12 +324,7 @@ def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
     if "date" in type_text:
         return cleaned if DATE_SCALAR.match(cleaned) else ""
     if "boolean" in type_text:
-        low = cleaned.lower()
-        if low in ("true", "yes", "1", "是"):
-            return "true"
-        if low in ("false", "no", "0", "否"):
-            return "false"
-        return ""
+        return normalize_boolean(cleaned) or ""
     return cleaned
 
 

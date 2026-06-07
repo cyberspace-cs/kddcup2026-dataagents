@@ -14,8 +14,6 @@ Fallback (no schema): LLM direct extraction → code-generation.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import re
 import textwrap
@@ -49,6 +47,7 @@ from agents.etl._merge import (
     validate_csv,
 )
 from agents.etl._pdf import pdf_to_markdown
+from agents.etl._types import RECORD_ID_FIELDS
 from agents.llm import ModelAdapter, ModelMessage, ModelResponse, OpenAIModelAdapter
 
 if TYPE_CHECKING:
@@ -60,69 +59,10 @@ _MAX_WORKERS = 4
 _LLM_CALL_TIMEOUT = 180
 _ETL_HTTP_TIMEOUT = 300.0
 _DIRECT_EXTRACT_CHAR_LIMIT = 60_000
-_CACHE_VERSION = 3
 _LOCAL_RECORD_ID_RE = re.compile(
     r"(?:档案|记录|条目|战略单元|Record|File|Case)\s*[：:#-]?\s*(\d{1,8})",
     re.IGNORECASE,
 )
-_LOCAL_RECORD_ID_FIELDS = frozenset(
-    {
-        "record_id",
-        "archive_id",
-        "file_id",
-        "case_id",
-        "entry_id",
-        "local_id",
-        "unit_id",
-    }
-)
-
-
-def _cache_signature(
-    path: Path,
-    task: PublicTask,
-    prose_text: str,
-    schema_columns: list[str] | None,
-    anchor_keys: list[str] | None,
-    schema_field_types: dict[str, str] | None,
-) -> dict[str, Any]:
-    """Build the cache signature for one prose extraction request."""
-    return {
-        "version": _CACHE_VERSION,
-        "source_file": path.name,
-        "question": task.question,
-        "text_sha256": hashlib.sha256(prose_text.encode("utf-8")).hexdigest(),
-        "schema_columns": schema_columns,
-        "anchor_keys": anchor_keys,
-        "schema_field_types": schema_field_types,
-    }
-
-
-def _validated_cached_csv(
-    csv_path: Path,
-    meta_path: Path,
-    expected_signature: dict[str, Any],
-) -> tuple[list[str], int] | None:
-    """Return cached CSV metadata only when the sidecar signature still matches."""
-    cached = validate_csv(csv_path)
-    if not cached:
-        return None
-    try:
-        actual_signature = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.info("ETL cache miss: %s has no valid signature sidecar", csv_path)
-        return None
-    if actual_signature != expected_signature:
-        logger.info("ETL cache miss: %s signature changed", csv_path)
-        return None
-    return cached
-
-
-def _write_cache_signature(meta_path: Path, signature: dict[str, Any]) -> None:
-    meta_path.write_text(
-        json.dumps(signature, ensure_ascii=False, sort_keys=True, indent=2),
-        encoding="utf-8",
-    )
 
 
 def _has_local_record_ids(prose_text: str) -> bool:
@@ -144,7 +84,7 @@ def _ensure_local_record_anchor(
     partial facts before downstream analysis.
     """
     known_fields = {c.lower() for c in columns} | {a.lower() for a in anchor_keys}
-    if known_fields & _LOCAL_RECORD_ID_FIELDS:
+    if known_fields & RECORD_ID_FIELDS:
         return columns, anchor_keys
     if not _has_local_record_ids(prose_text):
         return columns, anchor_keys
@@ -516,7 +456,6 @@ def extract_prose_file(
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
     etl_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
-    meta_path = etl_dir / f"{path.stem}.meta.json"
     full_text = prose_text
 
     if path.suffix.lower() == ".pdf":
@@ -527,22 +466,8 @@ def extract_prose_file(
         logger.info("ETL skip: no extractable text in %s", path.name)
         return None
 
-    # ---- Phase 0: infer schema from prose sample (when no schema from knowledge.md) ----
-    if not schema_columns:
-        inferred = _infer_schema_from_sample(adapter, full_text, task.question)
-        if inferred:
-            schema_columns, anchor_keys, schema_field_types = inferred
-            primary_key = anchor_keys[0] if anchor_keys else None
-
-    cache_signature = _cache_signature(
-        path,
-        task,
-        full_text,
-        schema_columns,
-        anchor_keys,
-        schema_field_types,
-    )
-    cached = _validated_cached_csv(csv_path, meta_path, cache_signature)
+    # ---- Cache: reuse existing CSV if present and valid ----
+    cached = validate_csv(csv_path)
     if cached:
         header, row_count = cached
         logger.info("ETL cache hit: %s (%d cols, %d rows)", csv_path, len(header), row_count)
@@ -552,6 +477,13 @@ def extract_prose_file(
             columns=header,
             row_count=row_count,
         )
+
+    # ---- Phase 0: infer schema from prose sample (when no schema from knowledge.md) ----
+    if not schema_columns:
+        inferred = _infer_schema_from_sample(adapter, full_text, task.question)
+        if inferred:
+            schema_columns, anchor_keys, schema_field_types = inferred
+            primary_key = anchor_keys[0] if anchor_keys else None
 
     # ---- Phase 1: compress ----
     logger.info("ETL compress: %s (%d chars)", path.name, len(full_text))
@@ -595,7 +527,6 @@ def extract_prose_file(
             csv_path.write_text(csv_text, encoding="utf-8")
             result = validate_csv(csv_path)
             if result:
-                _write_cache_signature(meta_path, cache_signature)
                 header, row_count = result
                 logger.info(
                     "ETL deterministic: %s → %s (%d cols, %d rows)",
@@ -628,7 +559,6 @@ def extract_prose_file(
             result = validate_csv(csv_path)
             if result:
                 header, row_count = result
-                _write_cache_signature(meta_path, cache_signature)
                 logger.info(
                     "ETL direct: %s → %s (%d cols, %d rows)",
                     path.name,
@@ -680,7 +610,6 @@ def extract_prose_file(
         return None
 
     header, row_count = result
-    _write_cache_signature(meta_path, cache_signature)
     logger.info(
         "ETL codegen: %s → %s (%d cols, %d rows)",
         path.name,

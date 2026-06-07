@@ -11,6 +11,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
 from agents.etl._detect import ENTITY_LINE, detect_sections
+from agents.etl._types import (
+    DATE_SCALAR,
+    NUMERIC_SCALAR,
+    RECORD_ID_FIELDS,
+    normalize_boolean,
+)
 
 if TYPE_CHECKING:
     from agents.llm.types import ModelAdapter
@@ -22,9 +28,6 @@ EXTRACT_CHUNK_LINES = 30
 
 MAX_WORKERS = 4
 LLM_CALL_TIMEOUT = 180
-RECORD_ID_FIELDS = frozenset(
-    {"record_id", "archive_id", "file_id", "case_id", "entry_id", "local_id", "unit_id"}
-)
 RECORD_ID_LABEL = re.compile(
     r"^(?:档案|记录|条目|战略单元|Record|File|Case)\s*[：:#-]?\s*(\d{1,8})$",
     re.IGNORECASE,
@@ -33,9 +36,6 @@ RECORD_ID_RANGE = re.compile(
     r"(?:档案|记录|条目|战略单元|Record|File|Case)?\s*\d{1,8}\s*(?:至|到|[-~–—])\s*\d{1,8}",
     re.IGNORECASE,
 )
-NUMERIC_SCALAR = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$")
-DATE_SCALAR = re.compile(r"^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$")
-BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "1", "0", "是", "否"})
 
 
 def _is_placeholder_value(val: str) -> bool:
@@ -67,12 +67,7 @@ def _clean_typed_scalar(val: str, field_type: str) -> str | None:
     if "date" in type_text:
         return stripped if DATE_SCALAR.match(stripped) else None
     if "boolean" in type_text:
-        low = stripped.lower()
-        if low in ("true", "yes", "1", "是"):
-            return "true"
-        if low in ("false", "no", "0", "否"):
-            return "false"
-        return None
+        return normalize_boolean(stripped)
     return stripped
 
 
