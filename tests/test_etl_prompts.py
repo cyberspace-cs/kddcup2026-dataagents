@@ -228,11 +228,13 @@ def test_parse_schema_response_normal_order() -> None:
         "fundcode, fundname, nav"
     )
     assert result is not None
-    pk, anchors, types, cols = result
+    pk, anchors, types, cols, units, defs = result
     assert pk == "fundcode"
     assert anchors == ["fundcode", "fundname"]
     assert types == {"fundcode": "scalar_id", "fundname": "string", "nav": "number"}
     assert cols == ["fundcode", "fundname", "nav"]
+    assert units == {}
+    assert defs == {}
 
 
 def test_parse_schema_response_out_of_order() -> None:
@@ -240,7 +242,7 @@ def test_parse_schema_response_out_of_order() -> None:
         "TYPES: id=integer, score=number\nANCHORS: id\nPK: id\nid, score, label"
     )
     assert result is not None
-    pk, anchors, _types, cols = result
+    pk, anchors, _, cols, _, _ = result
     assert pk == "id"
     assert anchors == ["id"]
     assert cols == ["id", "score", "label"]
@@ -249,11 +251,13 @@ def test_parse_schema_response_out_of_order() -> None:
 def test_parse_schema_response_missing_anchors_and_types() -> None:
     result = _parse_schema_response("PK: patient_id\npatient_id, age, weight")
     assert result is not None
-    pk, anchors, types, cols = result
+    pk, anchors, types, cols, units, defs = result
     assert pk == "patient_id"
     assert anchors == ["patient_id"]
     assert types == {}
     assert cols == ["patient_id", "age", "weight"]
+    assert units == {}
+    assert defs == {}
 
 
 def test_parse_schema_response_extra_commentary_ignored() -> None:
@@ -266,7 +270,7 @@ def test_parse_schema_response_extra_commentary_ignored() -> None:
         "Note: gdp is in billions."
     )
     assert result is not None
-    pk, anchors, types, cols = result
+    pk, anchors, types, cols, _, _ = result
     assert pk == "record_id"
     assert anchors == ["record_id", "province_name"]
     assert "gdp" in types
@@ -282,7 +286,7 @@ def test_parse_schema_response_returns_none_on_garbage() -> None:
 def test_parse_schema_response_anchor_added_to_columns() -> None:
     result = _parse_schema_response("PK: id\nANCHORS: id, name\nid, score")
     assert result is not None
-    _, _, _, cols = result
+    _, _, _, cols, _, _ = result
     assert "name" in cols
 
 

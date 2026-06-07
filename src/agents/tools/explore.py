@@ -111,6 +111,24 @@ def create_explore_tool_definition(
             unit_conversions = _detect_unit_conversions(task)
             if unit_conversions:
                 content["unit_conversion"] = unit_conversions
+                # Also inject per-file conversion notes into schema_map/files
+                # so the agent sees them alongside the columns.
+                files: list[dict[str, Any]] = content.get("files") or []
+                for conv in unit_conversions:
+                    fname: str = conv.get("file", "")
+                    for f in files:
+                        if fname and fname in f.get("path", ""):
+                            f.setdefault("column_conversions", {})[", ".join(conv["columns"])] = (
+                                conv["instruction"]
+                            )
+            # Fix paths: explorer LLM sometimes strips the leading '/' from
+            # absolute paths like /tmp/dabench/... — restore it so execute_python
+            # can open these files directly.
+            all_files: list[dict[str, Any]] = content.get("files") or []
+            for f in all_files:
+                p = f.get("path", "")
+                if p and not p.startswith("/") and "dabench" in p:
+                    f["path"] = "/" + p
         else:
             content = result.to_tool_content()
         return ToolExecutionResult(ok=result.success, content=content)

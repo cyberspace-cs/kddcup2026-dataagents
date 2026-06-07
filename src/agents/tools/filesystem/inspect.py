@@ -146,15 +146,28 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
                 try:
                     units_meta = json.loads(units_path.read_text(encoding="utf-8"))
                     schema: dict[str, Any] | None = entry.get("schema")
+                    # Build per-column conversion notes like:
+                    # {"pctbeforetran": "CONVERT: ×0.01 (% → ratio)"}
+                    col_conversions: dict[str, str] = {}
+                    for field, source_unit in units_meta.items():
+                        if field.startswith("_"):
+                            continue
+                        target = units_meta.get(f"_target_{field}")
+                        factor = units_meta.get(f"_factor_{field}")
+                        if target and factor and str(source_unit) != str(target):
+                            col_conversions[field] = (
+                                f"CONVERT: ×{factor} ({source_unit} → {target})"
+                            )
                     if isinstance(schema, dict) and "columns" in schema:
                         reordered: dict[str, Any] = {}
                         for key in schema:
                             reordered[key] = schema[key]
-                            if key == "columns":
-                                reordered["unit_hint"] = units_meta
+                            if key == "columns" and col_conversions:
+                                reordered["column_conversions"] = col_conversions
                         entry["schema"] = reordered
                     elif isinstance(schema, dict):
-                        schema["unit_hint"] = units_meta
+                        if col_conversions:
+                            schema["column_conversions"] = col_conversions
                 except (OSError, json.JSONDecodeError):
                     pass
         files_summary.append(entry)

@@ -30,6 +30,13 @@ EXTRACT_CHUNK_LINES = 30
 
 MAX_WORKERS = 4
 LLM_CALL_TIMEOUT = 180
+ENTITY_CHUNK_TOKEN_BUDGET = 2500
+
+RECORD_ID_INLINE = re.compile(
+    rf"(?:{RECORD_ID_KEYWORDS})\s*[：:#\-]?\s*(\d{{1,8}})",
+    re.IGNORECASE,
+)
+
 RECORD_ID_LABEL = re.compile(
     rf"^(?:{RECORD_ID_KEYWORDS})\s*[：:#-]?\s*(\d{{1,8}})$",
     re.IGNORECASE,
@@ -274,6 +281,203 @@ def sample_paragraphs_by_section(text: str, per_section: int = 1) -> str:
     return "\n\n".join(samples)
 
 
+def _group_paragraphs_by_entity(
+    text: str,
+) -> dict[str, list[str]] | None:
+    """Group paragraphs by record_id extracted via regex.
+
+    Returns {record_id: [paragraph, ...]} preserving paragraph order within
+    each entity, or None if the text lacks record_id patterns.
+    """
+    paras = [p.strip() for p in text.split("\n\n") if p.strip() and len(p.strip()) > 30]
+    if not paras:
+        return None
+
+    groups: dict[str, list[str]] = {}
+    tagged = 0
+    for para in paras:
+        match = RECORD_ID_INLINE.search(para)
+        if match:
+            rid = match.group(1)
+            groups.setdefault(rid, []).append(para)
+            tagged += 1
+
+    if tagged < 3 or not groups:
+        return None
+    return groups
+
+
+def _entity_chunks_by_token_budget(
+    entity_groups: dict[str, list[str]],
+    token_budget: int = ENTITY_CHUNK_TOKEN_BUDGET,
+) -> list[str]:
+    """Pack complete entity contexts into chunks that fit a token budget.
+
+    Each entity's paragraphs are joined and never split across chunks.
+    Entities larger than the budget get their own chunk.
+    """
+    from agents.llm.tokenizer import count_qwen_tokens
+
+    entity_texts: list[tuple[str, int]] = []
+    for _rid, paras in entity_groups.items():
+        full = "\n\n".join(paras)
+        toks = count_qwen_tokens(full)
+        entity_texts.append((full, toks))
+
+    chunks: list[str] = []
+    current_parts: list[str] = []
+    current_tokens = 0
+
+    for full, toks in entity_texts:
+        if toks >= token_budget:
+            if current_parts:
+                chunks.append("\n\n".join(current_parts))
+                current_parts = []
+                current_tokens = 0
+            chunks.append(full)
+            continue
+
+        if current_tokens + toks > token_budget and current_parts:
+            chunks.append("\n\n".join(current_parts))
+            current_parts = []
+            current_tokens = 0
+
+        current_parts.append(full)
+        current_tokens += toks
+
+    if current_parts:
+        chunks.append("\n\n".join(current_parts))
+
+    return chunks
+
+
+def _generate_compress_guide(
+    adapter: ModelAdapter,
+    prose_text: str,
+    schema_columns: list[str] | None = None,
+    schema_field_defs: dict[str, str] | None = None,
+    schema_field_types: dict[str, str] | None = None,
+) -> str | None:
+    """Analyze document structure once, produce a reusable extraction system prompt."""
+    if not schema_columns:
+        return None
+
+    paras = [p.strip() for p in prose_text.split("\n\n") if p.strip() and len(p.strip()) > 50]
+    if not paras:
+        return None
+    if len(paras) <= 20:
+        sample = "\n\n".join(paras)
+    else:
+        step = max(1, len(paras) // 20)
+        sample = "\n\n".join(p[:600] for p in paras[::step][:20])
+
+    defs_lines: list[str] = []
+    for f in schema_columns:
+        d = (schema_field_defs or {}).get(f, "")
+        t = (schema_field_types or {}).get(f, "")
+        parts = [f]
+        if t:
+            parts.append(f"type={t}")
+        if d:
+            parts.append(d)
+        defs_lines.append("  - " + " | ".join(parts))
+    defs_block = "\n".join(defs_lines)
+    cols = ", ".join(schema_columns)
+
+    prompt = textwrap.dedent(f"""\
+        Below is a representative sample from a large prose data document.
+        Each entity has a numeric record identifier (e.g. "档案 29", "记录 29").
+
+        Target schema fields:
+        {defs_block}
+
+        DOCUMENT SAMPLE (paragraphs from evenly-spaced positions):
+        ---
+        {sample}
+        ---
+
+        Analyze this document thoroughly and produce a SYSTEM PROMPT that will
+        guide another LLM to extract the correct field values from any
+        paragraph of this document into pipe-separated key-value lines like:
+          {cols}
+
+        Your system prompt MUST cover:
+
+        1. DOCUMENT LAYOUT: describe how the document is organized — are all
+           fields for one record in a single paragraph, or does the same record
+           appear across multiple paragraphs/sections with different fields
+           each time?
+
+        2. FIELD-TO-PROSE MAPPING: for EACH schema field, state the EXACT
+           prose phrase template that provides its value. Quote the Chinese or
+           English template with a placeholder X. Example:
+             field_a ← "在本次交易前，该实体持有 X 股" → X
+             field_b ← "此次股权变动涉及的股份数量为 X 股" → X
+
+        3. CRITICAL DISAMBIGUATION: list pairs of fields that look similar
+           in the prose and explain precisely how to tell them apart. This is
+           the most important part — mistakes here cause wrong data.
+           Pay special attention to percentage/ratio fields: a ratio stated
+           alongside a QUANTITY (e.g. "涉及 X 股…占转让方持股的 Y") is NOT
+           the same as a ratio stated alongside a HOLDING (e.g. "持有 X 股，
+           占总股本的 Y%"). Map each ratio to the field whose SHARES COUNT
+           appears in the same sentence.
+           CRITICAL: when a record spans multiple paragraphs — one describing
+           the transaction (transferred shares + ratio to total) and another
+           describing the transferor's holding state (held shares + ratio to
+           total) — explicitly instruct which paragraph supplies which field.
+           "Before/after holding pct" comes ONLY from the holding-state
+           paragraph (large share count, large pct ~1-50%), NEVER from the
+           transaction paragraph (small transfer count, tiny ratio ~0.001-0.01%).
+
+        4. FUZZY NUMBER RESOLUTION: if any values use approximate language
+           ("约", "大约", "近", Chinese number words like "六百九十七万"),
+           instruct the extractor to compute the exact value from other
+           precise numbers in the same paragraph (e.g. pre = post + transfer).
+           Always output computed precise values, never fuzzy approximations.
+
+        Output ONLY the system prompt text (under 1200 words), no wrapping
+        or commentary.""")
+    from agents.llm.types import ModelMessage
+
+    messages = [
+        ModelMessage(
+            role="system",
+            content="You analyze document structures and write precise data extraction instructions.",
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response = adapter.complete(messages)
+        guide = response.content.strip()
+        if len(guide) < 100:
+            return None
+        logger.info("ETL: generated compress guide (%d chars)", len(guide))
+        return guide
+    except Exception as exc:
+        logger.warning("Failed to generate compress guide: %s", exc)
+        return None
+
+
+def _format_schema_def_hint(
+    schema_columns: list[str] | None,
+    schema_field_defs: dict[str, str] | None,
+) -> str:
+    if not schema_columns or not schema_field_defs:
+        return ""
+    lines = [
+        f"  - {field}: {schema_field_defs[field]}"
+        for field in schema_columns
+        if field in schema_field_defs
+    ]
+    if not lines:
+        return ""
+    return (
+        "\nField semantic definitions — match values strictly by these meanings, "
+        "NOT by proximity or order of appearance in the text:\n" + "\n".join(lines) + "\n"
+    )
+
+
 def compress_chunk(
     adapter: ModelAdapter,
     chunk_text: str,
@@ -281,6 +485,8 @@ def compress_chunk(
     primary_key: str | None = None,
     anchor_keys: list[str] | None = None,
     schema_field_types: dict[str, str] | None = None,
+    schema_field_defs: dict[str, str] | None = None,
+    compress_guide: str | None = None,
 ) -> str:
     """Ask LLM to extract labeled key-value pairs from prose paragraphs."""
     if schema_columns and primary_key:
@@ -342,12 +548,15 @@ def compress_chunk(
             'placeholder — "initially X, corrected to Y" means Y is the real value.'
         )
 
+    def_hint = _format_schema_def_hint(schema_columns, schema_field_defs)
+
     prompt = textwrap.dedent(f"""\
         Below are paragraphs from a data document. Each paragraph describes one entity \
         and mixes data with narrative filler.
 
         Task: for each paragraph, extract data as labeled key-value pairs.
         {schema_hint}
+        {def_hint}
         {type_hint}
         {hard_type_rules}
         {format_hint}
@@ -378,6 +587,49 @@ def compress_chunk(
         leave personalcode empty unless an explicit personal/manager code is \
         stated.
         - Output numeric values WITHOUT unit suffixes (e.g. 193.0, not 193.0 cm).
+        - PERCENTAGES: the source text may express proportions in TWO forms: \
+        percent form ("1.55%") or ratio form ("0.001910" meaning 0.191%). \
+        Normalize ALL proportion/percentage values to PERCENT form: \
+        "1.55%" → 1.55 (strip %); bare ratio like "0.001910" that \
+        describes a proportion (e.g. "占总股本的 0.001910") → multiply \
+        by 100 → 0.191. This ensures consistent units within each column.
+        - NUMERIC CONSISTENCY (mandatory cross-check after extraction):
+          (a) For paired shares+percentage fields representing the SAME state \
+        (e.g. pre-transfer shares and pre-transfer pct), verify: \
+        pct_value ≈ shares_value / total_capital. If your extracted pct is \
+        orders of magnitude off from this ratio, you picked the WRONG number.
+          (b) A "before" percentage must be LARGER than the corresponding \
+        "after" percentage (transferor lost shares, so pct dropped).
+          (c) When a paragraph contains MULTIPLE ratio/decimal values, the one \
+        stated in the SAME sentence as the shares count (e.g. "持有 X 股，\
+        占总股本的 Y%") is the matching percentage. Ratios stated alongside \
+        the TRANSFER QUANTITY (e.g. "涉及 X 股…占转让方持股的 Y") belong \
+        to a DIFFERENT field or should be discarded.
+          (d) HOLDING vs TRANSACTION disambiguation — this is the #1 error \
+        source: documents often describe one record across TWO sections: \
+        (i) a transaction section stating the transferred quantity and its \
+        ratio to total capital (e.g. "转让 30万股…占总股本 0.00191"); \
+        (ii) a holding section stating the pre/post-transfer HOLDING and \
+        its ratio to total capital (e.g. "持有 244万股，占总股本 1.55%"). \
+        The "before/after holding pct" field MUST come from section (ii) — \
+        the ratio stated in the same clause as the HOLDING shares count. \
+        The ratio from section (i) describes what fraction of total capital \
+        was TRANSFERRED, which is a different semantic and must NEVER fill \
+        holding percentage fields. \
+        Key signal: match the percentage to its CO-OCCURRING shares figure. \
+        "持有 X 股，占总股本的 Y" → Y is the holding pct for X shares. \
+        "涉及/转让 X 股…占总股本的 Y" → Y is the transfer-volume ratio, \
+        discard for holding fields. \
+        Cross-check: holding_pct ≈ holding_shares / total_capital. If the \
+        ratio you picked doesn't satisfy this, you grabbed the wrong one.
+          If any check fails, re-read the paragraph and pick the value that \
+        satisfies all three constraints.
+        - FUZZY NUMBERS: when a value is approximate (marked with "约", \
+        "大约", "近", "roughly", Chinese number words like "六百九十七万"), \
+        compute the exact value from other precise numbers in the SAME \
+        paragraph if possible (e.g. pre = post + transferred, or \
+        post = pre - transferred). Output the computed precise value, \
+        not the fuzzy approximation.
         {placeholder_rule}
         - For corrections: output the FINAL corrected value directly — e.g. \
         "label: positive", not "label: positive (placeholder)".
@@ -391,24 +643,17 @@ def compress_chunk(
         ---""")
     from agents.llm.types import ModelMessage
 
+    system_content = compress_guide or "You are a data extraction preprocessor."
     messages = [
-        ModelMessage(role="system", content="You are a data extraction preprocessor."),
+        ModelMessage(role="system", content=system_content),
         ModelMessage(role="user", content=prompt),
     ]
     return adapter.complete(messages).content.strip()
 
 
-def compress_prose(
-    adapter: ModelAdapter,
-    text: str,
-    schema_columns: list[str] | None = None,
-    primary_key: str | None = None,
-    anchor_keys: list[str] | None = None,
-    schema_field_types: dict[str, str] | None = None,
-) -> str:
-    """Compress prose by stripping noise. All chunks across all sections run in one pool."""
+def _positional_chunks(text: str) -> list[tuple[str | None, str]]:
+    """Original positional chunking: split by section, then by paragraph count."""
     sections = detect_sections(text)
-
     work: list[tuple[str | None, str]] = []
     if not sections:
         paras = [p.strip() for p in text.split("\n\n") if p.strip()]
@@ -424,9 +669,44 @@ def compress_prose(
                 title = sec["title"] if first else None
                 work.append((title, "\n\n".join(paras[i : i + COMPRESS_CHUNK_SIZE])))
                 first = False
+    return work
+
+
+def compress_prose(
+    adapter: ModelAdapter,
+    text: str,
+    schema_columns: list[str] | None = None,
+    primary_key: str | None = None,
+    anchor_keys: list[str] | None = None,
+    schema_field_types: dict[str, str] | None = None,
+    schema_field_defs: dict[str, str] | None = None,
+) -> str:
+    """Compress prose by stripping noise. All chunks across all sections run in one pool."""
+
+    # Try entity-aware chunking: group paragraphs by record_id so each
+    # entity's full context is in one chunk, never split across chunks.
+    entity_groups = _group_paragraphs_by_entity(text)
+    if entity_groups:
+        entity_chunks = _entity_chunks_by_token_budget(entity_groups)
+        work: list[tuple[str | None, str]] = [(None, c) for c in entity_chunks]
+        logger.info(
+            "ETL compress: entity-aware chunking: %d entities → %d chunks",
+            len(entity_groups),
+            len(work),
+        )
+    else:
+        work = _positional_chunks(text)
 
     if not work:
         return text
+
+    guide = _generate_compress_guide(
+        adapter,
+        text,
+        schema_columns,
+        schema_field_defs,
+        schema_field_types,
+    )
 
     compressed: list[str | None] = [None] * len(work)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
@@ -439,6 +719,8 @@ def compress_prose(
                 primary_key,
                 anchor_keys,
                 schema_field_types,
+                schema_field_defs,
+                guide,
             ): idx
             for idx, item in enumerate(work)
         }
