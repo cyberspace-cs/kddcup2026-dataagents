@@ -39,13 +39,9 @@ RECORD_ID_RANGE = re.compile(
 )
 
 
-def _is_placeholder_value(val: str) -> bool:
-    return is_placeholder(val)
-
-
 def _clean_numeric_scalar(val: str) -> str | None:
     stripped = val.strip()
-    if _is_placeholder_value(stripped) or "(placeholder)" in stripped.lower():
+    if is_placeholder(stripped):
         return ""
     normalized = stripped.replace(",", "")
     if normalized.endswith("%"):
@@ -62,7 +58,7 @@ def _clean_typed_scalar(val: str, field_type: str) -> str | None:
         return _clean_numeric_scalar(val)
 
     stripped = val.strip()
-    if _is_placeholder_value(stripped) or "(placeholder)" in stripped.lower():
+    if is_placeholder(stripped):
         return ""
     if "date" in type_text:
         return stripped if DATE_SCALAR.match(stripped) else None
@@ -286,8 +282,6 @@ def compress_chunk(
     schema_field_types: dict[str, str] | None = None,
 ) -> str:
     """Ask LLM to extract labeled key-value pairs from prose paragraphs."""
-    if not primary_key and anchor_keys:
-        primary_key = anchor_keys[0]
     if schema_columns and primary_key:
         cols = ", ".join(schema_columns)
         schema_hint = (
@@ -430,9 +424,6 @@ def compress_prose(
 
     if not work:
         return text
-
-    if not primary_key and anchor_keys:
-        primary_key = anchor_keys[0]
 
     compressed: list[str | None] = [None] * len(work)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
