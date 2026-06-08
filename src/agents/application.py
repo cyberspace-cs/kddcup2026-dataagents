@@ -25,7 +25,6 @@ from agents.llm import (
     NativeToolsOpenAIAdapter,
     OpenAIModelAdapter,
     RateLimitedAdapter,
-    ToolProtocol,
 )
 from agents.runtime import StepCallback
 from agents.tools import ToolRegistry, create_default_tool_registry
@@ -104,54 +103,32 @@ def _maybe_wrap_rate_limiter(config: AppConfig, inner: ModelAdapter) -> ModelAda
     )
 
 
-def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) -> ModelAdapter:
+def build_model_adapter(config: AppConfig, tools: ToolRegistry) -> ModelAdapter:
     """根据 `config.agent` 构造模型适配器。
 
-    按 `tool_protocol` 分发：
-    - "native": 需要传入 `tools` 以把工具 schema 下推到 OpenAI `tools=[...]` 字段
-    - "text":   传统文本协议，不需要 tools 参数
+    始终构造 `NativeToolsOpenAIAdapter`，需要传入 `tools` 以把工具 schema
+    下推到 OpenAI `tools=[...]` 字段。
 
     当 `config.agent.rate_limit` 非 None 且 `api_key` 非空时，外面再套一层
     `RateLimitedAdapter`（PR-2）。线上 vLLM 路径留空 rate_limit 即跳过。
-
-    `_resolve_sampling_defaults` 在此处而非 `AgentConfig` 内调用：保持 AgentConfig
-    存 "用户原始意图"，Adapter 拿到 "实际下发值"，与 `enable_thinking is None →
-    不下发` 的语义对偶。
-
-    独立成函数主要是为了测试：可以 monkeypatch 掉这里注入 ScriptedModelAdapter。
     """
     sampling = _resolve_sampling_defaults(config.agent)
     reject_placeholder_api_key(config.agent.api_key, field="agent.api_key")
 
     has_rate_limiter = _has_rate_limiter(config)
 
-    inner: NativeToolsOpenAIAdapter | OpenAIModelAdapter
-    if config.agent.tool_protocol == "native":
-        if tools is None:
-            raise ValueError("NativeToolsOpenAIAdapter requires a ToolRegistry; pass `tools=...`.")
-        inner = NativeToolsOpenAIAdapter(
-            model=config.agent.model,
-            api_base=config.agent.api_base,
-            api_key=config.agent.api_key,
-            tools=tools,
-            allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
-            max_tokens=config.agent.max_tokens,
-            enable_thinking=config.agent.enable_thinking,
-            backend_kind=config.agent.backend_kind,
-            max_retries=0 if has_rate_limiter else 2,
-            **sampling,
-        )
-    else:
-        inner = OpenAIModelAdapter(
-            model=config.agent.model,
-            api_base=config.agent.api_base,
-            api_key=config.agent.api_key,
-            max_tokens=config.agent.max_tokens,
-            enable_thinking=config.agent.enable_thinking,
-            backend_kind=config.agent.backend_kind,
-            max_retries=0 if has_rate_limiter else 2,
-            **sampling,
-        )
+    inner = NativeToolsOpenAIAdapter(
+        model=config.agent.model,
+        api_base=config.agent.api_base,
+        api_key=config.agent.api_key,
+        tools=tools,
+        allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
+        max_tokens=config.agent.max_tokens,
+        enable_thinking=config.agent.enable_thinking,
+        backend_kind=config.agent.backend_kind,
+        max_retries=0 if has_rate_limiter else 2,
+        **sampling,
+    )
 
     return _maybe_wrap_rate_limiter(config, inner)
 
@@ -159,9 +136,8 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry | None = None) ->
 def build_no_tools_model_adapter(config: AppConfig) -> ModelAdapter:
     """Build a plain chat-completion adapter for verifier-style sub-agents.
 
-    This deliberately ignores ``agent.tool_protocol`` and never attaches tool schemas.
-    It still uses the shared rate limiter so verifier calls consume the configured
-    RPM/TPM budget.
+    This deliberately never attaches tool schemas. It still uses the shared
+    rate limiter so verifier calls consume the configured RPM/TPM budget.
     """
     reject_placeholder_api_key(config.agent.api_key, field="agent.api_key")
     has_rate_limiter = _has_rate_limiter(config)
@@ -187,8 +163,8 @@ def _build_explorer_adapter(config: AppConfig) -> ModelAdapter:
     """Build a model adapter for the Explorer sub-agent.
 
     Uses the same model/API/sampling config as the main agent. The Explorer's
-    tool registry is internal (created inside ``run_explorer``), so this adapter
-    needs no ``tools`` argument — the Explorer runner wires its own registry.
+    tool registry (``create_explorer_tool_registry``) is wired directly into
+    the ``NativeToolsOpenAIAdapter`` constructed here.
 
     Rate limiting is shared: both adapters use the same ``api_key`` →
     ``FileTokenBucket`` automatically deduplicates on the same bucket file.
@@ -197,32 +173,20 @@ def _build_explorer_adapter(config: AppConfig) -> ModelAdapter:
     reject_placeholder_api_key(config.agent.api_key, field="agent.api_key")
     has_rate_limiter = _has_rate_limiter(config)
 
-    if config.agent.tool_protocol == "native":
-        from agents.explorer.registry import create_explorer_tool_registry
+    from agents.explorer.registry import create_explorer_tool_registry
 
-        inner: NativeToolsOpenAIAdapter | OpenAIModelAdapter = NativeToolsOpenAIAdapter(
-            model=config.agent.model,
-            api_base=config.agent.api_base,
-            api_key=config.agent.api_key,
-            tools=create_explorer_tool_registry(),
-            allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
-            max_tokens=config.agent.max_tokens,
-            enable_thinking=config.agent.enable_thinking,
-            backend_kind=config.agent.backend_kind,
-            max_retries=0 if has_rate_limiter else 2,
-            **sampling,
-        )
-    else:
-        inner = OpenAIModelAdapter(
-            model=config.agent.model,
-            api_base=config.agent.api_base,
-            api_key=config.agent.api_key,
-            max_tokens=config.agent.max_tokens,
-            enable_thinking=config.agent.enable_thinking,
-            backend_kind=config.agent.backend_kind,
-            max_retries=0 if has_rate_limiter else 2,
-            **sampling,
-        )
+    inner = NativeToolsOpenAIAdapter(
+        model=config.agent.model,
+        api_base=config.agent.api_base,
+        api_key=config.agent.api_key,
+        tools=create_explorer_tool_registry(),
+        allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
+        max_tokens=config.agent.max_tokens,
+        enable_thinking=config.agent.enable_thinking,
+        backend_kind=config.agent.backend_kind,
+        max_retries=0 if has_rate_limiter else 2,
+        **sampling,
+    )
 
     return _maybe_wrap_rate_limiter(config, inner)
 
@@ -239,10 +203,9 @@ class AgentApp:
     字段都是构造完毕的实例：
     - dataset:        从 `config.dataset.root_path` 加载的只读 task 集合
     - registry:       不可变工具注册表（默认 8 工具）
-    - model_adapter:  按 tool_protocol + rate_limit 包装好的模型适配器
+    - model_adapter:  按 rate_limit 包装好的模型适配器
     - answer_verifier: 提交前 answer 形态检查器；测试 override 路径可为 None
     - agent_config:   ReAct 循环预算（max_steps / empty retry）
-    - protocol:       字面量 "native" | "text"，决定消息构造策略
 
     `new_agent` 每次产出一个独立 `ReActAgent` 实例：共享 model/tools/config，
     但循环状态相互隔离，便于同一进程串行跑多个任务。
@@ -253,7 +216,6 @@ class AgentApp:
     model_adapter: ModelAdapter
     answer_verifier: AnswerVerifier | None
     agent_config: ReActAgentConfig
-    protocol: ToolProtocol
 
     def new_agent(self, step_callback: StepCallback | None = None) -> ReActAgent:
         """生成一个使用本 App 共享依赖的新 ReAct 实例。"""
@@ -261,7 +223,6 @@ class AgentApp:
             model=self.model_adapter,
             tools=self.registry,
             config=self.agent_config,
-            protocol=self.protocol,
             step_callback=step_callback,
             answer_verifier=self.answer_verifier,
         )
@@ -292,7 +253,7 @@ def build_application(
         registry = tools
     else:
         explorer_adapter = _build_explorer_adapter(config)
-        explore_def = create_explore_tool_definition(explorer_adapter, config.agent.tool_protocol)
+        explore_def = create_explore_tool_definition(explorer_adapter)
         registry = create_default_tool_registry(explore_tool=explore_def)
 
     model_adapter = model if model is not None else build_model_adapter(config, tools=registry)
@@ -310,7 +271,6 @@ def build_application(
         model_adapter=model_adapter,
         answer_verifier=verifier,
         agent_config=agent_config,
-        protocol=config.agent.tool_protocol,
     )
 
 

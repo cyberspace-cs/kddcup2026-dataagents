@@ -59,8 +59,8 @@ src/agents/
 │   └── recorder.py              # Step events + step_callback
 ├── llm/                         # Model adapters, token accounting, rate limits
 │   ├── types.py                 # Provider-neutral model protocol and response types
-│   ├── openai.py                # OpenAI-compatible adapters (text + native)
-│   ├── protocol.py              # Native ↔ text → ToolCall normalization
+│   ├── openai.py                # OpenAI-compatible adapters (native function calling)
+│   ├── protocol.py              # ModelResponse → ToolCall normalization
 │   ├── rate_limit.py            # RateLimitedAdapter
 │   ├── token_bucket.py          # Cross-process token bucket
 │   └── tokenizer.py             # Qwen tokenizer loader

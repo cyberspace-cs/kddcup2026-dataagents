@@ -175,7 +175,7 @@ def test_backend_kind_dashscope_explicit(tmp_path: Path) -> None:
 
 
 def test_backend_kind_normalizes_case(tmp_path: Path) -> None:
-    """与 tool_protocol 一致：大小写规范化，保留 strict 字段集合校验。"""
+    """大小写规范化，保留 strict 字段集合校验。"""
     cfg_path = _write_config(tmp_path / "cfg.yaml", "  backend_kind: VLLM\n")
     cfg = load_app_config(cfg_path)
     assert cfg.agent.backend_kind == "vllm"

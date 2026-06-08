@@ -22,7 +22,7 @@ from agents.tools.inputs import ExploreInput
 from agents.tools.schema_normalize import normalize_for_vllm
 
 if TYPE_CHECKING:
-    from agents.llm import ModelAdapter, ToolProtocol
+    from agents.llm import ModelAdapter
     from agents.tools.registry import ToolDefinition
 
 logger = logging.getLogger(__name__)
@@ -87,11 +87,10 @@ def _detect_unit_conversions(task: PublicTask) -> list[dict[str, Any]]:
 
 def create_explore_tool_definition(
     explorer_model: ModelAdapter,
-    protocol: ToolProtocol,
 ) -> ToolDefinition:
     """Build a ToolDefinition that runs the Explorer sub-agent.
 
-    The returned handler closes over ``explorer_model`` and ``protocol``
+    The returned handler closes over ``explorer_model``
     so the main agent's ``ToolRegistry.execute`` can dispatch to it
     without knowing about the Explorer internals.
     """
@@ -100,7 +99,7 @@ def create_explore_tool_definition(
     def handler(task: PublicTask, _args: Any) -> ToolExecutionResult:
         from agents.explorer.runner import run_explorer
 
-        result = run_explorer(task, task.question, explorer_model, protocol=protocol)
+        result = run_explorer(task, task.question, explorer_model)
         content: dict[str, Any]
         if result.success:
             try:

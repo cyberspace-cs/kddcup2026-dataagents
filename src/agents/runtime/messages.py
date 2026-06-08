@@ -6,12 +6,10 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from agents.llm.protocol import ToolProtocol
 from agents.llm.types import ModelAdapter, ModelMessage, ModelResponse, ModelToolCall
 from agents.prompts import (
     build_native_system_prompt,
     build_observation_prompt,
-    build_system_prompt,
 )
 from agents.runtime.state import AgentRuntimeState, StepRecord
 from agents.tools import ToolRegistry
@@ -21,19 +19,12 @@ def build_system_message(
     *,
     model: ModelAdapter,
     tools: ToolRegistry,
-    protocol: ToolProtocol,
     system_prompt: str | None,
 ) -> ModelMessage:
-    """Build the protocol-specific system message."""
-    if protocol == "native":
-        raw_enable_thinking = getattr(model, "enable_thinking", None)
-        enable_thinking = raw_enable_thinking if isinstance(raw_enable_thinking, bool) else None
-        content = build_native_system_prompt(system_prompt, enable_thinking=enable_thinking)
-    else:
-        content = build_system_prompt(
-            tools.describe_for_prompt(),
-            system_prompt=system_prompt,
-        )
+    """Build the system message using native function-calling prompt."""
+    raw_enable_thinking = getattr(model, "enable_thinking", None)
+    enable_thinking = raw_enable_thinking if isinstance(raw_enable_thinking, bool) else None
+    content = build_native_system_prompt(system_prompt, enable_thinking=enable_thinking)
     return ModelMessage(role="system", content=content)
 
 
@@ -43,46 +34,19 @@ def build_messages(
     initial_content: str | list[dict[str, Any]],
     model: ModelAdapter,
     tools: ToolRegistry,
-    protocol: ToolProtocol,
     system_prompt: str | None,
 ) -> list[ModelMessage]:
-    """Build model request messages by dispatching to the active tool protocol."""
+    """Build model request messages for native tool protocol."""
     system_message = build_system_message(
         model=model,
         tools=tools,
-        protocol=protocol,
         system_prompt=system_prompt,
     )
-    if protocol == "native":
-        return build_messages_native(
-            state=state,
-            initial_content=initial_content,
-            system_message=system_message,
-        )
-    return build_messages_text(
+    return build_messages_native(
         state=state,
         initial_content=initial_content,
         system_message=system_message,
     )
-
-
-def build_messages_text(
-    *,
-    state: AgentRuntimeState,
-    initial_content: str | list[dict[str, Any]],
-    system_message: ModelMessage,
-) -> list[ModelMessage]:
-    """Build text-protocol history: assistant raw response plus user observation."""
-    messages = [system_message, ModelMessage(role="user", content=initial_content)]
-    for step in state.steps:
-        messages.append(ModelMessage(role="assistant", content=step.raw_response))
-        messages.append(
-            ModelMessage(
-                role="user",
-                content=build_observation_prompt(step.observation, ok=step.ok),
-            )
-        )
-    return messages
 
 
 def build_messages_native(

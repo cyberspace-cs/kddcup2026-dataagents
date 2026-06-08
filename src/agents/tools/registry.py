@@ -188,18 +188,6 @@ class ToolRegistry:
         # 后续 add/remove/replace 会透过 proxy 漏进 registry，违反不可变契约。
         object.__setattr__(self, "definitions", MappingProxyType(dict(self.definitions)))
 
-    def describe_for_prompt(self) -> str:
-        """把 definitions 渲染成 "- name: desc\\n  input_schema: {...}" 的多行文案。
-
-        按 name 排序保证输出稳定，便于 prompt cache 命中与 diff 审查。
-        """
-        lines: list[str] = []
-        for name in sorted(self.definitions):
-            definition = self.definitions[name]
-            lines.append(f"- {definition.name}: {definition.description}")
-            lines.append(f"  input_schema: {definition.input_schema}")
-        return "\n".join(lines)
-
     def execute(
         self, task: PublicTask, action: str, action_input: dict[str, Any]
     ) -> ToolExecutionResult:

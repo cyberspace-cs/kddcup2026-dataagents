@@ -112,7 +112,7 @@ def test_pin_sets_run_id(tmp_path: Path) -> None:
 
 def test_build_adapter_no_wrap_when_rate_limit_none(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path=tmp_path)  # rate_limit=None
-    # tool_protocol=native 默认需要 tools
+    # NativeToolsOpenAIAdapter requires tools
     from agents.tools.registry import create_default_tool_registry
 
     tools = create_default_tool_registry()

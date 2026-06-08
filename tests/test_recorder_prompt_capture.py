@@ -77,7 +77,6 @@ def test_step_records_carry_prompt_and_response(tmp_path: Path) -> None:
         model=_build_two_turn_adapter(),
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
     result = agent.run(task)
 
@@ -167,7 +166,6 @@ def test_parallel_tool_calls_only_lead_step_carries_prompt_and_response(
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
     result = agent.run(task)
 

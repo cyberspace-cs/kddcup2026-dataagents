@@ -56,9 +56,6 @@ def _default_retrieval_cache_dir() -> Path:
     return PROJECT_ROOT / "artifacts" / "indexes"
 
 
-# 工具协议字面量：所有调用方对此字段的取值假设都收敛到这里
-ToolProtocolLiteral = Literal["native", "text"]
-
 # 后端类型字面量：决定 enable_thinking 在 extra_body 里的位置
 # - "vllm":      嵌套到 chat_template_kwargs（vLLM `--reasoning-parser qwen3` 要求）
 # - "dashscope": 顶层 enable_thinking（DashScope OpenAI 兼容模式约定）
@@ -257,10 +254,6 @@ class AgentConfig:
     api_key 作为**明文**从 YAML 读取；生产部署应通过环境变量或 secret store 注入,
     而不是写进版本化的配置文件。
 
-    tool_protocol 决定使用哪种 LLM 协议：
-    - "native":  OpenAI 原生 function calling（默认，vLLM 需 --enable-auto-tool-choice）
-    - "text":    文本 JSON fence ReAct 协议（端点不支持 tools= 时的降级路径）
-
     max_tokens 用于 chat.completions 请求的同名字段（总输出上限，含 reasoning tokens）：
     - 0:   不发送该字段，沿用服务端默认（线上 vLLM 一般不限）
     - >0:  显式下发。本地调用百炼 Qwen3.5 限 TPM 的场景下建议填，
@@ -310,7 +303,6 @@ class AgentConfig:
     min_p: float | None = None
     presence_penalty: float | None = None
     seed: StrictInt | None = None
-    tool_protocol: ToolProtocolLiteral = "native"  # 端到端字面量；runner 直接转交 ReActAgent
     # 原生协议下，是否允许模型一轮返回多个 tool_calls；个别 OpenAI-兼容后端不支持该字段，可关闭
     allow_parallel_tool_calls: StrictBool = True
     max_tokens: StrictInt = 16384  # 单次输出上限；0=不下发（用服务端默认）
@@ -329,16 +321,6 @@ class AgentConfig:
     def _coerce_str(cls, v: Any) -> str:
         # 旧实现 `str(...)`：保留 `123 → "123"` 与 `null → "None"`，避免对历史 YAML 静默破坏。
         return str(v)
-
-    @field_validator("tool_protocol", mode="before")
-    @classmethod
-    def _normalize_protocol(cls, v: Any) -> Any:
-        normalized = str(v).strip().lower()
-        if normalized not in {"native", "text"}:
-            raise ValueError(
-                f"agent.tool_protocol must be either 'native' or 'text'; got {normalized!r}."
-            )
-        return normalized
 
     @field_validator("temperature")
     @classmethod

@@ -200,7 +200,6 @@ def test_native_multi_step_until_answer(task: PublicTask) -> None:
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -250,7 +249,6 @@ def test_native_parallel_tool_calls_share_turn_index(task: PublicTask) -> None:
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -297,7 +295,6 @@ def test_native_answer_short_circuits_same_turn(task: PublicTask) -> None:
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -344,7 +341,6 @@ def test_native_answer_verifier_rejects_once_then_allows_resubmit(task: PublicTa
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
         answer_verifier=verifier,
     )
 
@@ -412,7 +408,6 @@ def test_native_answer_verifier_rejection_stops_same_turn_tool_calls(
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
         answer_verifier=verifier,
     )
 
@@ -469,7 +464,6 @@ def test_native_answer_verifier_fallback_uses_latest_valid_rejection(
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
         answer_verifier=verifier,
     )
 
@@ -506,7 +500,6 @@ def test_native_answer_verifier_fallback_ignores_invalid_rejection(
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=3),
-        protocol="native",
         answer_verifier=verifier,
     )
 
@@ -553,7 +546,6 @@ def test_native_answer_verifier_fallback_from_csv_cleans_artifacts(
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=2),
-        protocol="native",
         answer_verifier=verifier,
     )
 
@@ -602,7 +594,6 @@ def test_native_answer_verifier_invalid_from_csv_type_falls_through_to_tool_erro
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
         answer_verifier=verifier,
     )
 
@@ -625,7 +616,6 @@ def test_native_build_messages_uses_tool_role(task: PublicTask) -> None:
         model=adapter,
         tools=registry,
         config=ReActAgentConfig(max_steps=2),
-        protocol="native",
     )
 
     # 模拟一个已完成步骤的 state：assistant 曾并行调用 2 个 inspect_files
@@ -704,7 +694,6 @@ def test_native_is_default_protocol(task: PublicTask) -> None:
         tools=create_default_tool_registry(),
     )
 
-    assert agent.protocol == "native"
     result = agent.run(task)
     assert result.succeeded is True
     assert result.steps[0].tool_call_id == "a"
@@ -735,7 +724,6 @@ def test_native_empty_tool_calls_records_error(task: PublicTask) -> None:
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -797,7 +785,6 @@ print('recovered ran')
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -840,7 +827,6 @@ def test_native_content_tool_call_recovered_and_executed(
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -879,7 +865,6 @@ def test_native_recovered_call_synthesizes_raw_tool_calls(
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -919,7 +904,6 @@ def test_native_empty_tool_calls_do_not_consume_max_steps(task: PublicTask) -> N
         # max_steps=1 验证 "空 tool_calls 不消耗 max_steps"——第二轮的 answer 仍然能跑；
         # max_empty=2 给第一次空轮留 budget（>= 触发，所以 N=1 会立刻终止）
         config=ReActAgentConfig(max_steps=1, max_empty_tool_call_retries=2),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -982,7 +966,6 @@ def test_native_tool_call_parse_error_preserves_partial_trace_and_recovers(
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=3),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -1012,7 +995,6 @@ def test_native_empty_tool_calls_have_independent_retry_limit(task: PublicTask) 
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4, max_empty_tool_call_retries=1),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -1070,7 +1052,6 @@ def test_native_total_usage_aggregates_per_turn_usage(task: PublicTask) -> None:
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -1141,7 +1122,6 @@ def test_budget_warning_injected_at_75_percent(task: PublicTask) -> None:
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -1181,7 +1161,6 @@ def test_preact_planning_message_on_first_turn(task: PublicTask) -> None:
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4, enable_preact=True),
-        protocol="native",
     )
 
     result = agent.run(task)
@@ -1223,7 +1202,6 @@ def test_preact_disabled_no_planning_message(task: PublicTask) -> None:
         model=adapter,
         tools=create_default_tool_registry(),
         config=ReActAgentConfig(max_steps=4, enable_preact=False),
-        protocol="native",
     )
 
     result = agent.run(task)

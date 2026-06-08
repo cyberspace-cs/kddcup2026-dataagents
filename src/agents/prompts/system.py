@@ -10,53 +10,6 @@ from agents.prompts.rules import (
     TASK_PROFILE,
 )
 
-# ReAct 系统提示词基座（文本协议）：权限边界 + 输出契约。
-# 关键约束点：
-#  - 只能通过工具读取 context/ 下文件（防止越权推理）
-#  - 必须以 answer 工具结束（没有它，循环只能因 max_steps 被动终止）
-#  - 响应格式严格，是为了让 parse_model_step 能稳定提取
-REACT_SYSTEM_PROMPT = f"""\
-You are a ReAct-style data analysis agent.
-
-{TASK_PROFILE}
-
-{GRADER_NOTE}
-
-## Behavior
-- Use tools to inspect the available context before answering.
-- Base your answer only on information you can observe through the provided tools.
-- The task is complete only when you call the `answer` tool.
-- The `answer` tool accepts either inline `columns`/`rows` for small answers (<10 rows AND <50 cells) or `from_csv` pointing at a CSV artifact (10+ rows OR 50+ cells).
-
-## Data conventions
-{DATA_OUTPUT_RULES}
-
-## Disambiguation
-{DISAMBIGUATION_RULES}
-
-## Output format
-- Always return exactly one JSON object with keys `thought`, `action`, and `action_input`.
-- Always wrap that JSON object in exactly one fenced code block that starts with ```json and ends with ```.
-- Do not output any text before or after the fenced JSON block.
-
-Keep reasoning concise and grounded in the observed data.
-
-{PATH_CONVENTION_BLOCK}"""
-
-# few-shot：展示首轮探索和最终 answer 两种形态。
-# 刻意分别给出一个 "未终止" 和一个 "终止" 的样例，避免模型只模仿其一。
-RESPONSE_EXAMPLES = """\
-Example response when you need to inspect the context:
-```json
-{"thought":"I should explore the available data context first.","action":"explore","action_input":{}}
-```
-
-Example response when you have the final answer:
-```json
-{"thought":"I have the final result table.","action":"answer","action_input":{"columns":["average_long_shots"],"rows":[["63.5"]]}}
-```"""
-
-
 # 原生 function calling 用的系统提示词。
 # 工具定义通过 OpenAI `tools=[...]` 下推，prompt 里不再复述工具表 / 响应格式。
 # Header 段（Behavior / Data conventions / Decision tree）用 f-string 拼装；
@@ -153,25 +106,6 @@ Required flow on every turn:
 Self-check: if you catch yourself drafting a tool_call shape (in any format) inside <think>, close </think> and re-emit it through the real channel — the draft never counts.
 
 The `answer` tool is your ONLY way to submit. Once your table is ready, emit a structured tool_call (write CSV + `answer` with `from_csv` for 10+ rows OR 50+ cells, or `answer` inline only for smaller answers) — no narration, no preview, no JSON-in-text."""
-
-
-def build_system_prompt(tool_descriptions: str, system_prompt: str | None = None) -> str:
-    """拼装**文本协议**下的系统消息：基础 prompt + 可用工具表 + 响应示例 + 格式硬约束。
-
-    `tool_descriptions` 由 `ToolRegistry.describe_for_prompt()` 生成，
-    其中每个工具含名字、用途和 input_schema，引导模型选对工具和入参。
-    """
-    # 允许外部注入自定义基础 prompt（eg. 针对评测集调优），缺省用 REACT_SYSTEM_PROMPT
-    base_prompt = system_prompt or REACT_SYSTEM_PROMPT
-    return (
-        f"{base_prompt}\n\n"
-        "Available tools:\n"
-        f"{tool_descriptions}\n\n"
-        f"{RESPONSE_EXAMPLES}\n\n"
-        # 最后再强调一次输出契约：多数失败都是模型漏了 fence 或加了多余解释
-        "You must always return a single ```json fenced block containing one JSON object "
-        "with keys `thought`, `action`, and `action_input`, and no extra text."
-    )
 
 
 def build_native_system_prompt(

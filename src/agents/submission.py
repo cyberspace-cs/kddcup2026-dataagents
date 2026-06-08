@@ -1,11 +1,9 @@
 """Submission entrypoint per §3.6: iterate /input task_<id>, write /output/<task_id>/prediction.csv.
 
 Wires through the shared `agents.application.build_application` factory rather than
-hand-assembling model + tools + agent — that's how the on-laptop CLI runs
-too, and it's the only path that picks the right adapter (NativeToolsOpenAIAdapter
-when `tool_protocol="native"`, plain OpenAIModelAdapter when "text"). main's
-old submission.py instantiated `OpenAIModelAdapter` against the default-native
-ReActAgent, which silently breaks on the first tool call.
+hand-assembling model + tools + agent — that's how the on-laptop CLI runs too,
+and it's the only path that picks the right adapter (NativeToolsOpenAIAdapter
+with tool schemas wired through the registry).
 
 Concurrency: tasks run on a `ThreadPoolExecutor` with `app` shared across
 workers. Safe because (1) the OpenAI client is thread-safe, (2) `RateLimitedAdapter`
@@ -93,7 +91,7 @@ def _build_config(input_root: Path) -> AppConfig:
     """Load the baked-in YAML and apply §3.4 / §3.5 overrides.
 
     Reading from `configs/react.example.yaml` (baked into the image
-    at /app/configs/) preserves on-laptop tuning — `tool_protocol`,
+    at /app/configs/) preserves on-laptop tuning —
     `enable_thinking`, `max_tokens`, `max_empty_tool_call_retries`, prompt
     knobs — that the local CLI uses. Override `CONFIG_PATH` to point at a
     different config inside the image.

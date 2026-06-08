@@ -1,16 +1,11 @@
 # Agent protocol
 
-The agent supports two protocols for getting tool calls out of an LLM. Switch via
-`agent.tool_protocol` in the YAML config.
+The agent uses OpenAI native function calling to get tool calls out of an LLM.
+vLLM with `--enable-auto-tool-choice --tool-call-parser qwen3_coder` works.
 
-## When to use which
+Multi-call per turn is supported. JSON arguments are validated by the SDK.
 
-| Protocol | Use when | Notes |
-| --- | --- | --- |
-| `native` | The endpoint supports OpenAI native function calling. vLLM with `--enable-auto-tool-choice --tool-call-parser qwen3_coder` works. | Default. Multi-call per turn. JSON arguments validated by the SDK. |
-| `text` | The endpoint cannot accept a `tools=` payload, or returns `400 Bad Request` when one is sent. | One call per turn. The model emits a single fenced JSON object containing `thought`, `action`, `action_input`. |
-
-In both modes the model adapters strip any `<think>...</think>` block from
+The model adapters strip any `<think>...</think>` block from
 `message.content` before parsing.
 
 ## Default tool inventory
