@@ -48,24 +48,18 @@ These are the current implementation anchors for the main runtime surfaces.
 | Model I/O | `src/agents/llm/openai.py` | OpenAI-compatible `chat.completions` adapters, Qwen3 `<think>` stripping, usage capture, latency capture, and native tool-call parsing. |
 | Tool inventory | `src/agents/tools/registry.py` plus `src/agents/tools/dispatcher.py` | `ToolDefinition`, immutable `ToolRegistry`, default tool inventory, Pydantic input validation, OpenAI tool schema export, and tool-call dispatch. |
 | Answer verification | `src/agents/verification/` | Optional no-tools answer-table verifier plus terminal-answer rejection/fallback policy. |
-| Application factory | `src/agents/application.py` | Wires dataset, registry, model adapter, verifier, loop config, and protocol into `AgentApp`. |
+| Application factory | `src/agents/application.py` | Wires dataset, registry, model adapter, verifier, and loop config into `AgentApp`. |
 | Subprocess runner | `src/agents/runs/runner.py` plus `runs/subprocess.py` and `runs/artifacts.py` | Per-task subprocess timeout isolation, deterministic key pinning, task artifacts, and `summary.json`. |
 | SQLite tracing | `src/agents/tracing/`, `src/agents/dashboard/`, and `dashboard/frontend/` | Opt-in span capture to `tracing.db_path`, FastAPI dashboard routes, and the Vite frontend that reads them. |
 | Rate limiting | `src/agents/llm/rate_limit.py` plus `src/agents/llm/token_bucket.py` | Cross-process RPM/TPM token buckets with `filelock`, atomic state writes, and Retry-After handling. |
 
-## Two protocols, one loop
+## Native function calling
 
-The agent supports both legacy text-fenced JSON and OpenAI native function calling. The
-response normalization lives in `agents/llm/protocol.py:adapt_model_response`:
-
-- **Text** — model emits a single JSON object (optionally inside a fenced block) with
-  `thought`, `action`, `action_input`. The dispatcher picks one tool per turn.
-- **Native** — model emits zero-or-more `tool_calls` in `choices[0].message`. The
-  dispatcher iterates them in order; the first terminal-and-successful call halts the loop.
-
-Both protocols feed a common tool-call stream into the dispatcher. The loop driver still
-has protocol-specific message replay paths because text turns replay as assistant/user
-messages, while native turns replay as assistant/tool messages with tool-call IDs.
+The agent uses OpenAI native function calling exclusively. Response normalization lives
+in `agents/llm/protocol.py:adapt_model_response`: the model emits zero-or-more
+`tool_calls` in `choices[0].message`, and the dispatcher iterates them in order; the
+first terminal-and-successful call halts the loop. Turns replay as assistant/tool
+messages with tool-call IDs.
 
 ## Subprocess isolation
 

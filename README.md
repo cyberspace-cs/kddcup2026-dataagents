@@ -67,7 +67,6 @@ agent:
   api_key: YOUR_API_KEY
   max_steps: 16
   temperature: 0.0
-  tool_protocol: native
 
 run:
   output_dir: artifacts/runs
