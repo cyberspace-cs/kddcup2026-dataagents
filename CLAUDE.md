@@ -52,7 +52,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) — canonical source for commit message
 
 ## Evaluation
 
-Run results are stored under `artifacts/runs/<run_id>/`, each task producing `<task_id>/prediction.csv` and `<task_id>/trace.json`. Score with:
+Run results are stored under `artifacts/runs/<run_id>/`, each task producing `<task_id>/prediction.csv`. Traces are written to `artifacts/traces.db` (SQLite). Score with:
 
 ```bash
 uv run python scripts/score_predictions.py \
