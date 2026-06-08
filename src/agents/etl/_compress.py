@@ -172,6 +172,21 @@ def _format_hard_type_rules(
     return "\n" + "\n".join(lines) + "\n"
 
 
+def _normalize_kv_separators(line: str) -> str:
+    """Rewrite ``key=value`` parts to ``key: value`` so downstream code sees ``:`` only."""
+    if "=" not in line:
+        return line
+    parts: list[str] = []
+    for part in line.split("|"):
+        stripped = part.strip()
+        if "=" in stripped and ":" not in stripped:
+            key, _, val = stripped.partition("=")
+            parts.append(f"{key.strip()}: {val.strip()}")
+        else:
+            parts.append(stripped)
+    return " | ".join(parts)
+
+
 def _clean_compressed_entity_lines(
     text: str,
     schema_columns: list[str] | None = None,
@@ -188,7 +203,7 @@ def _clean_compressed_entity_lines(
     normalized = 0
 
     for line in text.splitlines():
-        stripped = line.strip()
+        stripped = _normalize_kv_separators(line.strip())
         if not stripped or ":" not in stripped:
             cleaned.append(line)
             continue
@@ -502,6 +517,7 @@ def compress_chunk(
         format_hint = (
             f"Format — one line per entity-paragraph, pipe-separated key-value pairs:\n"
             f"  {primary_key}: <value> | field_a: <value> | field_b: <value> | ...\n"
+            "Use COLON (:) to separate key from value. NEVER use = as separator.\n"
             "ONLY include fields that have actual values in the paragraph. "
             "OMIT non-identity fields with no suitable value; downstream "
             "normalization will fill them as empty cells.\n"
@@ -526,6 +542,7 @@ def compress_chunk(
         format_hint = (
             "Format — one line per entity-paragraph:\n"
             "  ID: <number> | entity_name: <name> | <field>: <value> | ...\n"
+            "Use COLON (:) to separate key from value. NEVER use = as separator.\n"
         )
         anchor_rule = (
             "- Start each line with the entity's numeric ID AND its name/codename/label "
