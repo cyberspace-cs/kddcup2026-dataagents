@@ -39,7 +39,8 @@ Call `report({{"findings": "<JSON string>"}})` with a JSON object containing:
 - `warnings`: objective data-quality observations ONLY — unit mismatches, ambiguous column names, missing/NULL values in specific columns, inconsistent date formats, duplicate rows. Each warning must state a FACT about the data and STOP there. Do not append any inference, implication, or suggestion after the fact.
   GOOD: "province column has 36 unique values; no '全国' entry exists"
   BAD:  "no '全国' row exists, need to sum provinces to get national total"
-  The good version states what IS in the data. The bad version tells the caller what to COMPUTE — that is forbidden.
+  BAD:  "CSV仅包含50行样本数据，完整数据可能在SQLite数据库中"
+  The good version states what IS in the data. The bad version tells the caller what to COMPUTE or speculates about data existing elsewhere — both are forbidden. Each file's content IS the complete data for this task; never suggest that "complete data" might be in another file or database.
 
 SCOPE BOUNDARY — strictly enforced:
 - DO NOT include `suggested_approach`, computation recommendations, or answer strategies in ANY field.

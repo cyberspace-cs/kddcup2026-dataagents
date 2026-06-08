@@ -309,7 +309,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   constrain decimal precision on computed values.
 - **System prompt now steers large answer tables to the artifact handoff.**
   Two bullets appended to `_DATA_OUTPUT_RULES` (so both text and native
-  protocols inherit them): (1) for answers >= 30 rows OR >= 200 cells,
+  protocols inherit them): (1) for answers >= 10 rows OR >= 50 cells,
   prefer `answer({from_csv: <abs path under DABENCH_ANSWER_DIR>})` over
   inline `columns`/`rows`. The bullet also makes column projection a
   library-agnostic obligation: decide the column set FIRST from the
@@ -383,14 +383,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   input reads, not the artifact-write path that the prompt bans.
 - **`answer` inline payload now hard-rejected above the artifact-handoff
   threshold.** `AnswerInput` validates that inline `rows` does not exceed
-  30 rows OR 200 cells; over-threshold inline submissions raise
+  10 rows OR 50 cells; over-threshold inline submissions raise
   `answer: inline rows payload exceeds artifact-handoff threshold (got
-  <N> rows, <M> cells; threshold = 30 rows or 200 cells); write the
+  <N> rows, <M> cells; threshold = 10 rows or 50 cells); write the
   table to os.path.join(os.environ['DABENCH_ANSWER_DIR'], 'answer.csv')
   from execute_python and resubmit with from_csv (no columns/rows)`.
   The dispatcher routes the validation error into a `ToolErrorEvent`,
   the ReAct loop continues, and the model re-emits with `from_csv`.
-  Previously the same `30+ rows OR 200+ cells` threshold lived only as a
+  Previously the same `10+ rows OR 50+ cells` threshold lived only as a
   `_DATA_OUTPUT_RULES` "prefer" guideline; the prompt rule is preserved
   but is now backed by a hard validator. Empirical motivation: in run
   `20260430-015` task_8, `execute_python` correctly wrote the 140-row

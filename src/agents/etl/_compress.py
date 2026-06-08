@@ -292,7 +292,7 @@ def sample_paragraphs_by_section(text: str, per_section: int = 1) -> str:
             continue
         paras.sort(key=len, reverse=True)
         for p in paras[:per_section]:
-            samples.append(p[:1000])
+            samples.append(p)
     return "\n\n".join(samples)
 
 
@@ -384,7 +384,7 @@ def _generate_compress_guide(
         sample = "\n\n".join(paras)
     else:
         step = max(1, len(paras) // 20)
-        sample = "\n\n".join(p[:600] for p in paras[::step][:20])
+        sample = "\n\n".join(paras[::step][:20])
 
     defs_lines: list[str] = []
     for f in schema_columns:

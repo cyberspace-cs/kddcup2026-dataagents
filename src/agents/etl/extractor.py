@@ -372,6 +372,65 @@ def _write_units_sidecar(
     units_path.write_text(json.dumps(field_units, ensure_ascii=False), encoding="utf-8")
 
 
+def _extract_relevant_entity(
+    adapter: ModelAdapter,
+    km_text: str,
+    prose_stem: str,
+    prose_sample: str,
+) -> str | None:
+    """Pre-filter knowledge.md to only the entity section matching the prose file.
+
+    Sends a lightweight LLM call to identify which entity in the governance
+    document corresponds to the prose file, and returns only that section.
+    This prevents cross-table column contamination in downstream schema inference.
+    """
+    prompt = textwrap.dedent(f"""\
+        Below is a data governance document that describes MULTIPLE database \
+        tables / entities. I also provide a prose data file name and a short \
+        sample from it.
+
+        Prose file: "{prose_stem}"
+        Prose sample (first few lines):
+        ---
+        {prose_sample[:1500]}
+        ---
+
+        Task: find the ONE entity / table section in the governance document \
+        that best matches this prose file. Copy that section VERBATIM — \
+        include the heading, all column definitions, all footnotes and units \
+        that belong to it. Do NOT include sections for other entities.
+
+        If no entity matches, output exactly: NONE
+
+        Governance document:
+        {km_text}""")
+    messages = [
+        ModelMessage(
+            role="system",
+            content="You extract the relevant section from a governance document. Output only the matched section verbatim, nothing else.",
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception as exc:
+        logger.warning("LLM entity pre-filter failed: %s", exc)
+        return None
+
+    raw = response.content.strip()
+    if not raw or raw.strip().strip("`").upper() == "NONE":
+        return None
+    if len(raw) < 20:
+        return None
+    logger.info(
+        "Knowledge pre-filter for '%s': %d → %d chars",
+        prose_stem,
+        len(km_text),
+        len(raw),
+    )
+    return raw
+
+
 def _parse_knowledge_schema(
     task: PublicTask, prose_path: Path, adapter: ModelAdapter, prose_text: str
 ) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
@@ -396,6 +455,11 @@ def _parse_knowledge_schema(
     prose_sample = sample_paragraphs_by_section(prose_text, per_section=1) if prose_text else ""
 
     prose_stem = prose_path.stem
+
+    filtered_km = _extract_relevant_entity(adapter, km_text, prose_stem, prose_sample or "")
+    if filtered_km:
+        km_text = filtered_km
+
     prose_section = ""
     if prose_sample:
         prose_section = (
@@ -436,9 +500,9 @@ def _parse_knowledge_schema(
         translate, expand, or paraphrase them — "sumbeforetran" stays \
         "sumbeforetran", NOT "shares_held_before" or "sum_before_tran".
         - Only invent new field names for fields discovered in the prose sample \
-        that have NO corresponding column in the governance document. New names \
-        must be SHORT GENERIC FIELD NAMES (like "event_id", "tran_date"), \
-        NEVER a specific data value.
+        that are not fully covered by any governance column's definition. \
+        New names must be SHORT GENERIC FIELD NAMES (like "event_id", \
+        "tran_date"), NEVER a specific data value.
         - ANCHORS should include the PK and any name/label/secondary identifier \
         field that could be used to recognize the same entity across different \
         sections of the document (e.g. a person's name, a record label).
@@ -447,15 +511,27 @@ def _parse_knowledge_schema(
         number, integer_count, integer_rank, string, category, boolean, url.
         - For document-local record_id fields use type "integer_scalar local_record_id"; \
         record_id values must be a single scalar number, not a range or list.
-        - MANDATORY: scan the prose sample for ALL numeric, date, and \
-        categorical data fields present in the text — even if the governance \
-        document does NOT list them. Every distinct numeric value type in the \
-        prose MUST have its own column. This prevents unrelated values from \
-        being forced into governance columns. For example, if the prose \
-        mentions both "转让数量" and "转让前持股" as separate numbers, both \
-        need their own column — omitting "transfer_shares" would cause its \
-        values to pollute "sumbeforetran". Add discovered fields with \
-        descriptive short names.
+        - MANDATORY: scan the prose sample for numeric, date, and \
+        categorical data fields that have NO matching governance column. \
+        For each prose field, check every governance column's \
+        definition / description. A governance column covers a prose field \
+        ONLY when it matches the same concept AND all binding qualifiers: \
+        time window, before/after state, numerator/denominator, entity scope, \
+        category, unit, and aggregation level. Opaque database names are \
+        canonical when their definitions match exactly; do NOT add translated \
+        aliases for them. If a prose field is only related to a governance \
+        column but differs in any binding qualifier, treat it as a distinct \
+        discovered field and add a short descriptive name. \
+        Example — WRONG: governance has "rrintenyear" defined as \
+        "近十年累计回报率", prose shows "近十年累计回报率: 166.09" → adding \
+        "ten_year_return" creates a duplicate column and splits values. \
+        CORRECT: recognise "近十年累计回报率" matches "rrintenyear" → use \
+        "rrintenyear", do NOT add "ten_year_return". \
+        Example — CORRECT addition: governance has "sumbeforetran" \
+        ("转让前持股") but prose ALSO has "转让数量" which no governance \
+        column covers → add "transfer_shares" as a new discovered field. \
+        Two columns for the same concept causes value split (some rows \
+        fill column A, others fill column B) and is a critical schema error.
         - If paragraphs are keyed by repeated document-local labels such as \
         "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353", \
         "File 353", or "Case 353", include a field named "record_id" and \

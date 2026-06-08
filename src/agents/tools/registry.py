@@ -436,9 +436,9 @@ def create_default_tool_registry(
             description=(
                 "Use this when the final answer table is determined. This is the only "
                 "way to submit; plain text answers are ignored. "
-                "For ≤30 rows: pass inline columns/rows. "
-                "For 30+ rows: write CSV in execute_python first, then pass from_csv "
-                "(inline is rejected above 30 rows). "
+                "For small answers (<10 rows AND <50 cells): pass inline columns/rows. "
+                "For 10+ rows OR 50+ cells: write CSV in execute_python first, "
+                "then pass from_csv (inline is rejected at this threshold). "
                 "IMPORTANT: for content-entity questions "
                 '("what is the comment/post/message/title"), columns must contain '
                 "the text body (Text/Body/Title), NOT a surrogate key (Id/Code)."

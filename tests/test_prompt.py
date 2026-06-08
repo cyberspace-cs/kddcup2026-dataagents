@@ -496,8 +496,8 @@ def test_system_prompts_advertise_artifact_handoff() -> None:
         # artifact 工作流必须出现两个关键关键词
         assert "from_csv" in prompt
         assert "DABENCH_ANSWER_DIR" in prompt
-        # 阈值"30 行 / 200 cell"是模型何时切 artifact 的判定线
-        assert "30+ rows" in prompt and "200+ cells" in prompt
+        # 阈值"10 行 / 50 cell"是模型何时切 artifact 的判定线
+        assert "10+ rows" in prompt and "50+ cells" in prompt
         # verification print 是 prompt 的另一条新规
         lower = prompt.lower()
         assert "print a verification snapshot" in lower

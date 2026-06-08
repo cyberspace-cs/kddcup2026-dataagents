@@ -308,7 +308,7 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
     Inline + 残留 artifact 互斥：模型若已经把表写到 `_answer/answer.csv`，
     必须用 `from_csv` 指向它；继续 inline 一律拒绝。回归参照见
     `run 20260501-010/task_8`——`to_csv` 写出 140 行后，模型在 `answer` tool_call
-    里只 inline 了 `head(20)` 的 20 行，inline 硬闸（30 行 / 200 cells）抓不住。
+    里只 inline 了 `head(5)` 的 5 行，inline 硬闸（10 行 / 50 cells）抓不住。
     raise ValueError 让 dispatcher 翻译为 `ToolErrorEvent`，下一轮模型自己改 `from_csv`。
     """
     artifact_path = _answer_dir_for(task) / "answer.csv"
