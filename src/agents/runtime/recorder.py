@@ -6,7 +6,7 @@
 
 事件分类（与 `EventKind` 一一对应）：
 - `model_error`:        `model.complete` 抛异常
-- `parse_error`:        text 协议 `parse_model_step` 失败
+- `parse_error`:        tool_call arguments JSON 解析失败
 - `empty_tool_calls`:   native 协议返回空 tool_calls（含 reasoning 草稿兜底）
 - `tool_error`:         tool handler 抛异常（含未知工具名 / 参数非法 / answer 校验失败）
 - `observation`:        tool handler 返回（无论 ok 真假）
@@ -59,7 +59,7 @@ class ModelErrorEvent:
 
 @dataclass(frozen=True, slots=True)
 class ParseErrorEvent:
-    """text 协议下 `parse_model_step` 失败。raw_response/usage/reasoning 来自原响应。
+    """tool_call arguments JSON 解析失败。raw_response/usage/reasoning 来自原响应。
 
     `prompt_messages` / `response_message`：分别是当步发给 LLM 的 messages 与原始响应 dict；
     用于离线调试时回放当时的输入输出。

@@ -70,7 +70,6 @@ agent:
   api_key: YOUR_API_KEY                   # ignored when api_keys is set
   max_steps: 16
   temperature: 0.0
-  tool_protocol: native                   # "native" | "text"
   allow_parallel_tool_calls: true
   max_tokens: 16384                       # 0 = use endpoint default
   enable_thinking: true                   # Qwen3 extra_body passthrough; null = omit
@@ -112,7 +111,6 @@ run:
 
 - Strict bool/int coercion. Quoted YAML scalars like `"false"` or `"16384"` are rejected.
   Use unquoted scalars (`false`, `16384`).
-- `tool_protocol` must be `native` or `text` (literal).
 - `api_keys` and `rate_limit` are paired: setting one without the other is rejected.
 - `agent.rate_limit.reserve_output_tokens` must be ≤ `agent.max_tokens` (when both are set).
 - `run.retrieval_index` is optional and defaults to disabled; when enabled, index cache paths

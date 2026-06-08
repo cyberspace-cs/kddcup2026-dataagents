@@ -3,7 +3,7 @@
 本模块只剩两件事：循环预算配置（`ReActAgentConfig`）和驱动主循环本身
 （调模型、把响应转成事件、记账、判终止）。
 具体的协议解析、工具派发、事件序列化分别下沉到：
-- `agents.llm.protocol.adapt_model_response`：text/native → 统一 `ProtocolTurn`
+- `agents.llm.protocol.adapt_model_response`：规整 ModelResponse → 统一 `ProtocolTurn`
 - `agents.tools.dispatcher.dispatch_tool_call`：执行单个 tool_call，返回 `(result, should_terminate)`
 - `agents.runtime.recorder.record_step_event`：把事件序列化成 `StepRecord` 并通知 step_callback
 - `agents.runtime.messages` / `agents.runtime.media`：构造 system/user/replay messages
@@ -25,9 +25,7 @@ from agents.llm import (
     ModelMessage,
     TokenUsage,
     ToolCallParseError,
-    ToolProtocol,
     adapt_model_response,
-    parse_model_step,
 )
 from agents.runtime import (
     AgentRunResult,
@@ -57,8 +55,6 @@ __all__ = [
     "ReActAgent",
     "ReActAgentConfig",
     "StepCallback",
-    "ToolProtocol",
-    "parse_model_step",
 ]
 
 
@@ -69,12 +65,10 @@ class ReActAgentConfig:
     仅暴露循环预算，其余行为（prompt / 工具集）通过构造参数注入，
     让本类对评测脚本/单元测试都易替换。
 
-    注意：`max_steps` 在两种协议下的语义不同：
-    - text 模式：每轮模型回复恰好对应一次工具调用 → max_steps ≈ 工具调用次数
-    - native 模式：每轮非空 tool_calls 可能并行发出多个工具调用 → max_steps 是
-      **有效模型轮数**上限，实际工具调用次数可能更高
+    `max_steps` 是**有效模型轮数**上限。每轮非空 tool_calls 可能并行发出多个
+    工具调用，因此实际工具调用次数可能高于 max_steps。
 
-    `max_empty_tool_call_retries` 只用于 native 模式下 response.tool_calls 为空的情况。
+    `max_empty_tool_call_retries` 用于 response.tool_calls 为空的情况。
     这类响应只产生纠偏 observation，不应消耗业务 max_steps；单独设上限避免无限重试。
     """
 
@@ -87,8 +81,7 @@ class ReActAgent:
     """ReAct 范式的 Agent 实例。
 
     构造时注入 model 和 tools 允许在不同场景复用同一套循环逻辑：
-    - 线上（native）：NativeToolsOpenAIAdapter + 默认 ToolRegistry
-    - 线上（text）：OpenAIModelAdapter + 默认 ToolRegistry（降级路径）
+    - 线上：NativeToolsOpenAIAdapter + 默认 ToolRegistry
     - 离线测试：Scripted[Native]ModelAdapter + mock ToolRegistry
     """
 
@@ -99,16 +92,12 @@ class ReActAgent:
         tools: ToolRegistry,
         config: ReActAgentConfig | None = None,
         system_prompt: str | None = None,
-        protocol: ToolProtocol = "native",
         step_callback: StepCallback | None = None,
         answer_verifier: AnswerVerifier | None = None,
     ) -> None:
         self.model = model
         self.tools = tools
-        # 缺省配置：max_steps=16
         self.config = config or ReActAgentConfig()
-        self.protocol: ToolProtocol = protocol
-        # 允许外部替换 prompt 基座用于 A/B，缺省根据协议选合适的模板
         self.system_prompt = system_prompt
         self.step_callback = step_callback
         self.answer_verifier = answer_verifier
@@ -138,17 +127,14 @@ class ReActAgent:
     # ----------------------------- 消息构造 -----------------------------
 
     def _system_message(self) -> ModelMessage:
-        """按协议选合适的 system prompt。
+        """构造 system prompt。
 
-        native 协议下额外读取 `model.enable_thinking`：仅在显式 False 时
+        额外读取 `model.enable_thinking`：仅在显式 False 时
         会跳过 `_NATIVE_OUTPUT_PROTOCOL` 段（参见 `build_native_system_prompt`）。
-        `getattr` + isinstance 让 ModelAdapter Protocol 可以无该属性，未来
-        加入非 bool 字段也不会被误读。
         """
         return build_system_message(
             model=self.model,
             tools=self.tools,
-            protocol=self.protocol,
             system_prompt=self.system_prompt,
         )
 
@@ -157,13 +143,11 @@ class ReActAgent:
         state: AgentRuntimeState,
         initial_content: str | list[dict[str, Any]],
     ) -> list[ModelMessage]:
-        """按协议分派具体的消息构造策略。"""
         return build_messages(
             state=state,
             initial_content=initial_content,
             model=self.model,
             tools=self.tools,
-            protocol=self.protocol,
             system_prompt=self.system_prompt,
         )
 
@@ -257,30 +241,9 @@ class ReActAgent:
             serialized_response = serialize_response(response)
             turn = adapt_model_response(
                 response,
-                protocol=self.protocol,
                 turn_index=turn_index,
                 allowed_tool_names=self.tools.definitions,
             )
-
-            if turn.parse_error is not None:
-                # text 协议的 fence 解析失败
-                effective_turns += 1
-                step_counter += 1
-                record_step_event(
-                    state,
-                    ParseErrorEvent(
-                        error=turn.parse_error,
-                        raw_response=response.raw_response,
-                        reasoning=response.reasoning_content,
-                        usage=response.usage,
-                        prompt_messages=serialized_prompt,
-                        response_message=serialized_response,
-                    ),
-                    step_index=step_counter,
-                    turn_index=turn_index,
-                    callback=self.step_callback,
-                )
-                continue
 
             if not turn.calls:
                 # native 协议下模型回了空 tool_calls：记纠偏 observation，独立 retry budget
@@ -345,13 +308,10 @@ class ReActAgent:
                 continue
 
             effective_turns += 1
-            # text 协议下 StepRecord 不承载原生调用 id / 原始 tool_calls（语义上它们都是
-            # 合成的占位值），保持 None 可让读者清楚区分两种协议。
-            is_native = self.protocol == "native"
             # recovered tool call（从 content/reasoning 解析）没有原始 raw_tool_calls，
-            # 需要合成以便 native 协议 message 回放时 assistant.tool_calls 与 tool.tool_call_id 匹配
+            # 需要合成以便 message 回放时 assistant.tool_calls 与 tool.tool_call_id 匹配
             effective_raw_tool_calls: list[dict[str, object]] = response.raw_tool_calls or []
-            if is_native and not effective_raw_tool_calls and turn.calls:
+            if not effective_raw_tool_calls and turn.calls:
                 effective_raw_tool_calls = synthesize_raw_tool_calls(turn.calls)
             replay_raw_tool_calls = effective_raw_tool_calls
             verifier_rejected_this_turn = False
@@ -359,15 +319,10 @@ class ReActAgent:
             for call_idx, tool_call in enumerate(turn.calls):
                 step_counter += 1
                 is_lead = call_idx == 0
-                # 仅首条 StepRecord 带 raw_tool_calls（用于 native 模式 message 回放）
-                if is_native:
-                    step_tool_call_id: str | None = tool_call.id or None
-                    step_raw_tool_calls: list[dict[str, object]] | None = (
-                        replay_raw_tool_calls if is_lead else None
-                    )
-                else:
-                    step_tool_call_id = None
-                    step_raw_tool_calls = None
+                step_tool_call_id: str | None = tool_call.id or None
+                step_raw_tool_calls: list[dict[str, object]] | None = (
+                    replay_raw_tool_calls if is_lead else None
+                )
                 # usage / reasoning / prompt_messages / response_message 与 raw_tool_calls
                 # 同约定：仅 lead 承载，避免双计 + 节省体积
                 step_reasoning = response.reasoning_content if is_lead else ""
@@ -384,19 +339,18 @@ class ReActAgent:
                     remaining_steps=budget_status.remaining,
                 )
                 if rejection is not None:
-                    if is_native:
-                        # Native replay requires one tool message for every assistant
-                        # tool_call. If a rejection cuts the turn short, omit later
-                        # unexecuted tool calls from replay metadata.
-                        replay_raw_tool_calls = effective_raw_tool_calls[: call_idx + 1]
-                        if is_lead:
-                            step_raw_tool_calls = replay_raw_tool_calls
-                        elif turn_first_state_index < len(state.steps):
-                            lead_step = state.steps[turn_first_state_index]
-                            state.steps[turn_first_state_index] = replace(
-                                lead_step,
-                                raw_tool_calls=replay_raw_tool_calls,
-                            )
+                    # Replay requires one tool message for every assistant
+                    # tool_call. If a rejection cuts the turn short, omit later
+                    # unexecuted tool calls from replay metadata.
+                    replay_raw_tool_calls = effective_raw_tool_calls[: call_idx + 1]
+                    if is_lead:
+                        step_raw_tool_calls = replay_raw_tool_calls
+                    elif turn_first_state_index < len(state.steps):
+                        lead_step = state.steps[turn_first_state_index]
+                        state.steps[turn_first_state_index] = replace(
+                            lead_step,
+                            raw_tool_calls=replay_raw_tool_calls,
+                        )
                     record_step_event(
                         state,
                         ObservationEvent(

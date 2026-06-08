@@ -9,7 +9,6 @@ from agents.prompts import (
     REACT_NATIVE_SYSTEM_PROMPT,
     build_native_system_prompt,
     build_observation_prompt,
-    build_system_prompt,
     build_task_prompt,
 )
 
@@ -206,23 +205,6 @@ def test_native_system_prompt_enforces_format_tolerance() -> None:
     assert 'do not fall back to "closest numeric match"' in lower
 
 
-def test_text_system_prompt_enforces_format_tolerance() -> None:
-    """文本协议同样需要 format tolerance 防护。
-
-    迁移前文本协议完全没有这条规则（Decision tree 是 `_NATIVE_HEADER`
-    独享段）。规则现在落在 `DATA_OUTPUT_RULES`，两协议共享，
-    `test_system_prompts_share_data_conventions_text` 已锁定字面一致；
-    本测试是面向规则本身的语义钉子，删常量也能立刻定位回归点。
-    """
-    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    lower = prompt.lower()
-
-    assert "format tolerance" in lower
-    assert "normalize or truncate" in lower
-    assert "coarsest shared form" in lower
-    assert 'do not fall back to "closest numeric match"' in lower
-
-
 def test_native_system_prompt_custom_override_is_preserved() -> None:
     assert build_native_system_prompt("custom native prompt") == "custom native prompt"
 
@@ -248,7 +230,7 @@ def test_task_prompt_keeps_only_task_specific_context(tmp_path: Path) -> None:
 
 
 def test_system_prompts_carry_path_convention() -> None:
-    """两套 system prompt 都必须显式声明 path 字段约定。
+    """System prompt 必须显式声明 path 字段约定。
 
     路径约定是跨任务不变量；上移到 system prompt 后，user prompt 不再重复。
     `PATH_CONVENTION_NOTE`（tools/inputs.py）作为单一真相源，
@@ -256,69 +238,49 @@ def test_system_prompts_carry_path_convention() -> None:
     """
     from agents.prompts.rules import PATH_CONVENTION_NOTE
 
-    for prompt in (
-        build_native_system_prompt(),
-        build_system_prompt("- inspect_files: Use first to inspect context."),
-    ):
-        assert "Path convention" in prompt
-        assert PATH_CONVENTION_NOTE in prompt
+    prompt = build_native_system_prompt()
+    assert "Path convention" in prompt
+    assert PATH_CONVENTION_NOTE in prompt
 
 
 def test_system_prompts_share_grouped_sections() -> None:
-    """两套 system prompt 都用 `## <section>` 分组，模型 attention 可按段 routing。"""
-    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
+    """System prompt 用 `## <section>` 分组，模型 attention 可按段 routing。"""
     native_prompt = build_native_system_prompt()
 
-    # 两协议共有的段落
     for section in ("## Behavior", "## Data conventions"):
-        assert section in text_prompt
         assert section in native_prompt
 
-    # text-only 段落
-    assert "## Output format" in text_prompt
     # native-only 段落
     assert "## Decision tree" in native_prompt
     assert "## Output protocol" in native_prompt
 
 
 def test_system_prompts_share_data_conventions_text() -> None:
-    """`## Data conventions` 段在两个 prompt 必须字面一致——单一真相源。
+    """`## Data conventions` 段必须包含 `DATA_OUTPUT_RULES`——单一真相源。
 
-    回归保护：commit 9e5a24f 等历史事故都源于"两个 prompt 各写一遍数据规则、
-    改一处漏一处"。本测试通过共享常量 `DATA_OUTPUT_RULES` 强制两份输出一致。
+    回归保护：commit 9e5a24f 等历史事故都源于数据规则双写脱同步。
+    本测试通过共享常量 `DATA_OUTPUT_RULES` 强制输出一致。
     """
     from agents.prompts import DATA_OUTPUT_RULES
 
-    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     native_prompt = build_native_system_prompt()
 
-    assert DATA_OUTPUT_RULES in text_prompt
     assert DATA_OUTPUT_RULES in native_prompt
 
 
 def test_system_prompts_share_task_profile_and_grader_note() -> None:
-    """`TASK_PROFILE` + `GRADER_NOTE` 在两套 prompt 中都必须出现，且字面一致。
+    """`TASK_PROFILE` + `GRADER_NOTE` 在 system prompt 中都必须出现。
 
     取代旧版仅讲身份的 `_INTRO`，把 success criterion（通过 `answer` 提交）
     + 访问边界（仅 `context/`）+ grader 罚多余列/近似值，三条都前置到 prompt
-    起首。两套 prompt 共享同一段文本，避免"改 native 漏改 text"的双写事故。
+    起首。
     """
     from agents.prompts import GRADER_NOTE, TASK_PROFILE
 
-    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     native_prompt = build_native_system_prompt()
 
-    assert TASK_PROFILE in text_prompt
     assert TASK_PROFILE in native_prompt
-    assert GRADER_NOTE in text_prompt
     assert GRADER_NOTE in native_prompt
-
-
-def test_text_system_prompt_keeps_text_protocol_contract() -> None:
-    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-
-    assert "single ```json fenced block" in prompt
-    assert "tool_calls" not in prompt
 
 
 def test_native_system_prompt_requires_source_schema_mirroring() -> None:
@@ -347,16 +309,14 @@ def test_native_system_prompt_requires_cell_type_preservation() -> None:
 
 def test_system_prompts_use_runtime_clock_for_current_year() -> None:
     """`current year` 语义必须来自 execute_python 运行时，而不是数据最大日期。"""
-    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    native_prompt = build_native_system_prompt()
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
 
-    for prompt in (text_prompt, native_prompt):
-        lower = prompt.lower()
-        assert "runtime date" in lower
-        assert "current year" in lower
-        assert "execute_python" in prompt
-        assert "date.today().year" in prompt
-        assert "do not infer the current year from the latest date in the dataset" in lower
+    assert "runtime date" in lower
+    assert "current year" in lower
+    assert "execute_python" in prompt
+    assert "date.today().year" in prompt
+    assert "do not infer the current year from the latest date in the dataset" in lower
 
 
 def test_native_system_prompt_avoids_hardcoded_medical_ranges() -> None:
@@ -384,18 +344,6 @@ def test_native_system_prompt_avoids_hardcoded_medical_ranges() -> None:
         assert phrase not in lower
 
 
-def test_text_system_prompt_requires_source_schema_mirroring() -> None:
-    """文本协议下同样要约束 schema mirroring + cell type preservation。"""
-    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    lower = prompt.lower()
-
-    assert "mirror the source schema" in lower
-    assert "do not concatenate" in lower
-    assert "full_name" in lower
-    assert "preserve cell types" in lower
-    assert "163109" in prompt and "163109.0" in prompt
-
-
 def test_native_system_prompt_distinguishes_result_from_filter_columns() -> None:
     """WH-target 才是 result column，过滤/排序用的列不许塞进 answer。
 
@@ -413,16 +361,6 @@ def test_native_system_prompt_distinguishes_result_from_filter_columns() -> None
     assert "when in doubt, output only the wh-target" in lower
 
 
-def test_text_system_prompt_distinguishes_result_from_filter_columns() -> None:
-    """文本协议下同样需要 result-vs-filter column 规则。"""
-    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    lower = prompt.lower()
-
-    assert "distinguish result columns from filter" in lower
-    assert "wh-target" in lower
-    assert "grader penalizes extra columns" in lower
-
-
 def test_native_system_prompt_requires_full_numeric_precision() -> None:
     """计算得到的浮点必须保留全精度——回归 task_10 把 60.77956989247312 压成 60.78。"""
     prompt = build_native_system_prompt()
@@ -433,43 +371,29 @@ def test_native_system_prompt_requires_full_numeric_precision() -> None:
     assert "round only when the question explicitly asks" in lower
 
 
-def test_text_system_prompt_requires_full_numeric_precision() -> None:
-    """文本协议下同样需要"计算值不许擅自舍入"规则。"""
-    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    lower = prompt.lower()
-
-    assert "preserve full numeric precision" in lower
-    assert "60.77956989247312" in prompt and "60.78" in prompt
-    assert "round only when the question explicitly asks" in lower
-
-
 def test_system_prompts_keep_distinct_separate_from_group_by() -> None:
     """DISTINCT depends on entity vs record; GROUP BY is for aggregates only."""
-    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    native_prompt = build_native_system_prompt()
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
 
-    for prompt in (text_prompt, native_prompt):
-        lower = prompt.lower()
-        assert "distinct depends on what the question asks about" in lower
-        assert "deduplicate by entity identity" in lower
-        assert "each log entry" in lower
-        assert "do not add distinct" in lower
-        assert "group by is for grouped aggregates, not deduplication" in lower
-        assert '"by", "per", "for each"' in lower
-        assert "do not use group by solely to remove duplicate rows" in lower
-        assert '"tally" rule below' in lower
+    assert "distinct depends on what the question asks about" in lower
+    assert "deduplicate by entity identity" in lower
+    assert "each log entry" in lower
+    assert "do not add distinct" in lower
+    assert "group by is for grouped aggregates, not deduplication" in lower
+    assert '"by", "per", "for each"' in lower
+    assert "do not use group by solely to remove duplicate rows" in lower
+    assert '"tally" rule below' in lower
 
 
 def test_system_prompts_prefer_null_safe_anti_join_patterns() -> None:
     """不存在记录的过滤应避开裸 NOT IN 的 NULL 陷阱。"""
-    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    native_prompt = build_native_system_prompt()
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
 
-    for prompt in (text_prompt, native_prompt):
-        lower = prompt.lower()
-        assert '"does not have x" / "no x" filter semantics' in lower
-        assert "prefer `not exists` or `left join ... where right.key is null`" in lower
-        assert "use `not in` only after filtering null keys from the subquery" in lower
+    assert '"does not have x" / "no x" filter semantics' in lower
+    assert "prefer `not exists` or `left join ... where right.key is null`" in lower
+    assert "use `not in` only after filtering null keys from the subquery" in lower
 
 
 def test_native_system_prompt_clarifies_knowledge_md_conflict_precedence() -> None:
@@ -484,24 +408,21 @@ def test_native_system_prompt_clarifies_knowledge_md_conflict_precedence() -> No
 
 
 def test_system_prompts_advertise_artifact_handoff() -> None:
-    """两套 system prompt 都必须告知模型 from_csv artifact 协议 + DABENCH_ANSWER_DIR。
+    """System prompt 必须告知模型 from_csv artifact 协议 + DABENCH_ANSWER_DIR。
 
-    `DATA_OUTPUT_RULES` 是单一真相源，所以两套 prompt 拿到的措辞必须字面一致；
-    本断言锁住关键短语，避免 prompt 改动只覆盖一份的回归。
+    `DATA_OUTPUT_RULES` 是单一真相源；本断言锁住关键短语，避免 prompt 改动的回归。
     """
-    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    native_prompt = build_native_system_prompt()
+    prompt = build_native_system_prompt()
 
-    for prompt in (text_prompt, native_prompt):
-        # artifact 工作流必须出现两个关键关键词
-        assert "from_csv" in prompt
-        assert "DABENCH_ANSWER_DIR" in prompt
-        # 阈值"10 行 / 50 cell"是模型何时切 artifact 的判定线
-        assert "10+ rows" in prompt and "50+ cells" in prompt
-        # verification print 是 prompt 的另一条新规
-        lower = prompt.lower()
-        assert "print a verification snapshot" in lower
-        assert "before calling `answer`" in lower
+    # artifact 工作流必须出现两个关键关键词
+    assert "from_csv" in prompt
+    assert "DABENCH_ANSWER_DIR" in prompt
+    # 阈值"10 行 / 50 cell"是模型何时切 artifact 的判定线
+    assert "10+ rows" in prompt and "50+ cells" in prompt
+    # verification print 是 prompt 的另一条新规
+    lower = prompt.lower()
+    assert "print a verification snapshot" in lower
+    assert "before calling `answer`" in lower
 
 
 def test_system_prompts_force_wh_target_column_projection() -> None:
@@ -517,24 +438,22 @@ def test_system_prompts_force_wh_target_column_projection() -> None:
     让列投影独占一条赋值语句，与模型自然书写习惯对齐；(3) `csv.DictWriter` 与
     手写 dict rows 直接被禁令封禁，prompt 里不再给它们的"如何用"指引。
     """
-    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    native_prompt = build_native_system_prompt()
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
 
-    for prompt in (text_prompt, native_prompt):
-        lower = prompt.lower()
-        # 核心契约：列集来自 WH-target，不来自源 schema
-        assert "decide the column set first from the question's wh-target alone" in lower
-        assert "not from the source schema" in lower
-        # pandas only：三段式中间变量（贴合模型自然书写习惯，
-        # 让 `answer_df = filtered[[...]]` 这一行独占列投影的视觉位置）
-        assert "use pandas" in lower
-        assert "filtered = df[df['col'] == ...]" in prompt
-        assert "answer_df = filtered[['target_col_a', 'target_col_b']]" in prompt
-        assert "answer_df.to_csv(out_path, index=False)" in prompt
-        # csv.DictWriter / 手写 dict 必须被显式禁令封禁（不只是不推荐，是"do NOT use"）
-        assert "do not use `csv.dictwriter` or hand-build dict rows" in lower
-        # 唯一保留的 NEVER：pandas 整表写出（这是 pandas 路径自身的失败模式）
-        assert "NEVER `df.to_csv(...)` on the whole frame" in prompt
+    # 核心契约：列集来自 WH-target，不来自源 schema
+    assert "decide the column set first from the question's wh-target alone" in lower
+    assert "not from the source schema" in lower
+    # pandas only：三段式中间变量（贴合模型自然书写习惯，
+    # 让 `answer_df = filtered[[...]]` 这一行独占列投影的视觉位置）
+    assert "use pandas" in lower
+    assert "filtered = df[df['col'] == ...]" in prompt
+    assert "answer_df = filtered[['target_col_a', 'target_col_b']]" in prompt
+    assert "answer_df.to_csv(out_path, index=False)" in prompt
+    # csv.DictWriter / 手写 dict 必须被显式禁令封禁（不只是不推荐，是"do NOT use"）
+    assert "do not use `csv.dictwriter` or hand-build dict rows" in lower
+    # 唯一保留的 NEVER：pandas 整表写出（这是 pandas 路径自身的失败模式）
+    assert "NEVER `df.to_csv(...)` on the whole frame" in prompt
 
 
 def test_system_prompts_mandate_two_verification_self_checks() -> None:
@@ -544,21 +463,19 @@ def test_system_prompts_mandate_two_verification_self_checks() -> None:
     在 sample rows 都是 ''），但仍然提交了那 10 列。说明"仅打印"不够——必须把
     "看到 → 删掉 → 重跑"写成强制流程，并加一条"列数 vs 题面计数"反向校验。
     """
-    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    native_prompt = build_native_system_prompt()
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
 
-    for prompt in (text_prompt, native_prompt):
-        lower = prompt.lower()
-        # 触发关键词：'' / None / NaN 全空列必须删
-        assert "mandatory self-checks" in lower
-        assert "across all sampled rows" in lower
-        assert "passthrough source column" in lower
-        # 给出具体例子（k_symbol/bank/account），不只是抽象描述
-        assert "k_symbol" in prompt or "withdrawal" in lower
-        # 反向计数 self-check（b）
-        assert "count the things it explicitly names you should output" in lower
-        # 反对"以防万一多带几列"
-        assert 'do not "include extra columns just in case"' in lower
+    # 触发关键词：'' / None / NaN 全空列必须删
+    assert "mandatory self-checks" in lower
+    assert "across all sampled rows" in lower
+    assert "passthrough source column" in lower
+    # 给出具体例子（k_symbol/bank/account），不只是抽象描述
+    assert "k_symbol" in prompt or "withdrawal" in lower
+    # 反向计数 self-check（b）
+    assert "count the things it explicitly names you should output" in lower
+    # 反对"以防万一多带几列"
+    assert 'do not "include extra columns just in case"' in lower
 
 
 # ---------- build_observation_prompt: ok parameter & recovery hints ----------
@@ -629,17 +546,15 @@ def test_observation_prompt_ok_false_generic_error() -> None:
 
 
 def test_system_prompts_share_disambiguation_rules() -> None:
-    """`## Disambiguation` 段在两个 prompt 必须字面一致——单一真相源。
+    """`## Disambiguation` 段必须包含 `DISAMBIGUATION_RULES`——单一真相源。
 
     歧义检测与消解规则是跨协议的不变量，`DISAMBIGUATION_RULES` 常量
-    被两套 prompt 引用，避免双写脱同步。
+    被 prompt 引用，避免脱同步。
     """
     from agents.prompts import DISAMBIGUATION_RULES
 
-    text_prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
     native_prompt = build_native_system_prompt()
 
-    assert DISAMBIGUATION_RULES in text_prompt
     assert DISAMBIGUATION_RULES in native_prompt
 
 
@@ -681,16 +596,6 @@ def test_disambiguation_prefers_non_empty_result() -> None:
 
     assert "prefer the interpretation that returns a non-empty result set" in lower
     assert "re-examine your column/value choice before submitting" in lower
-
-
-def test_text_prompt_includes_disambiguation_section() -> None:
-    """文本协议同样包含 ## Disambiguation 段。"""
-    prompt = build_system_prompt("- inspect_files: Use first to inspect context.")
-    lower = prompt.lower()
-
-    assert "## disambiguation" in lower
-    assert "schema ambiguity" in lower
-    assert "column-first resolution" in lower
 
 
 def test_decision_tree_phase2_includes_disambiguation_check() -> None:

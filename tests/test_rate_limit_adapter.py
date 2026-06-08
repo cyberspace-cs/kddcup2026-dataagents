@@ -225,7 +225,7 @@ def test_rate_limited_adapter_propagates_thinking_off_through_react_system_messa
     inner.enable_thinking = False  # type: ignore[attr-defined]
     wrapper = RateLimitedAdapter(inner=inner, api_key="test-key", rate_limit=rate_limit_cfg)
 
-    agent = ReActAgent(model=wrapper, tools=create_default_tool_registry(), protocol="native")
+    agent = ReActAgent(model=wrapper, tools=create_default_tool_registry())
     system_content = agent._system_message().content
 
     assert isinstance(system_content, str)

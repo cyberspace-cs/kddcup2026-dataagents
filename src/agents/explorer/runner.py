@@ -14,7 +14,7 @@ from agents.agent import ReActAgent, ReActAgentConfig
 from agents.benchmark.schema import PublicTask
 from agents.explorer.prompt import EXPLORER_SYSTEM_PROMPT
 from agents.explorer.registry import create_explorer_tool_registry
-from agents.llm import ModelAdapter, ToolProtocol
+from agents.llm import ModelAdapter
 from agents.runtime import StepCallback
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,6 @@ def run_explorer(
     question: str,  # reserved for future prompt override
     model: ModelAdapter,
     *,
-    protocol: ToolProtocol = "native",
     max_steps: int = EXPLORER_MAX_STEPS,
     step_callback: StepCallback | None = None,
 ) -> ExplorerResult:
@@ -84,7 +83,6 @@ def run_explorer(
             max_empty_tool_call_retries=3,
         ),
         system_prompt=EXPLORER_SYSTEM_PROMPT,
-        protocol=protocol,
         step_callback=step_callback,
     )
 

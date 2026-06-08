@@ -6,7 +6,6 @@ agent:
   api_base: YOUR_API_BASE_URL
   api_key: YOUR_API_KEY
   max_steps: 32
-  tool_protocol: native
   allow_parallel_tool_calls: true
   max_tokens: 16384
   enable_thinking: true

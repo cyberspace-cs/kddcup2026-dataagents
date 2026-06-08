@@ -17,16 +17,6 @@ class ModelMessage:
 
 
 @dataclass(frozen=True, slots=True)
-class ModelStep:
-    """Parsed text-protocol ReAct step."""
-
-    thought: str
-    action: str
-    action_input: dict[str, Any]
-    raw_response: str
-
-
-@dataclass(frozen=True, slots=True)
 class ModelToolCall:
     """Normalized tool call emitted by text or native model protocols."""
 

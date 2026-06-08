@@ -133,7 +133,7 @@ def run_single_task_core(
                 name="ReActAgent",
                 tools=tool_names,
                 max_steps=app.agent_config.max_steps,
-                protocol=app.protocol,
+                protocol="native",
             )
             _agent_span.span_data.question = task.question
             _agent_span.start(mark_as_current=True)

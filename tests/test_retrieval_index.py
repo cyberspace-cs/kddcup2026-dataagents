@@ -12,6 +12,7 @@ from agents.config import (
     RetrievalIndexConfig,
     RunConfig,
 )
+from agents.llm.types import ModelResponse, ModelToolCall
 from agents.retrieval.index import (
     build_or_load_task_index,
     lookup_field,
@@ -20,7 +21,7 @@ from agents.retrieval.index import (
 from agents.runs.subprocess import run_single_task_core
 from agents.tools.filesystem import inspect_context_files
 from agents.tools.registry import create_default_tool_registry
-from tests.helpers.scripted_adapters import ScriptedModelAdapter
+from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
 
 def _make_task(tmp_path: Path, task_id: str | None = None) -> PublicTask:
@@ -149,7 +150,7 @@ def test_runner_attaches_retrieval_index_payload(tmp_path: Path) -> None:
     _populate_context(task)
     cfg = AppConfig(
         dataset=DatasetConfig(root_path=tmp_path / "input"),
-        agent=AgentConfig(tool_protocol="text", max_steps=1),
+        agent=AgentConfig(max_steps=1),
         run=RunConfig(
             retrieval_index=RetrievalIndexConfig(
                 enabled=True,
@@ -158,10 +159,27 @@ def test_runner_attaches_retrieval_index_payload(tmp_path: Path) -> None:
             task_timeout_seconds=0,
         ),
     )
-    model = ScriptedModelAdapter(
+    answer_call = ModelToolCall(
+        id="call_1",
+        name="answer",
+        arguments={"columns": ["major"], "rows": [["Biology"]]},
+    )
+    answer_raw = {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+            "name": "answer",
+            "arguments": '{"columns":["major"],"rows":[["Biology"]]}',
+        },
+    }
+    model = ScriptedNativeModelAdapter(
         [
-            '```json\n{"thought":"done","action":"answer","action_input":'
-            '{"columns":["major"],"rows":[["Biology"]]}}\n```'
+            ModelResponse(
+                content="done",
+                tool_calls=[answer_call],
+                raw_response="done",
+                raw_tool_calls=[answer_raw],
+            ),
         ]
     )
     result = run_single_task_core(
