@@ -29,10 +29,10 @@ EXECUTE_PYTHON_TIMEOUT_SECONDS = 30
 # 动机：模型把上百行表用 `rows=[...]` 自抄进 tool_call JSON 时，长结构化生成会出现
 # attention drift——run 20260430-015 task_8 即是 140 行被抄成 143 行（多 3 行幻觉 +
 # 57 行 amount 串味）。execute_python 已写正确 CSV 时仍走 inline 是这条规则的目标。
-# 数值与 prompt `_DATA_OUTPUT_RULES` 的 "30+ rows OR 200+ cells" 文案保持一致，
-# 后续两边一起调（grep "30+ rows" 即可定位）。
-INLINE_ANSWER_ROW_LIMIT = 30
-INLINE_ANSWER_CELL_LIMIT = 200
+# 数值与 prompt `_DATA_OUTPUT_RULES` 的 "10+ rows OR 50+ cells" 文案保持一致，
+# 后续两边一起调（grep "10+ rows" 即可定位）。
+INLINE_ANSWER_ROW_LIMIT = 10
+INLINE_ANSWER_CELL_LIMIT = 50
 
 
 def _path_field(*, file_kind: str, examples: tuple[str, ...]) -> Any:
@@ -54,6 +54,15 @@ def _positive_int_field(*, default: int, description: str) -> Any:
 # 把"无配置全量扫描"语义写进契约——模型即使凭空填字段也会立刻拿到可操作的 ValidationError。
 # 不写 class docstring 是为了避免 Pydantic 把它注入到 JSON Schema 顶层 description（破坏字节稳定性）。
 class InspectFilesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {}
+
+
+# `explore` 入参与 `inspect_files` 同构——空模型，无配置全量探索。
+class ExploreInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     @classmethod
@@ -259,6 +268,38 @@ class ExecuteContextSqlInput(BaseModel):
         }
 
 
+class GrepContextInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pattern: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Regex pattern to search for across all context files. "
+                "Case-insensitive. Supports full Python regex syntax."
+            ),
+        ),
+    ]
+    path: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Optional path substring filter. When set, only files whose "
+                "path contains this string are searched."
+            ),
+        ),
+    ] = None
+
+    @classmethod
+    def example_value(cls) -> dict[str, Any]:
+        return {"pattern": "search term or regex", "path": None}
+
+
+GREP_CONTEXT_SCHEMA = normalize_for_vllm(GrepContextInput.model_json_schema())
+
+
 class ExecutePythonInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -286,7 +327,7 @@ class AnswerInput(BaseModel):
             default_factory=list,
             description=(
                 "Column header names. Leave empty when using from_csv. "
-                "Inline is rejected for 30+ rows — use from_csv instead."
+                "Inline is rejected for 10+ rows — use from_csv instead."
             ),
         ),
     ]
@@ -300,7 +341,7 @@ class AnswerInput(BaseModel):
             description=(
                 "Answer rows; each row's length must match the columns array. "
                 "Leave empty when using from_csv. "
-                "Inline is rejected for 30+ rows — use from_csv instead."
+                "Inline is rejected for 10+ rows — use from_csv instead."
             ),
         ),
     ]
@@ -310,7 +351,7 @@ class AnswerInput(BaseModel):
             default=None,
             description=(
                 "Absolute path to a CSV file containing the answer table "
-                "(header row + data rows). REQUIRED for 30+ rows or 200+ cells "
+                "(header row + data rows). REQUIRED for 10+ rows or 50+ cells "
                 "(inline is rejected above this threshold). When set, `columns` "
                 "and `rows` MUST be empty. Convention: write the CSV from "
                 "`execute_python` under `os.environ['DABENCH_ANSWER_DIR']`."
@@ -350,9 +391,9 @@ class AnswerInput(BaseModel):
     @classmethod
     def example_value(cls) -> dict[str, Any]:
         return {
-            "columns": ["column_name (≤30 rows only)"],
+            "columns": ["column_name (<10 rows AND <50 cells only)"],
             "rows": [["value_1"]],
-            "from_csv": "/path/to/answer.csv (30+ rows, omit columns/rows)",
+            "from_csv": "/path/to/answer.csv (10+ rows, omit columns/rows)",
         }
 
 

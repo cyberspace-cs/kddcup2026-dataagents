@@ -77,7 +77,7 @@ def profile_columns(
                     col_profile["max"] = max(numeric_vals)
         else:
             non_empty = sorted({v.strip() for v in col_values if v.strip()})
-            if len(non_empty) <= 20:
+            if len(non_empty) <= constants.INSPECT_FILES_DISTINCT_VALUES_CAP:
                 col_profile["values"] = non_empty
             else:
                 col_profile["unique_count"] = len(non_empty)

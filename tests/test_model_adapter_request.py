@@ -54,28 +54,65 @@ def _make_usage(
     return usage_ns
 
 
-def _make_response(
+def _make_stream_chunks(
     *,
     content: str = "",
     reasoning_content: str | None = None,
     usage: Any = None,
-) -> types.SimpleNamespace:
-    """构造伪 `ChatCompletion` 响应：message + usage 两个关键字段。"""
-    message = types.SimpleNamespace(content=content, tool_calls=[])
-    if reasoning_content is not None:
-        message.reasoning_content = reasoning_content
-    return types.SimpleNamespace(
-        choices=[types.SimpleNamespace(message=message)],
-        usage=usage,
-    )
+    tool_calls: list[dict[str, Any]] | None = None,
+) -> list[types.SimpleNamespace]:
+    """构造伪流式 chunk 列表，模拟 `stream=True` 的逐块返回。"""
+    chunks: list[types.SimpleNamespace] = []
+
+    if reasoning_content:
+        delta = types.SimpleNamespace(content=None, tool_calls=None)
+        delta.reasoning_content = reasoning_content
+        chunks.append(
+            types.SimpleNamespace(choices=[types.SimpleNamespace(delta=delta)], usage=None)
+        )
+
+    if content:
+        delta = types.SimpleNamespace(content=content, tool_calls=None)
+        chunks.append(
+            types.SimpleNamespace(choices=[types.SimpleNamespace(delta=delta)], usage=None)
+        )
+
+    if tool_calls:
+        for tc in tool_calls:
+            fn = tc.get("function", {})
+            tc_delta = types.SimpleNamespace(
+                index=tc.get("_index", 0),
+                id=tc.get("id"),
+                type=tc.get("type"),
+                function=types.SimpleNamespace(
+                    name=fn.get("name"),
+                    arguments=fn.get("arguments"),
+                ),
+            )
+            delta = types.SimpleNamespace(content=None, tool_calls=[tc_delta])
+            chunks.append(
+                types.SimpleNamespace(choices=[types.SimpleNamespace(delta=delta)], usage=None)
+            )
+
+    if not chunks:
+        delta = types.SimpleNamespace(content="", tool_calls=None)
+        chunks.append(
+            types.SimpleNamespace(choices=[types.SimpleNamespace(delta=delta)], usage=None)
+        )
+
+    final_chunk = types.SimpleNamespace(choices=[], usage=usage)
+    chunks.append(final_chunk)
+
+    return chunks
 
 
-def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, response: Any) -> MagicMock:
+def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, chunks: Any) -> MagicMock:
     """把 `model.OpenAI` 换成返回 MagicMock 的伪类，拦截 `chat.completions.create`。
 
-    返回那个 MagicMock，测试用 `create_mock.call_args.kwargs` 断言请求 kwargs。
+    `chunks` 应为 `_make_stream_chunks(...)` 返回的列表。create 返回其迭代器，
+    模拟流式响应。测试用 `create_mock.call_args.kwargs` 断言请求 kwargs。
     """
-    create_mock = MagicMock(return_value=response)
+    create_mock = MagicMock(side_effect=lambda **_kw: iter(chunks))
     client_ns = types.SimpleNamespace(
         chat=types.SimpleNamespace(
             completions=types.SimpleNamespace(create=create_mock),
@@ -126,7 +163,7 @@ def test_extract_usage_handles_missing_usage() -> None:
 
 
 def test_openai_adapter_sends_max_tokens_when_positive(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m", api_base="http://x", api_key="k", temperature=0.0, max_tokens=4096
     )
@@ -137,7 +174,7 @@ def test_openai_adapter_sends_max_tokens_when_positive(monkeypatch: pytest.Monke
 
 
 def test_openai_adapter_omits_max_tokens_when_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m", api_base="http://x", api_key="k", temperature=0.0, max_tokens=0
     )
@@ -150,7 +187,7 @@ def test_openai_adapter_omits_max_tokens_when_zero(monkeypatch: pytest.MonkeyPat
 def test_openai_adapter_sends_extra_body_when_enable_thinking_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     # api_base="http://x" 不含 dashscope hint → 自动推断为 vllm → 嵌套形式
     adapter = OpenAIModelAdapter(
         model="m", api_base="http://x", api_key="k", temperature=0.0, enable_thinking=True
@@ -164,7 +201,7 @@ def test_openai_adapter_sends_extra_body_when_enable_thinking_true(
 def test_openai_adapter_sends_extra_body_when_enable_thinking_false(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m", api_base="http://x", api_key="k", temperature=0.0, enable_thinking=False
     )
@@ -178,7 +215,7 @@ def test_openai_adapter_sends_extra_body_when_enable_thinking_false(
 def test_openai_adapter_omits_extra_body_when_enable_thinking_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m", api_base="http://x", api_key="k", temperature=0.0, enable_thinking=None
     )
@@ -189,7 +226,7 @@ def test_openai_adapter_omits_extra_body_when_enable_thinking_none(
 
 
 def test_openai_adapter_omits_temperature_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(model="m", api_base="http://x", api_key="k", temperature=None)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -198,7 +235,7 @@ def test_openai_adapter_omits_temperature_when_none(monkeypatch: pytest.MonkeyPa
 
 
 def test_openai_adapter_sends_top_p_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m", api_base="http://x", api_key="k", temperature=0.6, top_p=0.95
     )
@@ -209,7 +246,7 @@ def test_openai_adapter_sends_top_p_when_set(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_openai_adapter_omits_top_p_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(model="m", api_base="http://x", api_key="k", temperature=0.6)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -218,7 +255,7 @@ def test_openai_adapter_omits_top_p_when_none(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_openai_adapter_sends_seed_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m", api_base="http://x", api_key="k", temperature=0.6, seed=42
     )
@@ -229,7 +266,7 @@ def test_openai_adapter_sends_seed_when_set(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_openai_adapter_sends_presence_penalty_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m", api_base="http://x", api_key="k", temperature=0.7, presence_penalty=1.5
     )
@@ -247,7 +284,7 @@ def test_openai_adapter_extra_body_merges_top_k_and_enable_thinking(
     vLLM 推断路径下 enable_thinking 走 chat_template_kwargs 嵌套，
     与顶层的 top_k / min_p 互不冲突。
     """
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m",
         api_base="http://x",
@@ -270,7 +307,7 @@ def test_openai_adapter_extra_body_merges_top_k_and_enable_thinking(
 def test_openai_adapter_extra_body_contains_only_top_k_when_thinking_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m",
         api_base="http://x",
@@ -286,12 +323,12 @@ def test_openai_adapter_extra_body_contains_only_top_k_when_thinking_none(
 
 
 def test_openai_adapter_captures_reasoning_and_usage(monkeypatch: pytest.MonkeyPatch) -> None:
-    response = _make_response(
+    chunks = _make_stream_chunks(
         content="final answer",
         reasoning_content="step-by-step thought",
         usage=_make_usage(prompt=100, completion=50, total=150, cached=40, reasoning=20),
     )
-    _install_fake_openai(monkeypatch, response)
+    _install_fake_openai(monkeypatch, chunks)
     adapter = OpenAIModelAdapter(model="m", api_base="http://x", api_key="k", temperature=0.0)
 
     result = adapter.complete([ModelMessage(role="user", content="hello")])
@@ -328,7 +365,7 @@ def _native_adapter(**overrides: Any) -> NativeToolsOpenAIAdapter:
 
 
 def test_native_adapter_sends_max_tokens_and_extra_body(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter(max_tokens=8192, enable_thinking=True)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -343,7 +380,7 @@ def test_native_adapter_sends_max_tokens_and_extra_body(monkeypatch: pytest.Monk
 
 
 def test_native_adapter_omits_optional_fields_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter()  # max_tokens=0, enable_thinking=None
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -353,12 +390,12 @@ def test_native_adapter_omits_optional_fields_by_default(monkeypatch: pytest.Mon
 
 
 def test_native_adapter_captures_reasoning_and_usage(monkeypatch: pytest.MonkeyPatch) -> None:
-    response = _make_response(
+    chunks = _make_stream_chunks(
         content="",
         reasoning_content="I should call inspect_files",
         usage=_make_usage(prompt=500, completion=80, total=580, cached=200, reasoning=60),
     )
-    _install_fake_openai(monkeypatch, response)
+    _install_fake_openai(monkeypatch, chunks)
     adapter = _native_adapter()
 
     result = adapter.complete([ModelMessage(role="user", content="hello")])
@@ -379,17 +416,13 @@ def test_native_adapter_malformed_tool_arguments_preserve_partial_response(
             "arguments": '{"columns": ["x"], "rows": [["unterminated"]',
         },
     }
-    fake_tool_call = types.SimpleNamespace(model_dump=lambda **_: raw_tool_call)
-    message = types.SimpleNamespace(
+    chunks = _make_stream_chunks(
         content="submitting answer",
         reasoning_content="answer json got truncated",
-        tool_calls=[fake_tool_call],
-    )
-    response = types.SimpleNamespace(
-        choices=[types.SimpleNamespace(message=message)],
         usage=_make_usage(prompt=10, completion=5, total=15, cached=3, reasoning=2),
+        tool_calls=[{**raw_tool_call, "_index": 0}],
     )
-    _install_fake_openai(monkeypatch, response)
+    _install_fake_openai(monkeypatch, chunks)
     adapter = _native_adapter()
 
     with pytest.raises(ToolCallParseError) as exc_info:
@@ -407,7 +440,7 @@ def test_native_adapter_malformed_tool_arguments_preserve_partial_response(
 
 
 def test_native_adapter_omits_temperature_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter(temperature=None)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -416,7 +449,7 @@ def test_native_adapter_omits_temperature_when_none(monkeypatch: pytest.MonkeyPa
 
 
 def test_native_adapter_sends_top_p_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter(temperature=0.6, top_p=0.95)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -425,7 +458,7 @@ def test_native_adapter_sends_top_p_when_set(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_native_adapter_omits_top_p_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter(temperature=0.6)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -434,7 +467,7 @@ def test_native_adapter_omits_top_p_when_none(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_native_adapter_sends_seed_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter(seed=7)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -443,7 +476,7 @@ def test_native_adapter_sends_seed_when_set(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_native_adapter_sends_presence_penalty_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter(presence_penalty=1.5)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -458,7 +491,7 @@ def test_native_adapter_extra_body_merges_top_k_and_enable_thinking(
 
     vLLM 推断路径下 enable_thinking 嵌入 chat_template_kwargs，与顶层 top_k/min_p 并存。
     """
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter(enable_thinking=True, top_k=20, min_p=0.0)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -473,7 +506,7 @@ def test_native_adapter_extra_body_merges_top_k_and_enable_thinking(
 def test_native_adapter_extra_body_contains_only_top_k_when_thinking_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter(enable_thinking=None, top_k=20)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -499,7 +532,7 @@ def test_openai_adapter_dashscope_api_base_auto_infers_dashscope_top_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """api_base 含 aliyuncs.com → 自动推断 dashscope → enable_thinking 走顶层。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m",
         api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -517,7 +550,7 @@ def test_openai_adapter_explicit_dashscope_overrides_localhost_inference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """显式 backend_kind="dashscope" 覆盖 localhost api_base 的 vllm 推断。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m",
         api_base="http://localhost:8000/v1",
@@ -536,7 +569,7 @@ def test_openai_adapter_explicit_vllm_overrides_dashscope_inference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """显式 backend_kind="vllm" 覆盖 dashscope api_base 的自动推断 → 仍走嵌套。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m",
         api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -556,7 +589,7 @@ def test_native_adapter_explicit_vllm_uses_chat_template_kwargs(
 ) -> None:
     """NativeToolsOpenAIAdapter 与 OpenAIModelAdapter 共用 _thinking_extra_body 工具，
     显式 backend_kind="vllm" 行为应当一致：走嵌套。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter(enable_thinking=True, backend_kind="vllm")
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -567,7 +600,7 @@ def test_native_adapter_explicit_vllm_uses_chat_template_kwargs(
 def test_native_adapter_explicit_dashscope_uses_top_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content=""))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
     adapter = _native_adapter(enable_thinking=False, backend_kind="dashscope")
     adapter.complete([ModelMessage(role="user", content="hello")])
 
@@ -580,7 +613,7 @@ def test_backend_kind_does_not_emit_extra_body_when_thinking_none(
 ) -> None:
     """enable_thinking=None 时无论 backend_kind 是什么，都不应下发对应字段；
     避免 backend_kind 单独下发误触发未定义 chat template 行为。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_response(content="hi"))
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
     adapter = OpenAIModelAdapter(
         model="m",
         api_base="http://x",

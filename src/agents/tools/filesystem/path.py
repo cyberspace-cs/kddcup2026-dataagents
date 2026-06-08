@@ -9,30 +9,81 @@ from agents.benchmark.schema import PublicTask
 from agents.config import ETL_SCRATCH_ROOT
 
 
+def build_virtual_context(task: PublicTask) -> Path:
+    """Create /tmp/dabench/<task_id>/context/ with symlinks merging real context + ETL."""
+    import shutil
+
+    virtual_dir = ETL_SCRATCH_ROOT / task.task_id / "context"
+    if virtual_dir.exists():
+        shutil.rmtree(virtual_dir)
+    virtual_dir.mkdir(parents=True, exist_ok=True)
+
+    real_context = task.context_dir.resolve()
+    etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
+
+    etl_stems: set[str] = set()
+    if etl_dir.is_dir():
+        etl_stems = {f.stem for f in etl_dir.iterdir() if f.suffix == ".csv"}
+
+    for child in real_context.rglob("*"):
+        if not child.is_file():
+            continue
+        if (
+            child.suffix.lower() in {".md", ".pdf"}
+            and child.name.lower() != "knowledge.md"
+            and child.stem in etl_stems
+        ):
+            continue
+        rel = child.relative_to(real_context)
+        dest = virtual_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists():
+            dest.symlink_to(child)
+
+    if etl_dir.is_dir():
+        csv_dir = virtual_dir / "csv"
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        for etl_file in etl_dir.iterdir():
+            if etl_file.suffix == ".csv":
+                dest = csv_dir / etl_file.name
+                if not dest.exists():
+                    dest.symlink_to(etl_file)
+
+    for dirpath in sorted(virtual_dir.rglob("*"), reverse=True):
+        if dirpath.is_dir() and not any(dirpath.iterdir()):
+            dirpath.rmdir()
+
+    return virtual_dir
+
+
 def resolve_context_path(task: PublicTask, relative_path: str) -> Path:
     """把 Agent 传入的相对路径解析为绝对路径，并防止目录逃逸。
 
     安全模型：
     - 所有路径必须落在 `task.context_dir` 或 ETL scratch 目录之内
-    - 传 `../` 或绝对路径会被 `candidate.resolve()` 规整后触发校验失败
+    - 传 `../` 或绝对路径会被规整后触发校验失败
     - 不存在的路径直接抛 FileNotFoundError，避免 Agent 拿到空结果误判
-    """
-    raw = Path(relative_path)
-    if raw.is_absolute():
-        candidate = raw.resolve()
-        etl_root = (ETL_SCRATCH_ROOT / task.task_id).resolve()
-        if etl_root in candidate.parents or candidate == etl_root:
-            if not candidate.exists():
-                raise FileNotFoundError(f"Missing ETL asset: {relative_path}")
-            return candidate
 
-    candidate = (task.context_dir / relative_path).resolve()
-    context_root = task.context_dir.resolve()
-    if context_root not in candidate.parents and candidate != context_root:
+    When context_dir is a virtual context with symlinks, the containment
+    check uses ``os.path.normpath`` (no symlink resolution) so files whose
+    symlink targets live outside the virtual root are still reachable.
+    """
+    import os
+
+    normed = Path(os.path.normpath(task.context_dir / relative_path))
+    ctx_normed = Path(os.path.normpath(task.context_dir))
+    etl_normed = Path(os.path.normpath(ETL_SCRATCH_ROOT / task.task_id))
+    if (
+        ctx_normed not in normed.parents
+        and normed != ctx_normed
+        and etl_normed not in normed.parents
+        and normed != etl_normed
+    ):
         raise ValueError(f"Path escapes context dir: {relative_path}")
+    candidate = task.context_dir / relative_path
     if not candidate.exists():
         raise FileNotFoundError(f"Missing context asset: {relative_path}")
-    return candidate
+    return candidate.resolve()
 
 
 def list_context_tree(task: PublicTask, *, max_depth: int = 4) -> dict[str, Any]:

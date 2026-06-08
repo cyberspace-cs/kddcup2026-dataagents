@@ -69,13 +69,16 @@ def should_block_non_answer_final_turn(
         status.remaining <= 1
         and status.ratio >= 0.90
         and last_step_retries < 2
-        and not any(getattr(call, "name", None) == "answer" for call in calls)
+        and not any(
+            getattr(call, "name", None) == "answer" or getattr(call, "name", None) == "report"
+            for call in calls
+        )
     )
 
 
 def final_step_block_error() -> str:
     """Return the observation error used when the final-step guard blocks a call."""
     return (
-        "BLOCKED: final step must be an `answer` call. "
-        "Call `answer` with your best result immediately."
+        "BLOCKED: final step must be a terminal tool call (`answer` or `report`). "
+        "Call it with your best result immediately."
     )

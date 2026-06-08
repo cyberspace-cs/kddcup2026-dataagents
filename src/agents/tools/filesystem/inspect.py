@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -111,32 +112,55 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
     files_summary: list[dict[str, Any]] = []
     unsupported_formats: set[str] = set()
 
-    etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
-    etl_csv: dict[str, Path] = {}
-    if etl_dir.is_dir():
-        for f in etl_dir.iterdir():
-            if f.is_file() and f.suffix == ".csv":
-                etl_csv[f.stem] = f
-
     candidates: list[tuple[str, Path]] = []
     for child in context_root.rglob("*"):
         if not child.is_file():
             continue
         if any(part.startswith(".") for part in child.relative_to(context_root).parts):
             continue
-        if child.suffix.lower() in {".md", ".pdf"} and child.stem in etl_csv:
-            csv_path = etl_csv[child.stem]
-            candidates.append((str(csv_path), csv_path))
-            continue
         rel = child.relative_to(context_root).as_posix()
         candidates.append((rel, child))
     candidates.sort(key=lambda item: item[0])
+
+    etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
+    cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
 
     truncated = len(candidates) > constants.INSPECT_FILES_MAX_FILES
     for rel_path, abs_path in candidates[: constants.INSPECT_FILES_MAX_FILES]:
         entry = _format_for_inspect(rel_path, abs_path)
         if not entry["supported"]:
             unsupported_formats.add(str(entry["format"]))
+        real_path = abs_path.resolve()
+        if real_path.is_relative_to(etl_dir) and cache_dir.is_dir():
+            units_path = cache_dir / f"{abs_path.stem}_units.json"
+            if units_path.is_file():
+                try:
+                    units_meta = json.loads(units_path.read_text(encoding="utf-8"))
+                    schema: dict[str, Any] | None = entry.get("schema")
+                    # Build per-column conversion notes like:
+                    # {"pctbeforetran": "CONVERT: ×0.01 (% → ratio)"}
+                    col_conversions: dict[str, str] = {}
+                    for field, source_unit in units_meta.items():
+                        if field.startswith("_"):
+                            continue
+                        target = units_meta.get(f"_target_{field}")
+                        factor = units_meta.get(f"_factor_{field}")
+                        if target and factor and str(source_unit) != str(target):
+                            col_conversions[field] = (
+                                f"CONVERT: ×{factor} ({source_unit} → {target})"
+                            )
+                    if isinstance(schema, dict) and "columns" in schema:
+                        reordered: dict[str, Any] = {}
+                        for key in schema:
+                            reordered[key] = schema[key]
+                            if key == "columns" and col_conversions:
+                                reordered["column_conversions"] = col_conversions
+                        entry["schema"] = reordered
+                    elif isinstance(schema, dict):
+                        if col_conversions:
+                            schema["column_conversions"] = col_conversions
+                except (OSError, json.JSONDecodeError):
+                    pass
         files_summary.append(entry)
 
     result: dict[str, Any] = {

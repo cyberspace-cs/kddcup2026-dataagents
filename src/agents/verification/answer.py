@@ -77,12 +77,19 @@ Check 3 — ROW COUNT sanity:
   phrasing ("the player's", "which driver", "who is the", "calculate
   for the") — those naturally expect 1 row.
 - Data listing / retrieval questions ("show the data", "list the records",
-  "查一下数据", "记录是什么样的", "展示/显示/列出", "找一下数据") expect
-  ALL qualifying source rows.  Multiple rows sharing the same date or key
-  value is NORMAL when the source is multi-dimensional (e.g., per-province,
-  per-product, per-category).  Do NOT reject for "duplicate" dates or
-  repeated key values in this case — the rows represent different entities
-  at the same time point, not true duplicates.
+  "查一下数据", "记录是什么样的", "展示/显示/列出", "找一下数据",
+  "瞅瞅", "看看", "是多少") expect ALL qualifying source rows.  Multiple
+  rows sharing the same date or key value is NORMAL when the source is
+  multi-dimensional (e.g., per-province, per-product, per-category).
+  Do NOT reject for "duplicate" dates or repeated key values in this
+  case — the rows represent different entities at the same time point,
+  not true duplicates.
+- IMPORTANT: do NOT assume that a question asking about a national-level
+  metric (e.g., "国内生产总值", "our country's GDP") requires exactly 1
+  row.  The source data may be per-province with no national aggregate
+  row, in which case the correct answer is ALL provincial rows.  The
+  agent decides whether to aggregate — the verifier must NOT reject a
+  multi-row answer just because the question sounds like a single value.
 - When in doubt about expected plurality, say "ok".
 
 Check 4 — VALUE sanity (only flag MATHEMATICAL impossibilities):

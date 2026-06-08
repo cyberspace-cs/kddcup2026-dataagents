@@ -351,9 +351,9 @@ def test_inline_submission_with_existing_artifact_raises(task: PublicTask, tmp_p
     """残留 `_answer/answer.csv` + inline 提交：handler 拒绝并指回 from_csv。
 
     回归参照 run 20260501-010/task_8：execute_python 已经把 140 行写到
-    `_answer/answer.csv`，但 `answer` tool_call 的 JSON 参数里只 inline 了 head(20)
-    的 20 行（attention drift 把更早一轮 head() 预览当成了完整表）。inline
-    硬闸（30 行 / 200 cells）抓不住此类小体量截断；提交时间点检测到 artifact
+    `_answer/answer.csv`，但 `answer` tool_call 的 JSON 参数里只 inline 了 head(5)
+    的 5 行（attention drift 把更早一轮 head() 预览当成了完整表）。inline
+    硬闸（10 行 / 50 cells）抓不住此类小体量截断；提交时间点检测到 artifact
     残留就直接拒绝，让 ReAct 循环把错误回灌给模型自行改用 from_csv。
 
     artifact 文件必须保留在原位——下一轮模型才能用同一路径走 from_csv 重交。

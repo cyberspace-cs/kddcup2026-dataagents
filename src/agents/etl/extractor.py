@@ -14,6 +14,8 @@ Fallback (no schema): LLM direct extraction → code-generation.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import re
 import textwrap
@@ -85,12 +87,22 @@ def _ensure_local_record_anchor(
     partial facts before downstream analysis.
     """
     known_fields = {c.lower() for c in columns} | {a.lower() for a in anchor_keys}
+
+    def _promote_record_id(cols: list[str], ancs: list[str]) -> tuple[list[str], list[str]]:
+        """Ensure record_id is first in both columns and anchor_keys."""
+        rid = next((c for c in cols if c.lower() in RECORD_ID_FIELDS), "record_id")
+        if cols[0].lower() not in RECORD_ID_FIELDS:
+            cols = [rid] + [c for c in cols if c != rid]
+        if not ancs or ancs[0].lower() not in RECORD_ID_FIELDS:
+            ancs = [rid] + [a for a in ancs if a != rid]
+        return cols, ancs
+
     if known_fields & RECORD_ID_FIELDS:
-        return columns, anchor_keys
+        return _promote_record_id(columns, anchor_keys)
     if explicit_types:
         for field, ftype in explicit_types.items():
             if field.lower() in known_fields and "local_record_id" in ftype.lower():
-                return columns, anchor_keys
+                return _promote_record_id(columns, anchor_keys)
     if not _has_local_record_ids(prose_text):
         return columns, anchor_keys
 
@@ -118,15 +130,51 @@ def _parse_schema_types_line(line: str) -> dict[str, str]:
     return parsed
 
 
+def _parse_kv_line(line: str) -> dict[str, str]:
+    """Parse ``field=value, field=value`` from any prefixed line."""
+    raw = line.split(":", 1)[-1]
+    parsed: dict[str, str] = {}
+    for item in re.split(r"[,;]", raw):
+        item = item.strip()
+        if not item:
+            continue
+        field, sep, val = item.partition("=")
+        if not sep:
+            field, sep, val = item.partition(":")
+        if sep and field.strip() and val.strip():
+            parsed[field.strip()] = val.strip()
+    return parsed
+
+
+def _parse_defs_line(line: str) -> dict[str, str]:
+    """Parse ``DEFS: field=definition; field=definition`` output.
+
+    Splits on semicolons only (definitions may contain commas).
+    """
+    if not line.upper().startswith("DEF"):
+        return {}
+    raw = line.split(":", 1)[-1]
+    parsed: dict[str, str] = {}
+    for item in raw.split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        field, sep, defn = item.partition("=")
+        if sep and field.strip() and defn.strip():
+            parsed[field.strip()] = defn.strip()
+    return parsed
+
+
 def _parse_schema_response(
     text: str,
-) -> tuple[str, list[str], dict[str, str], list[str]] | None:
+) -> tuple[str, list[str], dict[str, str], list[str], dict[str, str], dict[str, str]] | None:
     """Parse LLM schema output by line prefix, not position.
 
-    Looks for PK:, ANCHORS:, TYPES: prefixes in any order.  The first
-    non-prefixed line with commas is treated as the column list.
+    Looks for PK:, ANCHORS:, TYPES:, UNITS:, DEFS: prefixes in any order.
+    The first non-prefixed line with commas is treated as the column list.
 
-    Returns (pk, anchor_keys, explicit_types, columns) or None.
+    Returns (pk, anchor_keys, explicit_types, columns, field_units, field_defs)
+    or None.
     """
     lines = [line.strip() for line in text.strip().strip("`").splitlines() if line.strip()]
     if len(lines) < 2:
@@ -135,6 +183,8 @@ def _parse_schema_response(
     pk: str | None = None
     anchor_keys: list[str] = []
     explicit_types: dict[str, str] = {}
+    field_units: dict[str, str] = {}
+    field_defs: dict[str, str] = {}
     columns: list[str] = []
 
     for line in lines:
@@ -147,6 +197,10 @@ def _parse_schema_response(
                 anchor_keys = raw
         elif upper.startswith("TYPE"):
             explicit_types = _parse_schema_types_line(line)
+        elif upper.startswith("UNIT"):
+            field_units = _parse_kv_line(line)
+        elif upper.startswith("DEF"):
+            field_defs = _parse_defs_line(line)
         elif "," in line and not columns and "=" not in line:
             tokens = [c.strip() for c in line.split(",") if c.strip()]
             if all(len(t.split()) <= 3 for t in tokens):
@@ -164,7 +218,23 @@ def _parse_schema_response(
         if ak not in columns:
             columns.append(ak)
 
-    return pk, anchor_keys, explicit_types, columns
+    return pk, anchor_keys, explicit_types, columns, field_units, field_defs
+
+
+def _complete_schema_field_defs(
+    columns: list[str],
+    field_defs: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Canonicalize LLM-provided field definitions to match schema column spelling."""
+    if not field_defs:
+        return {}
+    canonical = {column.lower(): column for column in columns}
+    result: dict[str, str] = {}
+    for field, defn in field_defs.items():
+        column = canonical.get(field.lower())
+        if column:
+            result[column] = defn
+    return result
 
 
 def _complete_schema_field_types(
@@ -183,15 +253,193 @@ def _complete_schema_field_types(
     return result
 
 
+def _vote_target_units(
+    adapter: ModelAdapter,
+    km_text: str,
+    field_units: dict[str, str],
+) -> dict[str, tuple[str, float]]:
+    """Ask the LLM for each field's target unit and conversion factor.
+
+    Returns {field: (target_unit, factor)} where factor is the multiplier
+    to convert source values to target values (e.g. 亿元→万元 = 10000).
+    Fields whose source unit already matches the target are excluded.
+    """
+    source_fields = {
+        f: u
+        for f, u in field_units.items()
+        if not f.startswith("_") and u and not u.startswith("_")
+    }
+    if not source_fields:
+        return {}
+
+    field_list = ", ".join(f"{f}={u}" for f, u in source_fields.items())
+    prompt = (
+        "Below is knowledge.md and a list of fields with their "
+        "current units as found in the source data.\n\n"
+        f"Fields: {field_list}\n\n"
+        "For each field, determine the TARGET unit that knowledge.md "
+        "says answers should use. If the document declares a default unit "
+        "(e.g. '万元'), apply it to all monetary fields. If a field's source "
+        "unit already matches the target, repeat it unchanged. "
+        "Dimensionless fields (price indices, ranks) must keep their "
+        "source unit as-is — do NOT replace with '_default' or any placeholder.\n\n"
+        "PERCENTAGE RULE: only convert to 'ratio' when knowledge.md "
+        "EXPLICITLY uses the word 'ratio' (e.g. 'ratio', 'decimal ratio') "
+        "in that field's definition. If knowledge.md merely says '%', "
+        "'percentage', '百分比', or the field is just a return/rate expressed "
+        "in percent, keep the source unit as '%' — do NOT convert.\n\n"
+        "For each field where source ≠ target, also output the numeric "
+        "multiplication factor to convert from source to target.\n\n"
+        "Output format — one field per entry, comma-separated:\n"
+        "  field=target_unit*factor\n"
+        "If source == target (no conversion needed), omit the *factor part:\n"
+        "  field=target_unit\n\n"
+        "Examples:\n"
+        "  gdp=万元*10000, revenue=万元*10000, rate=%\n"
+        "  (gdp source was 亿元, target is 万元, so factor=10000)\n"
+        "  (rate source was %, target is %, so no factor)\n\n"
+        f"knowledge.md:\n{km_text}"
+    )
+    messages = [
+        ModelMessage(
+            role="system",
+            content=(
+                "Map each field to its target unit per knowledge.md. "
+                "Output field=unit*factor pairs. Omit *factor when source==target."
+            ),
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception:
+        return {}
+
+    return _parse_unit_factor_response(response.content.strip(), source_fields)
+
+
+def _parse_unit_factor_response(
+    text: str,
+    source_fields: dict[str, str],
+) -> dict[str, tuple[str, float]]:
+    """Parse ``field=unit*factor`` response into {field: (unit, factor)}.
+
+    Only returns entries where source_unit != target_unit and factor is valid.
+    """
+    result: dict[str, tuple[str, float]] = {}
+    raw = text.split(":", 1)[-1] if ":" in text else text
+    for item in re.split(r"[,;\n]", raw):
+        item = item.strip()
+        if not item:
+            continue
+        field, sep, rest = item.partition("=")
+        if not sep:
+            continue
+        field = field.strip()
+        if field not in source_fields:
+            continue
+        rest = rest.strip()
+        unit_part, star, factor_part = rest.partition("*")
+        unit_part = unit_part.strip()
+        if not unit_part or unit_part.startswith("_"):
+            continue
+        if unit_part == source_fields[field]:
+            continue
+        if not star:
+            continue
+        try:
+            factor = float(factor_part.strip())
+        except (ValueError, TypeError):
+            continue
+        if factor == 0 or factor == 1:
+            continue
+        result[field] = (unit_part, factor)
+    return result
+
+
+def _write_units_sidecar(
+    task: PublicTask,
+    prose_stem: str,
+    field_units: dict[str, str],
+) -> None:
+    """Write per-field unit metadata to a sidecar JSON in _cache/."""
+    if not field_units:
+        return
+    cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    units_path = cache_dir / f"{prose_stem}_units.json"
+    units_path.write_text(json.dumps(field_units, ensure_ascii=False), encoding="utf-8")
+
+
+def _extract_relevant_entity(
+    adapter: ModelAdapter,
+    km_text: str,
+    prose_stem: str,
+    prose_sample: str,
+) -> str | None:
+    """Pre-filter knowledge.md to only the entity section matching the prose file.
+
+    Sends a lightweight LLM call to identify which entity in the governance
+    document corresponds to the prose file, and returns only that section.
+    This prevents cross-table column contamination in downstream schema inference.
+    """
+    prompt = textwrap.dedent(f"""\
+        Below is a data governance document that describes MULTIPLE database \
+        tables / entities. I also provide a prose data file name and a short \
+        sample from it.
+
+        Prose file: "{prose_stem}"
+        Prose sample (first few lines):
+        ---
+        {prose_sample[:1500]}
+        ---
+
+        Task: find the ONE entity / table section in the governance document \
+        that best matches this prose file. Copy that section VERBATIM — \
+        include the heading, all column definitions, all footnotes and units \
+        that belong to it. Do NOT include sections for other entities.
+
+        If no entity matches, output exactly: NONE
+
+        Governance document:
+        {km_text}""")
+    messages = [
+        ModelMessage(
+            role="system",
+            content="You extract the relevant section from a governance document. Output only the matched section verbatim, nothing else.",
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception as exc:
+        logger.warning("LLM entity pre-filter failed: %s", exc)
+        return None
+
+    raw = response.content.strip()
+    if not raw or raw.strip().strip("`").upper() == "NONE":
+        return None
+    if len(raw) < 20:
+        return None
+    logger.info(
+        "Knowledge pre-filter for '%s': %d → %d chars",
+        prose_stem,
+        len(km_text),
+        len(raw),
+    )
+    return raw
+
+
 def _parse_knowledge_schema(
     task: PublicTask, prose_path: Path, adapter: ModelAdapter, prose_text: str
-) -> tuple[list[str], list[str], dict[str, str]] | None:
-    """Use LLM to extract column names and anchor keys from knowledge.md.
+) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
+    """Use LLM to extract column names, anchor keys, units, and definitions from knowledge.md.
 
     Samples the prose file so the LLM can discover fields present in the data
     but missing from the governance document (e.g. record IDs).
 
-    Returns (columns, anchor_keys, field_types) or None if no matching entity.
+    Returns (columns, anchor_keys, field_types, field_units, field_defs) or None.
     ``anchor_keys[0]`` is the canonical primary key; subsequent entries are
     secondary identity fields (name, label, secondary ID) that can uniquely
     identify an entity when the PK takes different forms across sections.
@@ -207,6 +455,11 @@ def _parse_knowledge_schema(
     prose_sample = sample_paragraphs_by_section(prose_text, per_section=1) if prose_text else ""
 
     prose_stem = prose_path.stem
+
+    filtered_km = _extract_relevant_entity(adapter, km_text, prose_stem, prose_sample or "")
+    if filtered_km:
+        km_text = filtered_km
+
     prose_section = ""
     if prose_sample:
         prose_section = (
@@ -224,16 +477,32 @@ def _parse_knowledge_schema(
 
         If NO entity in the governance document matches, output exactly: NONE
 
-        Otherwise output exactly FOUR lines:
+        Otherwise output exactly SIX lines:
         Line 1: PK: <primary_key_field_name>
         Line 2: ANCHORS: <comma-separated identity fields that can uniquely \
         identify an entity — includes PK plus name/label/secondary ID fields>
         Line 3: TYPES: <field=type, field=type, ... for every field>
-        Line 4: all field names as a comma-separated list (must include all ANCHORS)
+        Line 4: UNITS: <field=unit for each numeric field whose values carry \
+        a unit in the prose sample or governance document. Use _default=<unit> \
+        for the governance document's declared default monetary unit.>
+        Line 5: DEFS: <field=one-sentence semantic definition; field=definition; \
+        ... for every field. Use semicolons between entries. Copy the exact \
+        semantic definition from the governance document when available; for \
+        fields discovered only in the prose sample, write a concise definition \
+        that distinguishes this field from similarly-named fields.>
+        Line 6: all field names as a comma-separated list (must include all ANCHORS)
 
         IMPORTANT:
-        - PK and column names must be SHORT GENERIC FIELD NAMES (like "event_id", \
-        "molecule_id", "patient_id"), NEVER a specific data value.
+        - CRITICAL: columns listed in the governance document already have \
+        canonical database names (e.g. "sumbeforetran", "pctbeforetran", \
+        "companycode"). You MUST use these EXACT names verbatim in PK, \
+        ANCHORS, TYPES, UNITS, DEFS, and the column list. NEVER rename, \
+        translate, expand, or paraphrase them — "sumbeforetran" stays \
+        "sumbeforetran", NOT "shares_held_before" or "sum_before_tran".
+        - Only invent new field names for fields discovered in the prose sample \
+        that are not fully covered by any governance column's definition. \
+        New names must be SHORT GENERIC FIELD NAMES (like "event_id", \
+        "tran_date"), NEVER a specific data value.
         - ANCHORS should include the PK and any name/label/secondary identifier \
         field that could be used to recognize the same entity across different \
         sections of the document (e.g. a person's name, a record label).
@@ -242,10 +511,27 @@ def _parse_knowledge_schema(
         number, integer_count, integer_rank, string, category, boolean, url.
         - For document-local record_id fields use type "integer_scalar local_record_id"; \
         record_id values must be a single scalar number, not a range or list.
-        - ALSO scan the prose sample for ADDITIONAL structured data fields \
-        that are present in the data but MISSING from the governance document. \
-        Add these to the list with descriptive short names matching the \
-        abbreviations used in the prose.
+        - MANDATORY: scan the prose sample for numeric, date, and \
+        categorical data fields that have NO matching governance column. \
+        For each prose field, check every governance column's \
+        definition / description. A governance column covers a prose field \
+        ONLY when it matches the same concept AND all binding qualifiers: \
+        time window, before/after state, numerator/denominator, entity scope, \
+        category, unit, and aggregation level. Opaque database names are \
+        canonical when their definitions match exactly; do NOT add translated \
+        aliases for them. If a prose field is only related to a governance \
+        column but differs in any binding qualifier, treat it as a distinct \
+        discovered field and add a short descriptive name. \
+        Example — WRONG: governance has "rrintenyear" defined as \
+        "近十年累计回报率", prose shows "近十年累计回报率: 166.09" → adding \
+        "ten_year_return" creates a duplicate column and splits values. \
+        CORRECT: recognise "近十年累计回报率" matches "rrintenyear" → use \
+        "rrintenyear", do NOT add "ten_year_return". \
+        Example — CORRECT addition: governance has "sumbeforetran" \
+        ("转让前持股") but prose ALSO has "转让数量" which no governance \
+        column covers → add "transfer_shares" as a new discovered field. \
+        Two columns for the same concept causes value split (some rows \
+        fill column A, others fill column B) and is a critical schema error.
         - If paragraphs are keyed by repeated document-local labels such as \
         "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353", \
         "File 353", or "Case 353", include a field named "record_id" and \
@@ -253,13 +539,27 @@ def _parse_knowledge_schema(
         for merging sections; it is NOT the same as domain IDs such as \
         personalcode, innercode, fundcode, or secucode.
         - Do NOT add narrative/filler fields — only structured data fields.
+        - For the UNITS line: scan the prose sample for unit suffixes attached \
+        to numeric values (e.g. "2478.76亿元" → gdp=亿元, "15.3%" → rate=%). \
+        Output a field=unit pair when you find a CONCRETE unit suffix \
+        (e.g. 元, 万元, 亿元, %, 万吨, 万人, 公斤) in the actual data values \
+        or governance document. Fields whose values appear with "%" in the \
+        prose or are described as "percentage" / "比例" in the governance \
+        document MUST be tagged with unit=%. \
+        Dimensionless fields (price indices, ranks, counts without unit) and \
+        fields with no visible unit suffix \
+        must be OMITTED entirely — do NOT write them with "_default", \
+        "currency", "units", "amount", "count", or any placeholder.
 
         Governance document:
         {km_text}{prose_section}""")
     messages = [
         ModelMessage(
             role="system",
-            content="You extract database schema. Output PK, ANCHORS, TYPES, then comma-separated columns.",
+            content=(
+                "You extract database schema. "
+                "Output PK, ANCHORS, TYPES, UNITS, DEFS, then comma-separated columns."
+            ),
         ),
         ModelMessage(role="user", content=prompt),
     ]
@@ -276,7 +576,7 @@ def _parse_knowledge_schema(
     parsed = _parse_schema_response(raw)
     if not parsed:
         return None
-    _, anchor_keys, explicit_types, columns = parsed
+    _, anchor_keys, explicit_types, columns, field_units, raw_defs = parsed
 
     columns, anchor_keys = _ensure_local_record_anchor(
         prose_text,
@@ -285,29 +585,32 @@ def _parse_knowledge_schema(
         explicit_types,
     )
     field_types = _complete_schema_field_types(columns, explicit_types)
+    field_defs = _complete_schema_field_defs(columns, raw_defs)
 
     logger.info(
-        "Schema from knowledge.md (LLM) for '%s': pk=%s, anchors=%s, types=%s, cols=%s",
+        "Schema from knowledge.md (LLM) for '%s': pk=%s, anchors=%s, types=%s, units=%s, defs=%s, cols=%s",
         prose_stem,
         anchor_keys[0],
         anchor_keys,
         field_types,
+        field_units,
+        field_defs,
         columns,
     )
-    return columns, anchor_keys, field_types
+    return columns, anchor_keys, field_types, field_units, field_defs
 
 
 def _infer_schema_from_sample(
     adapter: ModelAdapter,
     prose_text: str,
     question: str,
-) -> tuple[list[str], list[str], dict[str, str]] | None:
+) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
     """Infer a unified schema by sampling the raw prose text before compression.
 
     Sends a representative sample to the LLM to discover structured data fields
     and produce a canonical column list + anchor keys.
 
-    Returns (columns, anchor_keys, field_types) or None.
+    Returns (columns, anchor_keys, field_types, field_units, field_defs) or None.
     """
     sample = sample_paragraphs_by_section(prose_text, per_section=2)
     if not sample or len(sample) < 50:
@@ -338,11 +641,20 @@ def _infer_schema_from_sample(
            uniquely identify an entity even when the PK is missing or takes
            a different form (e.g. a name, label, or secondary ID).
 
-        Output exactly FOUR lines:
+        Output exactly SIX lines:
         Line 1: PK: <primary_key_field_name>
         Line 2: ANCHORS: <comma-separated identity fields including PK>
         Line 3: TYPES: <field=type, field=type, ... for every field>
-        Line 4: all field names as a comma-separated list (must include all ANCHORS)
+        Line 4: UNITS: <field=unit for each numeric field whose values carry \
+        a CONCRETE unit suffix in the prose sample (e.g. gdp=亿元, rate=%). \
+        Only use real unit suffixes visible in the data values. Dimensionless \
+        fields (price indices, ratios, ranks, counts without unit) and fields \
+        with no visible unit suffix must be OMITTED — do NOT write them with \
+        "_default", "currency", "units", "amount", or any placeholder.>
+        Line 5: DEFS: <field=one-sentence semantic definition; field=definition; \
+        ... for every field. Semicolons between entries. Write a concise \
+        definition that distinguishes this field from similarly-named fields.>
+        Line 6: all field names as a comma-separated list (must include all ANCHORS)
 
         Rules:
         - Column names must be SHORT GENERIC FIELD NAMES, NEVER specific data values.
@@ -362,7 +674,7 @@ def _infer_schema_from_sample(
     messages = [
         ModelMessage(
             role="system",
-            content="You extract database schema from prose samples. Output PK, ANCHORS, TYPES, then columns.",
+            content="You extract database schema from prose samples. Output PK, ANCHORS, TYPES, UNITS, DEFS, then columns.",
         ),
         ModelMessage(role="user", content=prompt),
     ]
@@ -375,7 +687,7 @@ def _infer_schema_from_sample(
     parsed = _parse_schema_response(response.content)
     if not parsed:
         return None
-    _, anchor_keys, explicit_types, columns = parsed
+    _, anchor_keys, explicit_types, columns, field_units, raw_defs = parsed
 
     columns, anchor_keys = _ensure_local_record_anchor(
         prose_text,
@@ -384,15 +696,17 @@ def _infer_schema_from_sample(
         explicit_types,
     )
     field_types = _complete_schema_field_types(columns, explicit_types)
+    field_defs = _complete_schema_field_defs(columns, raw_defs)
 
     logger.info(
-        "Schema inferred from sample: pk=%s, anchors=%s, types=%s, cols=%s",
+        "Schema inferred from sample: pk=%s, anchors=%s, types=%s, defs=%s, cols=%s",
         anchor_keys[0],
         anchor_keys,
         field_types,
+        field_defs,
         columns,
     )
-    return columns, anchor_keys, field_types
+    return columns, anchor_keys, field_types, field_units, field_defs
 
 
 def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
@@ -430,6 +744,10 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
         raise RuntimeError("Cannot extract model credentials from adapter for ETL.")
 
     has_rate_limiter = rate_limit_cfg is not None and rate_limit_key
+    seed: int | None = getattr(source, "seed", None)
+    top_p: float | None = getattr(source, "top_p", None)
+    top_k: int | None = getattr(source, "top_k", None)
+
     inner: ModelAdapter = OpenAIModelAdapter(
         model=model,
         api_base=api_base,
@@ -437,6 +755,9 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
         temperature=0.1,
         enable_thinking=False,
         backend_kind=backend_kind,
+        seed=seed,
+        top_p=top_p,
+        top_k=top_k,
         max_retries=0 if has_rate_limiter else 2,
         timeout=_ETL_HTTP_TIMEOUT,
     )
@@ -462,6 +783,8 @@ def extract_prose_file(
     schema_columns: list[str] | None = None,
     anchor_keys: list[str] | None = None,
     schema_field_types: dict[str, str] | None = None,
+    field_units: dict[str, str] | None = None,
+    schema_field_defs: dict[str, str] | None = None,
 ) -> ETLResult | None:
     """Extract structured data from a prose file.
 
@@ -472,11 +795,13 @@ def extract_prose_file(
 
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
     etl_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
     full_text = prose_text
 
     if path.suffix.lower() == ".pdf":
-        md_path = etl_dir / f"{path.stem}.md"
+        md_path = cache_dir / f"{path.stem}.md"
         md_path.write_text(full_text, encoding="utf-8")
 
     # ---- Cache: reuse existing CSV if present and valid ----
@@ -499,7 +824,9 @@ def extract_prose_file(
     if not schema_columns:
         inferred = _infer_schema_from_sample(adapter, full_text, task.question)
         if inferred:
-            schema_columns, anchor_keys, schema_field_types = inferred
+            schema_columns, anchor_keys, schema_field_types, field_units, schema_field_defs = (
+                inferred
+            )
             primary_key = anchor_keys[0] if anchor_keys else None
 
     # ---- Phase 1: compress ----
@@ -511,8 +838,9 @@ def extract_prose_file(
         primary_key=primary_key,
         anchor_keys=anchor_keys,
         schema_field_types=schema_field_types,
+        schema_field_defs=schema_field_defs,
     )
-    compressed_path = etl_dir / f"{path.stem}_clean.md"
+    compressed_path = cache_dir / f"{path.stem}_clean.md"
     compressed_path.write_text(compressed, encoding="utf-8")
     logger.info(
         "ETL compressed: %d → %d chars (%.0f%%)",
@@ -532,6 +860,9 @@ def extract_prose_file(
     if schema_columns:
         compressed = normalize_entity_lines(compressed, schema_columns, primary_key)
     compressed_path.write_text(compressed, encoding="utf-8")
+
+    if field_units:
+        _write_units_sidecar(task, path.stem, field_units)
 
     # ---- Phase 2a: deterministic KV→CSV (when normalized) ----
     if schema_columns:
@@ -659,7 +990,30 @@ def run_etl_for_task(
 
     adapter = _make_text_adapter(model_adapter)
 
+    # Read knowledge.md once for target-unit voting (shared across all files).
+    km_path = task.context_dir / "knowledge.md"
+    km_text = ""
+    if km_path.is_file():
+        with contextlib.suppress(OSError):
+            km_text = km_path.read_text(encoding="utf-8")
+
     def _process(pf: Path) -> ETLResult | None:
+        # Early cache check: skip file reading and all LLM calls if CSV exists.
+        etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
+        csv_path = etl_dir / f"{pf.stem}.csv"
+        cached = validate_csv(csv_path)
+        if cached:
+            header, row_count = cached
+            logger.info(
+                "ETL cache hit (early): %s (%d cols, %d rows)", csv_path, len(header), row_count
+            )
+            return ETLResult(
+                source_file=pf.name,
+                csv_path=str(csv_path),
+                columns=header,
+                row_count=row_count,
+            )
+
         if pf.suffix.lower() == ".pdf":
             logger.info("ETL PDF→markdown: %s", pf.name)
             text: str = pdf_to_markdown(pf)  # pyright: ignore[reportUnknownVariableType]
@@ -667,7 +1021,15 @@ def run_etl_for_task(
             text = pf.read_text(encoding="utf-8")
         parsed = _parse_knowledge_schema(task, pf, adapter, text)
         if parsed:
-            schema, anchors, field_types = parsed
+            schema, anchors, field_types, units, defs = parsed
+            units.pop("_default", None)
+            if km_text and units:
+                targets = _vote_target_units(adapter, km_text, units)
+                if targets:
+                    for field, (target_unit, factor) in targets.items():
+                        units[f"_target_{field}"] = target_unit
+                        units[f"_factor_{field}"] = str(factor)
+                    logger.info("ETL: voted target units for %s: %s", pf.stem, targets)
             return extract_prose_file(
                 adapter,
                 pf,
@@ -676,6 +1038,8 @@ def run_etl_for_task(
                 schema_columns=schema,
                 anchor_keys=anchors,
                 schema_field_types=field_types,
+                field_units=units,
+                schema_field_defs=defs,
             )
         logger.info("ETL: no knowledge.md schema for %s, will infer from sample", pf.name)
         return extract_prose_file(adapter, pf, task, text)
