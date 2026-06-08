@@ -47,6 +47,7 @@ export default function App() {
   const [currentSpans, setCurrentSpans] = useState([]);
   const [selectedSpanId, setSelectedSpanId] = useState(null);
   const [sseConnected, setSseConnected] = useState(false);
+  const [rlStats, setRlStats] = useState(null);
 
   const sseCleanup = useRef(null);
 
@@ -79,13 +80,13 @@ export default function App() {
     setLoading(false);
   }, [selectedRunId, statusFilter, offset, sortBy, sortOrder]);
 
-  const loadDetail = useCallback(async (traceId) => {
+  const loadDetail = useCallback(async (traceId, { resetSelection = false } = {}) => {
     setLoading(true);
     try {
       const data = await api.fetchTraceDetail(traceId);
       setCurrentTrace(data.trace);
       setCurrentSpans(data.spans || []);
-      setSelectedSpanId(null);
+      if (resetSelection) setSelectedSpanId(null);
     } catch {
       setCurrentTrace(null);
       setCurrentSpans([]);
@@ -104,10 +105,16 @@ export default function App() {
   }, [loadRuns]);
 
   useEffect(() => {
+    api.fetchRateLimitStats(selectedRunId || undefined)
+      .then(setRlStats)
+      .catch(() => setRlStats(null));
+  }, [selectedRunId]);
+
+  useEffect(() => {
     if (route.view === "list") {
       loadTraces();
     } else if (route.traceId) {
-      loadDetail(route.traceId);
+      loadDetail(route.traceId, { resetSelection: true });
     }
   }, [route, loadTraces, loadDetail]);
 
@@ -184,7 +191,7 @@ export default function App() {
 
       {route.view === "list" && (
         <>
-          <StatsBar runs={runs} selectedRunId={selectedRunId} />
+          <StatsBar runs={runs} selectedRunId={selectedRunId} rlStats={rlStats} />
           <TraceList
             traces={traces}
             total={total}

@@ -1,4 +1,4 @@
-import { BarChart3, CheckCircle2, Coins, Clock } from "lucide-react";
+import { BarChart3, CheckCircle2, Coins, Clock, Timer } from "lucide-react";
 import { fmt, fmtDuration, fmtTokens } from "../utils";
 
 function StatCard({ icon: Icon, label, value, color, subtext }) {
@@ -20,7 +20,7 @@ function StatCard({ icon: Icon, label, value, color, subtext }) {
   );
 }
 
-export default function StatsBar({ runs, selectedRunId }) {
+export default function StatsBar({ runs, selectedRunId, rlStats }) {
   const run = selectedRunId ? runs.find((r) => r.run_id === selectedRunId) : null;
   const taskCount = run ? run.task_count : runs.reduce((s, r) => s + r.task_count, 0);
   const okCount = run ? run.ok_count : runs.reduce((s, r) => s + (r.ok_count || 0), 0);
@@ -38,6 +38,10 @@ export default function StatsBar({ runs, selectedRunId }) {
       <StatCard icon={CheckCircle2} label="OK" value={fmt(okCount)} color="success" subtext={`${pct}%`} />
       <StatCard icon={Coins} label="Tokens" value={fmtTokens(tokens)} color="purple" />
       <StatCard icon={Clock} label="Avg Duration" value={fmtDuration(avgMs)} color="warning" />
+      {rlStats?.rl_generations > 0 && (
+        <StatCard icon={Timer} label="RL Wait" value={fmtDuration(rlStats.total_acquire_wait_ms)}
+                  color="warning" subtext={`${rlStats.total_retries ?? 0} retries`} />
+      )}
     </div>
   );
 }

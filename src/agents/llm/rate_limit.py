@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import random
@@ -188,6 +189,7 @@ class RateLimitedAdapter:
         self.inner = inner
         self.api_key = api_key
         self.rate_limit_config = rate_limit
+        self._last_metrics: dict[str, Any] | None = None
         # 透传 inner 的 `enable_thinking` 元数据。本壳不参与 thinking 行为本身——
         # `complete` 只把 messages 转交给 inner——但 `ReActAgent._system_message`
         # 会 introspect `model.enable_thinking` 决定是否注入 `<think>` 警告段
@@ -216,7 +218,7 @@ class RateLimitedAdapter:
         )
 
         # Step 1: 预扣 (1 RPM, reserved_tpm)；循环直到拿到令牌
-        self._acquire_or_sleep(need_rpm=1, need_tpm=reserved_tpm)
+        pre_acquire_wait = self._acquire_or_sleep(need_rpm=1, need_tpm=reserved_tpm)
 
         # Step 2: 调用内层；遇 429/5xx 退避重试，其他异常直抛
         backoff = self.rate_limit_config.backoff_initial_seconds
@@ -226,11 +228,26 @@ class RateLimitedAdapter:
                 response = self.inner.complete(messages)
             except RuntimeError as exc:
                 if not _is_retriable(exc):
-                    # 不可重试错误：退回预扣的 TPM（没真正生成 token），RPM 不退（请求已打到服务端）
                     self.bucket.refund(rpm=0, tpm=reserved_tpm)
+                    self._last_metrics = {
+                        "acquire_wait_ms": round(pre_acquire_wait * 1000, 1),
+                        "retry_count": attempt,
+                        "reserved_tpm": reserved_tpm,
+                        "actual_tpm": 0,
+                        "tpm_delta": -reserved_tpm,
+                        "error": type(exc).__name__,
+                    }
                     raise
                 if attempt == self.rate_limit_config.max_retries:
                     self.bucket.refund(rpm=0, tpm=reserved_tpm)
+                    self._last_metrics = {
+                        "acquire_wait_ms": round(pre_acquire_wait * 1000, 1),
+                        "retry_count": attempt + 1,
+                        "reserved_tpm": reserved_tpm,
+                        "actual_tpm": 0,
+                        "tpm_delta": -reserved_tpm,
+                        "exhausted": True,
+                    }
                     raise RateLimitExhausted(
                         f"Rate limit retries exhausted after {attempt + 1} attempts: {exc}"
                     ) from exc
@@ -239,7 +256,6 @@ class RateLimitedAdapter:
                     sleep_s = retry_after
                 else:
                     sleep_s = min(backoff, self.rate_limit_config.backoff_max_seconds)
-                # 抖动：避免多 worker 同步重试造成雪崩
                 time.sleep(sleep_s + random.uniform(0.0, 0.5))
                 backoff *= 2
                 continue
@@ -247,22 +263,30 @@ class RateLimitedAdapter:
             # Step 3: 成功——用真实 usage 做 TPM 对账
             actual_tpm = response.usage.total_tokens
             delta = actual_tpm - reserved_tpm
+            reconcile_wait = 0.0
             if delta > 0:
-                # 实际比预扣多——补扣（不再需要 RPM，只动 TPM）
-                self._acquire_or_sleep(need_rpm=0, need_tpm=delta)
+                reconcile_wait = self._acquire_or_sleep(need_rpm=0, need_tpm=delta)
             elif delta < 0:
-                # 实际比预扣少——把富余的 TPM 退还
                 self.bucket.refund(rpm=0, tpm=-delta)
-            return response
+            metrics = {
+                "acquire_wait_ms": round((pre_acquire_wait + reconcile_wait) * 1000, 1),
+                "retry_count": attempt,
+                "reserved_tpm": reserved_tpm,
+                "actual_tpm": actual_tpm,
+                "tpm_delta": delta,
+            }
+            self._last_metrics = metrics
+            return dataclasses.replace(response, rate_limit_metrics=metrics)
 
-        # 理论上不可达：循环必定走 return 或 raise；保险起见再兜一层
         raise RateLimitExhausted("Rate limit retry loop exited without return.")
 
-    def _acquire_or_sleep(self, *, need_rpm: int, need_tpm: int) -> None:
-        """阻塞直到 acquire 返 0.0；每次失败按 `wait + 小抖动` 休眠后重试。"""
+    def _acquire_or_sleep(self, *, need_rpm: int, need_tpm: int) -> float:
+        """阻塞直到 acquire 返 0.0；返回累计等待秒数。"""
+        total_wait = 0.0
         while True:
             wait = self.bucket.acquire(need_rpm=need_rpm, need_tpm=need_tpm)
             if wait <= 0.0:
-                return
-            # 抖动防并发 worker 在刷新边界同时唤醒
-            time.sleep(wait + random.uniform(0.0, 0.05))
+                return total_wait
+            jitter = random.uniform(0.0, 0.05)
+            time.sleep(wait + jitter)
+            total_wait += wait + jitter

@@ -87,7 +87,7 @@ export default function TraceDetail({ trace, spans, selectedSpanId, onSelectSpan
         </div>
 
         {/* Inspector */}
-        <div className="flex flex-col rounded-xl border border-border bg-surface overflow-hidden animate-fade-up"
+        <div className="lg:sticky lg:top-4 lg:self-start flex flex-col rounded-xl border border-border bg-surface overflow-hidden animate-fade-up"
              style={{ animationDelay: "100ms" }}>
           <div className="px-4 py-3 border-b border-border bg-panel/50">
             <h3 className="text-[11px] font-semibold text-fg-muted uppercase tracking-wider">Inspector</h3>

@@ -311,6 +311,37 @@ class SQLiteTraceStore:
             result["attributes"] = json.loads(result.pop("attributes_json", "{}"))
             return result
 
+    def rate_limit_stats(self, run_id: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            params: list[Any] = []
+            where_clause = "WHERE kind = 'generation'"
+            if run_id:
+                where_clause += " AND run_id = ?"
+                params.append(run_id)
+            row = self._conn.execute(
+                f"""SELECT
+                    COUNT(*) AS total_generations,
+                    SUM(CASE WHEN json_extract(attributes_json, '$.usage.rate_limit') IS NOT NULL
+                        THEN 1 ELSE 0 END) AS rl_generations,
+                    COALESCE(SUM(json_extract(attributes_json,
+                        '$.usage.rate_limit.acquire_wait_ms')), 0) AS total_acquire_wait_ms,
+                    COALESCE(MAX(json_extract(attributes_json,
+                        '$.usage.rate_limit.acquire_wait_ms')), 0) AS max_acquire_wait_ms,
+                    COALESCE(SUM(json_extract(attributes_json,
+                        '$.usage.rate_limit.retry_count')), 0) AS total_retries,
+                    COALESCE(AVG(json_extract(attributes_json,
+                        '$.usage.rate_limit.tpm_delta')), 0) AS avg_tpm_delta
+                FROM spans {where_clause}""",
+                params,
+            ).fetchone()
+        result = dict(row) if row else {}
+        rl_gen = result.get("rl_generations") or 0
+        result["avg_acquire_wait_ms"] = (
+            round(result["total_acquire_wait_ms"] / rl_gen, 1) if rl_gen > 0 else 0
+        )
+        result["retry_rate"] = round(result["total_retries"] / rl_gen, 4) if rl_gen > 0 else 0
+        return result
+
     def get_spans_after(
         self, iso_timestamp: str, run_id: str | None = None
     ) -> list[dict[str, Any]]:

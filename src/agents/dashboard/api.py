@@ -60,6 +60,12 @@ def create_api_routes(app: Any, store: SQLiteTraceStore) -> None:
             return JSONResponse({"error": "not found"}, status_code=404)
         return JSONResponse(result)
 
+    @app.get("/api/stats/rate-limit")
+    async def rate_limit_stats(  # pyright: ignore[reportUnusedFunction]
+        run_id: str | None = None,
+    ) -> JSONResponse:
+        return JSONResponse(store.rate_limit_stats(run_id))
+
     @app.get("/api/stream")
     async def stream_events(  # pyright: ignore[reportUnusedFunction]
         request: Request,

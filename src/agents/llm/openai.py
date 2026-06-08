@@ -202,7 +202,7 @@ class _BaseOpenAIAdapter(abc.ABC):
         presence_penalty: float | None = None,
         seed: int | None = None,
         max_retries: int = 2,
-        timeout: float = 600.0,
+        timeout: float = 120.0,
     ) -> None:
         self.model = model
         # 去掉尾部斜杠：OpenAI SDK 会自行拼 `/chat/completions`，重复的 `/` 在部分
@@ -404,7 +404,7 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
         presence_penalty: float | None = None,
         seed: int | None = None,
         max_retries: int = 2,
-        timeout: float = 600.0,
+        timeout: float = 120.0,
     ) -> None:
         super().__init__(
             model=model,

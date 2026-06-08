@@ -51,6 +51,7 @@ class ModelResponse:
     reasoning_content: str = ""
     usage: TokenUsage = field(default_factory=TokenUsage)
     latency_ms: int = 0
+    rate_limit_metrics: dict[str, Any] | None = None
 
 
 class ModelAdapter(Protocol):

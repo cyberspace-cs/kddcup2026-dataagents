@@ -30,6 +30,12 @@ export async function fetchTraceDetail(traceId) {
   return request("/api/traces/" + encodeURIComponent(traceId));
 }
 
+export async function fetchRateLimitStats(runId) {
+  const p = new URLSearchParams();
+  if (runId) p.set("run_id", runId);
+  return request("/api/stats/rate-limit?" + p);
+}
+
 export function createSSE(runId, { onSpan, onConnect, onDisconnect }) {
   const params = runId ? "?run_id=" + encodeURIComponent(runId) : "";
   const source = new EventSource("/api/stream" + params);

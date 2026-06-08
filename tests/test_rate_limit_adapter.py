@@ -490,3 +490,96 @@ def test_constructor_rejects_empty_api_key(tmp_path: Path) -> None:
     cfg = RateLimitConfig(state_dir=tmp_path)
     with pytest.raises(ValueError, match="api_key"):
         RateLimitedAdapter(inner=inner, api_key="", rate_limit=cfg)
+
+
+# ------- Response-attached metrics --------------------------------------------
+
+
+def test_metrics_happy_path(
+    rate_limit_cfg: RateLimitConfig,
+    fast_sleep_and_jitter: list[float],
+) -> None:
+    del fast_sleep_and_jitter
+    bucket = _FakeBucket()
+    inner = _ScriptedInnerAdapter([_make_response(total_tokens=300)])
+    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
+
+    resp = adapter.complete(_messages())
+    m = resp.rate_limit_metrics
+    assert m is not None
+    assert m["retry_count"] == 0
+    assert m["actual_tpm"] == 300
+    assert m["tpm_delta"] == 300 - m["reserved_tpm"]
+    assert m["acquire_wait_ms"] == 0.0
+    assert "exhausted" not in m
+    assert "error" not in m
+
+
+def test_metrics_with_retries(
+    rate_limit_cfg: RateLimitConfig,
+    fast_sleep_and_jitter: list[float],
+) -> None:
+    del fast_sleep_and_jitter
+    err = _wrap_as_runtime(_fake_api_error(429, headers={"Retry-After": "1"}))
+    bucket = _FakeBucket()
+    inner = _ScriptedInnerAdapter([err, _make_response(total_tokens=100)])
+    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
+
+    resp = adapter.complete(_messages())
+    m = resp.rate_limit_metrics
+    assert m is not None
+    assert m["retry_count"] == 1
+
+
+def test_metrics_with_acquire_wait(
+    rate_limit_cfg: RateLimitConfig,
+    fast_sleep_and_jitter: list[float],
+) -> None:
+    del fast_sleep_and_jitter
+    bucket = _FakeBucket()
+    bucket.set_acquire_returns([2.0, 0.0])
+    inner = _ScriptedInnerAdapter([_make_response(total_tokens=100)])
+    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
+
+    resp = adapter.complete(_messages())
+    m = resp.rate_limit_metrics
+    assert m is not None
+    assert m["acquire_wait_ms"] == 2000.0
+
+
+def test_metrics_exhausted(
+    rate_limit_cfg: RateLimitConfig,
+    fast_sleep_and_jitter: list[float],
+) -> None:
+    del fast_sleep_and_jitter
+    script: list[ModelResponse | BaseException] = [
+        _wrap_as_runtime(_fake_api_error(429)) for _ in range(4)
+    ]
+    bucket = _FakeBucket()
+    inner = _ScriptedInnerAdapter(script)
+    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
+
+    with pytest.raises(RateLimitExhausted):
+        adapter.complete(_messages())
+    m = adapter._last_metrics
+    assert m is not None
+    assert m["exhausted"] is True
+    assert m["retry_count"] == 4
+
+
+def test_metrics_non_retriable_error(
+    rate_limit_cfg: RateLimitConfig,
+    fast_sleep_and_jitter: list[float],
+) -> None:
+    del fast_sleep_and_jitter
+    err = _wrap_as_runtime(_fake_api_error(400))
+    bucket = _FakeBucket()
+    inner = _ScriptedInnerAdapter([err])
+    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
+
+    with pytest.raises(RuntimeError):
+        adapter.complete(_messages())
+    m = adapter._last_metrics
+    assert m is not None
+    assert m["error"] == "RuntimeError"
+    assert m["actual_tpm"] == 0

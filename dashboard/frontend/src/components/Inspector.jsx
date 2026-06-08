@@ -175,10 +175,32 @@ function ResponseSection({ output }) {
   );
 }
 
+function RateLimitGrid({ rl }) {
+  if (!rl) return null;
+  const items = [
+    ["Acquire Wait", fmtDuration(rl.acquire_wait_ms)],
+    ["Retries", fmt(rl.retry_count)],
+    ["TPM Delta", rl.tpm_delta > 0 ? `+${fmt(rl.tpm_delta)}` : fmt(rl.tpm_delta)],
+    ...(rl.exhausted ? [["Exhausted", "Yes"]] : []),
+    ...(rl.error ? [["Error", rl.error]] : []),
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-2 mt-3">
+      {items.map(([label, value]) => (
+        <div key={label} className="rounded-lg border border-warning/30 bg-warning-dimmed/30 px-3 py-2">
+          <div className="text-[10px] font-medium text-warning uppercase tracking-wider">{label}</div>
+          <div className="text-lg font-semibold tabular-nums">{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function GenerationSection({ attrs }) {
   return (
     <>
       <UsageGrid usage={attrs.usage} />
+      <RateLimitGrid rl={attrs.usage?.rate_limit} />
       {attrs.model && (
         <div className="mt-3 text-sm">
           <span className="text-fg-muted">Model: </span>

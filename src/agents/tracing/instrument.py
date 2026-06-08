@@ -64,6 +64,8 @@ class TracedModelAdapter:
             if response.raw_tool_calls:
                 output_msg["tool_calls"] = response.raw_tool_calls
             span.span_data.output = [output_msg]
+            if response.rate_limit_metrics is not None:
+                span.span_data.usage["rate_limit"] = response.rate_limit_metrics
             return response
 
     def __getattr__(self, name: str) -> Any:
