@@ -6,7 +6,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from agents.llm.types import ModelAdapter, ModelMessage, ModelResponse, ModelToolCall
+from agents.llm.types import ModelMessage, ModelResponse, ModelToolCall
 from agents.prompts import (
     build_native_system_prompt,
     build_observation_prompt,
@@ -17,14 +17,11 @@ from agents.tools import ToolRegistry
 
 def build_system_message(
     *,
-    model: ModelAdapter,
     tools: ToolRegistry,
     system_prompt: str | None,
 ) -> ModelMessage:
     """Build the system message using native function-calling prompt."""
-    raw_enable_thinking = getattr(model, "enable_thinking", None)
-    enable_thinking = raw_enable_thinking if isinstance(raw_enable_thinking, bool) else None
-    content = build_native_system_prompt(system_prompt, enable_thinking=enable_thinking)
+    content = build_native_system_prompt(system_prompt)
     return ModelMessage(role="system", content=content)
 
 
@@ -32,13 +29,11 @@ def build_messages(
     *,
     state: AgentRuntimeState,
     initial_content: str | list[dict[str, Any]],
-    model: ModelAdapter,
     tools: ToolRegistry,
     system_prompt: str | None,
 ) -> list[ModelMessage]:
     """Build model request messages for native tool protocol."""
     system_message = build_system_message(
-        model=model,
         tools=tools,
         system_prompt=system_prompt,
     )

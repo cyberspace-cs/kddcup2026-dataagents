@@ -12,10 +12,7 @@ from agents.prompts.rules import (
 
 # 原生 function calling 用的系统提示词。
 # 工具定义通过 OpenAI `tools=[...]` 下推，prompt 里不再复述工具表 / 响应格式。
-# Header 段（Behavior / Data conventions / Decision tree）用 f-string 拼装；
-# Output protocol 段保留原文字面量——内含 JSON 大括号示例的实证措辞
-# （commit 9e5a24f 解决 Qwen3-thinking 漏 emit 的踩坑），f-string 化会引入
-# 大量 `{{` 转义噪声，影响 review。
+# Header 段（Behavior / Data conventions / Decision tree）用 f-string 拼装。
 _NATIVE_HEADER = f"""\
 You are a data analysis agent.
 
@@ -86,55 +83,20 @@ Re-read the question and run these checks against your computed result. If ANY c
 - Submission method: 10+ rows OR 50+ cells → you MUST write CSV via `execute_python` and call `answer` with `from_csv` pointing at the CSV path. Do NOT inline `columns`/`rows` — the runner hard-rejects inline at this threshold, wasting the entire generation.
 - If you already have the final table and all checks pass, submit immediately — do not summarize in plain text. For small answers (<10 rows AND <50 cells) call `answer` inline; for 10+ rows OR 50+ cells write CSV first, then `answer` with `from_csv`."""
 
-_NATIVE_OUTPUT_PROTOCOL = """\
-## Output protocol (critical when thinking is enabled)
-
-Tools execute ONLY through the function-calling interface. Anything inside <think>...</think> is discarded by the runtime — it is never parsed, never extracted, and never executed, regardless of its format.
-
-The single most common failure to avoid: drafting a tool_call inside <think> in any of these forms — and then ending the turn without emitting a real tool_call afterwards:
-  - JSON object: {"name": "execute_python", "arguments": {...}}
-  - <tool_call>...</tool_call> wrappers
-  - XML-style: <function=NAME><parameter=KEY>VALUE</parameter></function>
-  - Python code blocks intended for execution
-None of these invoke a tool no matter how syntactically perfect — the runner sees zero tool_calls and the turn is wasted.
-
-Required flow on every turn:
-  1. (Optional) Brief reasoning inside <think>, natural language only.
-  2. Close </think>.
-  3. Emit one or more structured tool_calls through the function-calling interface.
-
-Self-check: if you catch yourself drafting a tool_call shape (in any format) inside <think>, close </think> and re-emit it through the real channel — the draft never counts.
-
-The `answer` tool is your ONLY way to submit. Once your table is ready, emit a structured tool_call (write CSV + `answer` with `from_csv` for 10+ rows OR 50+ cells, or `answer` inline only for smaller answers) — no narration, no preview, no JSON-in-text."""
-
 
 def build_native_system_prompt(
     system_prompt: str | None = None,
-    enable_thinking: bool | None = None,
 ) -> str:
     """拼装**原生 function calling** 下的系统消息。
 
-    关键差异：工具定义通过 OpenAI `tools=[...]` 请求字段下推，无需在 prompt 里复述。
-    允许外部覆盖基座 prompt（A/B 调优用），缺省走 `REACT_NATIVE_SYSTEM_PROMPT`。
-
-    `enable_thinking` 控制是否注入 `<think>` 警告段（约 240 tokens，
-    专治 Qwen3-thinking 模式下漏 emit tool_call 的失败模式，commit 9e5a24f）：
-      - None（未设置，默认）：注入。Qwen3 服务端默认通常 thinking-on，
-        保守起见保留警告。
-      - True：注入。thinking 显式开启，失败模式适用。
-      - False：不注入。模型不会产出 `<think>`，警告对其无意义且占 token；
-        显式关闭 thinking 时省 ~240 tokens。
+    工具定义通过 OpenAI `tools=[...]` 请求字段下推，无需在 prompt 里复述。
+    允许外部覆盖基座 prompt（A/B 调优用），缺省走内置 header + path convention。
     """
     if system_prompt is not None:
         return system_prompt
-    sections = [_NATIVE_HEADER]
-    if enable_thinking is not False:
-        sections.append(_NATIVE_OUTPUT_PROTOCOL)
-    sections.append(PATH_CONVENTION_BLOCK)
+    sections = [_NATIVE_HEADER, PATH_CONVENTION_BLOCK]
     return "\n\n".join(sections)
 
 
 # 向后兼容：保留模块级常量供外部调用方（notebooks / 自定义 A/B 配置）继续 import。
-# 等价于 `build_native_system_prompt(enable_thinking=None)`，即"未指定 → 注入警告"
-# 的保守缺省，与历史行为完全一致。
 REACT_NATIVE_SYSTEM_PROMPT = build_native_system_prompt()

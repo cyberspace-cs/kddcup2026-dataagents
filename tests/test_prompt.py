@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.prompts import (
     REACT_NATIVE_SYSTEM_PROMPT,
@@ -45,72 +43,13 @@ def test_native_system_prompt_requires_tool_calls() -> None:
     assert "each row length must match" not in lower
 
 
-@pytest.mark.parametrize("enable_thinking", [None, True])
-def test_native_system_prompt_keeps_tool_calls_out_of_reasoning(
-    enable_thinking: bool | None,
-) -> None:
-    """`<think>` 内的 tool_call draft 一律不被执行；prompt 必须把这一点讲透。
-
-    commit 9e5a24f 把抽象的 "private scratchpad" 警告替换成了具体的失败示例 +
-    Required flow + Self-check。本测试钉死新版 prompt 的关键短语，避免再次脱同步。
-
-    参数化锁住保守缺省：`enable_thinking` 为 None（未配置）或 True（thinking-on）
-    时都必须注入警告段。仅 False 时才省略——见 `..._omits_think_warning_when_thinking_disabled`。
-    """
-    prompt = build_native_system_prompt(enable_thinking=enable_thinking)
-    lower = prompt.lower()
-
-    # 核心契约：<think> 内的内容会被 runtime 丢弃
-    assert "anything inside <think>...</think> is discarded by the runtime" in lower
-    assert "never parsed, never extracted, and never executed" in lower
-
-    # 显式列举常见失败形态（JSON / <tool_call> / <function=...>）
-    assert "the single most common failure to avoid" in lower
-    assert "<tool_call>...</tool_call> wrappers" in lower
-    assert "<function=name><parameter=key>value</parameter></function>" in lower
-
-    # 给出正向流程与自检
-    assert "required flow on every turn" in lower
-    assert "self-check" in lower
-
-    # answer 工具是唯一的提交通道
-    assert "the `answer` tool is your only way to submit" in lower
-
-
-def test_native_system_prompt_omits_think_warning_when_thinking_disabled() -> None:
-    """`enable_thinking=False` 时省略 `<think>` 警告段（约 240 tokens）。
-
-    动机：`_NATIVE_OUTPUT_PROTOCOL` 专治 Qwen3-thinking-on 的失败模式
-    （commit 9e5a24f），但对显式关闭 thinking 的配置（GPT/Claude/非-thinking
-    Qwen）来说，警告既冗余又占 token。`build_native_system_prompt` 在
-    `enable_thinking is False` 时跳过这段。
-
-    本测试断言警告段的关键短语**不**出现，并把 `## Output protocol` 段头一并
-    检查（杜绝"段头还在但内容被剥"的中间状态）。
-    """
-    prompt = build_native_system_prompt(enable_thinking=False)
-    lower = prompt.lower()
-
-    # `## Output protocol` 段头与警告关键短语都不应出现
-    assert "## output protocol" not in lower
-    assert "anything inside <think>...</think> is discarded by the runtime" not in lower
-    assert "the single most common failure to avoid" not in lower
-
-    # 但其它段——Behavior / Decision tree / Path convention——必须仍在
-    assert "## Behavior" in prompt
-    assert "## Decision tree" in prompt
-    assert "Path convention" in prompt
-
-
 def test_react_native_system_prompt_constant_matches_default_builder() -> None:
     """模块级常量 `REACT_NATIVE_SYSTEM_PROMPT` 必须等于 `build_native_system_prompt()`。
 
     向后兼容钉子：早期 callers（notebooks、自定义 A/B 配置）直接 import 常量；
-    重构后常量被 `build_native_system_prompt()`（默认 enable_thinking=None）
-    动态生成，保守缺省下两者必须 byte-equal。
+    重构后常量被 `build_native_system_prompt()` 动态生成，两者必须 byte-equal。
     """
     assert build_native_system_prompt() == REACT_NATIVE_SYSTEM_PROMPT
-    assert build_native_system_prompt(enable_thinking=None) == REACT_NATIVE_SYSTEM_PROMPT
 
 
 def test_native_system_prompt_includes_tool_decision_tree() -> None:
@@ -251,7 +190,6 @@ def test_system_prompts_share_grouped_sections() -> None:
 
     # native-only 段落
     assert "## Decision tree" in native_prompt
-    assert "## Output protocol" in native_prompt
 
 
 def test_system_prompts_share_data_conventions_text() -> None:

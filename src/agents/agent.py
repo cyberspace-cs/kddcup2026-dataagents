@@ -127,13 +127,8 @@ class ReActAgent:
     # ----------------------------- 消息构造 -----------------------------
 
     def _system_message(self) -> ModelMessage:
-        """构造 system prompt。
-
-        额外读取 `model.enable_thinking`：仅在显式 False 时
-        会跳过 `_NATIVE_OUTPUT_PROTOCOL` 段（参见 `build_native_system_prompt`）。
-        """
+        """构造 system prompt。"""
         return build_system_message(
-            model=self.model,
             tools=self.tools,
             system_prompt=self.system_prompt,
         )
@@ -146,7 +141,6 @@ class ReActAgent:
         return build_messages(
             state=state,
             initial_content=initial_content,
-            model=self.model,
             tools=self.tools,
             system_prompt=self.system_prompt,
         )
