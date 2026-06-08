@@ -46,7 +46,6 @@ def _sample_definition(name: str = "extra") -> ToolDefinition:
     return ToolDefinition(
         name=name,
         description="extra",
-        input_schema={},
         json_schema=None,
         handler=_noop_handler,
     )

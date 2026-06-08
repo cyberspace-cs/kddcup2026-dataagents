@@ -27,11 +27,10 @@ class StepRecord:
     - thought:          模型输出的自然语言思考（JSON payload 的 `thought`，native 下复用 content）
     - action:           被调用的工具名；错误分支使用哨兵值 `__error__`
     - action_input:     工具入参（来自模型输出的 `action_input`，native 下是 tool_call.arguments）
-    - raw_response:     模型原始输出字符串（含 ```json fence），同一 turn 的多条记录共享
+    - raw_response:     模型原始输出字符串，同一 turn 的多条记录共享
     - observation:      工具执行后回填给下一轮的观察结果
     - ok:               本步是否成功（失败时 observation 里带 error 字段）
-    - tool_call_id:     native 协议下是上游 tool_call_id（重放 tool 消息时必需）；
-                        text 协议下为 None
+    - tool_call_id:     上游 tool_call_id（重放 tool 消息时必需）；无 tool_call 时为 None
     - raw_tool_calls:   仅在同 turn 的**首条** StepRecord 上填写，用于 native 协议下重放
                         assistant 消息的 tool_calls 字段；其他记录留 None 以节省空间
     - reasoning:        vLLM `--reasoning-parser qwen3` / 百炼 Qwen3 返回的思维链；

@@ -186,8 +186,7 @@ def test_native_system_prompt_enforces_format_tolerance() -> None:
     2026-04-30 调整：规则从 `## Decision tree` 段（routing 信号）搬到
     `DATA_OUTPUT_RULES`（数据规约）。Decision tree 里其余 8 条都是
     "If X → call Y" 的工具路由，混入值比较规则会稀释路由 attention；
-    迁到 `DATA_OUTPUT_RULES` 后还顺带让文本协议首次拿到这条防护
-    （Decision tree 是 `_NATIVE_HEADER` 独享段，文本协议看不到）。
+    迁到 `DATA_OUTPUT_RULES` 后语义上更准确（值比较规则 vs 工具路由）。
 
     曾经一并写过的 "singular tolerance" 实测（run 008/010/011/012 共四轮）
     无效——模型每次都能围绕"the X 单数 → 挑较好的一个"合理化绕过任何禁令

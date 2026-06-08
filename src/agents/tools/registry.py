@@ -11,11 +11,8 @@
 - `tools/inputs.py`             ← Pydantic 入参模型 + 字段工厂 + `*_SCHEMA` 常量
 - `tools/handlers.py`           ← `handle_xxx` handler + `ToolExecutionResult`/`ToolHandler`
 
-`input_schema` vs `json_schema` 的区分：
-- `input_schema` 是**给文本 ReAct prompt 看的演示示例**（不是严格 JSON Schema），用于提示模型
-  入参长什么样；保持为非严格形式，是为了实测里发现其比严谨 schema 更不易让模型出错
-- `json_schema` 是**给 OpenAI 原生 function calling 用的严格 JSON Schema**，由 `to_openai_tools`
-  拼进请求体，vLLM 侧可在生成时做 constrained decoding
+`json_schema` 是给 OpenAI 原生 function calling 用的严格 JSON Schema，由 `to_openai_tools`
+拼进请求体，vLLM 侧可在生成时做 constrained decoding。
 """
 
 from __future__ import annotations
@@ -92,7 +89,6 @@ class ToolDefinition:
 
     - name:          Agent 在 action 字段里写的名字
     - description:   一句话说明用途
-    - input_schema:  action_input 的最小示例（文本 ReAct prompt 用，非严格 JSON Schema）
     - json_schema:   严格 JSON Schema，供 native function calling 下推给模型；
                      None 表示不暴露给原生调用（默认工具都已填充）
     - handler:       具体执行函数；内置工具签名为 `(task, args: <ModelClass>) -> ToolExecutionResult`，
@@ -102,7 +98,6 @@ class ToolDefinition:
 
     name: str
     description: str
-    input_schema: dict[str, Any]
     json_schema: dict[str, Any] | None
     handler: ToolHandler
     is_terminal: bool = False
@@ -256,9 +251,6 @@ def create_default_tool_registry(
     When omitted, the registry falls back to ``inspect_files`` (backward compat
     for tests and non-production paths).
 
-    `input_schema` 里的示例值是"演示"形式（不是真实 JSON Schema），模型看到
-    `"columns": ["column_name"]` 会按模式填自己的数据，实测比严谨 schema 更不易出错。
-    `json_schema` 则是给 OpenAI function calling 用的严格 schema。
     """
     first_tool = explore_tool or ToolDefinition(
         name="inspect_files",
@@ -268,7 +260,6 @@ def create_default_tool_registry(
             "This replaces the usual sequence of read_csv / read_json / "
             "inspect_sqlite_schema calls for initial discovery."
         ),
-        input_schema=InspectFilesInput.example_value(),
         json_schema=INSPECT_FILES_SCHEMA,
         handler=handle_inspect_files,
     )
@@ -284,7 +275,6 @@ def create_default_tool_registry(
                 "any full-file scan, use execute_python instead — the head/tail will "
                 "miss rows in between."
             ),
-            input_schema=ReadCsvInput.example_value(),
             json_schema=READ_CSV_SCHEMA,
             handler=handle_read_csv,
         ),
@@ -301,7 +291,6 @@ def create_default_tool_registry(
                 "For full-document regex extraction, cross-paragraph aggregation, "
                 "or structured parsing, use execute_python instead."
             ),
-            input_schema=ReadDocInput.example_value(),
             json_schema=READ_DOC_SCHEMA,
             handler=handle_read_doc,
         ),
@@ -314,7 +303,6 @@ def create_default_tool_registry(
                 "and text preview. Retrieval results are evidence pointers, not final "
                 "answers; use execute_python or SQL for full computation."
             ),
-            input_schema=SearchContextInput.example_value(),
             json_schema=SEARCH_CONTEXT_SCHEMA,
             handler=handle_search_context,
         ),
@@ -326,7 +314,6 @@ def create_default_tool_registry(
                 "or column candidates from knowledge.md and schema summaries before "
                 "filtering or joining data."
             ),
-            input_schema=LookupFieldInput.example_value(),
             json_schema=LOOKUP_FIELD_SCHEMA,
             handler=handle_lookup_field,
         ),
@@ -343,7 +330,6 @@ def create_default_tool_registry(
                 "(`kind` + `keys` + `sample_value_kinds` for object; `length` + "
                 "`first_item_kind` for array) without full load."
             ),
-            input_schema=ReadJsonInput.example_value(),
             json_schema=READ_JSON_SCHEMA,
             handler=handle_read_json,
         ),
@@ -364,7 +350,6 @@ def create_default_tool_registry(
                 # 一致的坑）。
                 "do NOT call on `.csv` / `.json` / `.md` / `.txt` paths."
             ),
-            input_schema=InspectSqliteSchemaInput.example_value(),
             json_schema=INSPECT_SQLITE_SCHEMA,
             handler=handle_inspect_sqlite_schema,
         ),
@@ -378,7 +363,6 @@ def create_default_tool_registry(
                 # 失败签名 + 备选工具路由由 sqlite.py 运行时翻译。
                 "do NOT call on `.csv` / `.json` / `.md` / `.txt` paths."
             ),
-            input_schema=ExecuteContextSqlInput.example_value(),
             json_schema=EXECUTE_CONTEXT_SQL_SCHEMA,
             handler=handle_execute_context_sql,
         ),
@@ -392,7 +376,6 @@ def create_default_tool_registry(
                 "(e.g., does province column contain '全国'?) without needing to "
                 "read each file individually."
             ),
-            input_schema=GrepContextInput.example_value(),
             json_schema=GREP_CONTEXT_SCHEMA,
             handler=handle_grep_context,
         ),
@@ -415,7 +398,6 @@ def create_default_tool_registry(
                 '(`pd.read_sql_query(query, "sqlite:///path")`) or '
                 "`sqlite3.connect(path)` + `pd.read_sql_query(query, conn)`."
             ),
-            input_schema=ExecutePythonInput.example_value(),
             json_schema=EXECUTE_PYTHON_SCHEMA,
             handler=handle_execute_python,
         ),
@@ -431,7 +413,6 @@ def create_default_tool_registry(
                 '("what is the comment/post/message/title"), columns must contain '
                 "the text body (Text/Body/Title), NOT a surrogate key (Id/Code)."
             ),
-            input_schema=AnswerInput.example_value(),
             json_schema=ANSWER_SCHEMA,
             handler=handle_answer,
             is_terminal=True,  # 唯一终止工具

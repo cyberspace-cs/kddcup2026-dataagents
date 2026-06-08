@@ -1,7 +1,6 @@
 """工具入参的 Pydantic 模型与对应严格 JSON Schema 常量。
 
-每个 `XxxInput` 同时承担三种角色的"单一真相源"：
-- `XxxInput.example_value()`：给文本 ReAct prompt 的演示示例（非严格 schema）
+每个 `XxxInput` 同时承担两种角色的"单一真相源"：
 - `XxxInput.model_validate(...)`：`ToolRegistry.execute` 边界处的入参校验
 - `XXX_SCHEMA = normalize_for_vllm(XxxInput.model_json_schema())`：原生 function
   calling 的 OpenAI tools[i].function.parameters，需保持字节稳定（被
@@ -56,18 +55,10 @@ def _positive_int_field(*, default: int, description: str) -> Any:
 class InspectFilesInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {}
-
 
 # `explore` 入参与 `inspect_files` 同构——空模型，无配置全量探索。
 class ExploreInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {}
 
 
 class ReadCsvInput(BaseModel):
@@ -86,10 +77,6 @@ class ReadCsvInput(BaseModel):
         _path_field(file_kind="CSV file", examples=("csv/member.csv", "data/train.csv")),
     ]
 
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {"path": "relative/path/to/file.csv"}
-
 
 class ReadJsonInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -98,10 +85,6 @@ class ReadJsonInput(BaseModel):
         str,
         _path_field(file_kind="JSON file", examples=("json/Patient.json", "zip_code.json")),
     ]
-
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {"path": "relative/path/to/file.json"}
 
 
 class ReadDocInput(BaseModel):
@@ -139,15 +122,6 @@ class ReadDocInput(BaseModel):
         ),
     )
 
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {
-            "path": "relative/path/to/file.md",
-            "start_line": 1,
-            "line_count": 100,
-            "keyword": "optional search text",
-        }
-
 
 class SearchContextInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -184,10 +158,6 @@ class SearchContextInput(BaseModel):
         ),
     ] = None
 
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {"query": "entity name threshold phrase", "path": None, "limit": 5}
-
 
 class LookupFieldInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -214,10 +184,6 @@ class LookupFieldInput(BaseModel):
         ),
     ] = None
 
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {"term": "field_name unit code label", "limit": 5}
-
 
 class InspectSqliteSchemaInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -229,10 +195,6 @@ class InspectSqliteSchemaInput(BaseModel):
             examples=("db/clinical.sqlite", "main.db"),
         ),
     ]
-
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {"path": "relative/path/to/file.sqlite"}
 
 
 class ExecuteContextSqlInput(BaseModel):
@@ -259,14 +221,6 @@ class ExecuteContextSqlInput(BaseModel):
         ),
     ]
 
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {
-            "path": "relative/path/to/file.sqlite",
-            "sql": "SELECT ...",
-            "limit": 200,
-        }
-
 
 class GrepContextInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -292,10 +246,6 @@ class GrepContextInput(BaseModel):
         ),
     ] = None
 
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {"pattern": "search term or regex", "path": None}
-
 
 GREP_CONTEXT_SCHEMA = normalize_for_vllm(GrepContextInput.model_json_schema())
 
@@ -312,10 +262,6 @@ class ExecutePythonInput(BaseModel):
             ),
         ),
     ]
-
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {"code": "import os\nprint(sorted(os.listdir('.')))"}
 
 
 class AnswerInput(BaseModel):
@@ -387,14 +333,6 @@ class AnswerInput(BaseModel):
             if len(row) != width:
                 raise ValueError(f"row {index} has {len(row)} cells but columns has {width}")
         return self
-
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {
-            "columns": ["column_name (<10 rows AND <50 cells only)"],
-            "rows": [["value_1"]],
-            "from_csv": "/path/to/answer.csv (10+ rows, omit columns/rows)",
-        }
 
 
 INSPECT_FILES_SCHEMA = normalize_for_vllm(InspectFilesInput.model_json_schema())

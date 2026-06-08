@@ -1,8 +1,7 @@
 """测试用 Scripted 模型适配器。
 
 把 `ScriptedModelAdapter` / `ScriptedNativeModelAdapter` 从生产包搬到这里：
-- 真实 OpenAI 调用在 CI 上不可靠（网络 + 额度），文本 ReAct 循环的单元测试
-  需要可注入的确定性响应源；
+- 真实 OpenAI 调用在 CI 上不可靠（网络 + 额度），单元测试需要可注入的确定性响应源；
 - 这些类没有任何生产调用方，留在 `src/` 下会让 pyright strict 把测试 fixture
   的 kwargs 当作 Unknowns，污染严格类型门禁。
 
@@ -17,8 +16,8 @@ from agents.llm.types import ModelMessage, ModelResponse
 class ScriptedModelAdapter:
     """测试/调试专用：按预置**文本**列表依次返回响应。
 
-    真正的 OpenAI 调用在 CI 上不可靠（网络 + 额度），文本 ReAct 循环的单元测试
-    用它注入确定性的 JSON 输出。签名保持与 `ModelAdapter` 协议一致（返回 `ModelResponse`）。
+    真正的 OpenAI 调用在 CI 上不可靠（网络 + 额度），单元测试用它注入确定性的
+    输出。签名保持与 `ModelAdapter` 协议一致（返回 `ModelResponse`）。
     """
 
     def __init__(self, responses: list[str]) -> None:

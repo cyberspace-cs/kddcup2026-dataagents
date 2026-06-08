@@ -72,7 +72,7 @@ DATA_OUTPUT_RULES = """\
 
 # 共享：path 字段约定段。`PATH_CONVENTION_NOTE` 在本模块定义，
 # 被 5 个 path 字段的 schema description（tools/inputs.py）复用；
-# 这里再插一份到 system prompt 作远端兜底，文本协议下尤为关键
+# 这里再插一份到 system prompt 作远端兜底
 # （schema description 不会被渲染进 prompt）。
 PATH_CONVENTION_BLOCK = (
     "Path convention (applies to every tool `path` argument):\n" + PATH_CONVENTION_NOTE

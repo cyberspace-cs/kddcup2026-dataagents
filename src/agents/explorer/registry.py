@@ -29,15 +29,6 @@ from agents.tools.inputs import (
     READ_DOC_SCHEMA,
     READ_JSON_SCHEMA,
     SEARCH_CONTEXT_SCHEMA,
-    ExecuteContextSqlInput,
-    GrepContextInput,
-    InspectFilesInput,
-    InspectSqliteSchemaInput,
-    LookupFieldInput,
-    ReadCsvInput,
-    ReadDocInput,
-    ReadJsonInput,
-    SearchContextInput,
 )
 from agents.tools.registry import ToolDefinition, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
@@ -55,10 +46,6 @@ class ReportInput(BaseModel):
             "warnings."
         ),
     )
-
-    @classmethod
-    def example_value(cls) -> dict[str, Any]:
-        return {"findings": '{"files": {...}, "schema_map": {...}, ...}'}
 
 
 REPORT_SCHEMA = normalize_for_vllm(ReportInput.model_json_schema())
@@ -93,7 +80,6 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "One-shot summary of every file under context "
                 "(columns, dtypes, row counts, table schemas, unit_hint)."
             ),
-            input_schema=InspectFilesInput.example_value(),
             json_schema=INSPECT_FILES_SCHEMA,
             handler=handle_inspect_files,
         ),
@@ -103,7 +89,6 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "Preview a CSV file: columns, dtypes, row_count, "
                 "head (20 rows), tail (5 rows). Sample only."
             ),
-            input_schema=ReadCsvInput.example_value(),
             json_schema=READ_CSV_SCHEMA,
             handler=handle_read_csv,
         ),
@@ -113,7 +98,6 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "Preview a text document (md/txt). Without keyword: paging. "
                 "With keyword: returns ALL matching paragraphs across the file."
             ),
-            input_schema=ReadDocInput.example_value(),
             json_schema=READ_DOC_SCHEMA,
             handler=handle_read_doc,
         ),
@@ -123,7 +107,6 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "Search the local retrieval index by entity, ID, phrase, or keyword. "
                 "Returns path, line range, score, text preview."
             ),
-            input_schema=SearchContextInput.example_value(),
             json_schema=SEARCH_CONTEXT_SCHEMA,
             handler=handle_search_context,
         ),
@@ -133,7 +116,6 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "Resolve field meanings, units, code labels, aliases, thresholds "
                 "from knowledge.md and schema summaries."
             ),
-            input_schema=LookupFieldInput.example_value(),
             json_schema=LOOKUP_FIELD_SCHEMA,
             handler=handle_lookup_field,
         ),
@@ -143,7 +125,6 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "Preview a JSON file: kind (array/object/scalar), length/keys, "
                 "sample values. Sample only."
             ),
-            input_schema=ReadJsonInput.example_value(),
             json_schema=READ_JSON_SCHEMA,
             handler=handle_read_json,
         ),
@@ -153,7 +134,6 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "View SQLite database table structures (columns, row counts). "
                 "Do NOT call on .csv/.json/.md/.txt paths."
             ),
-            input_schema=InspectSqliteSchemaInput.example_value(),
             json_schema=INSPECT_SQLITE_SCHEMA,
             handler=handle_inspect_sqlite_schema,
         ),
@@ -163,7 +143,6 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "Run read-only SQL on a SQLite database. Use for SELECT DISTINCT, "
                 "MIN/MAX, sample queries. Do NOT call on .csv/.json/.md/.txt paths."
             ),
-            input_schema=ExecuteContextSqlInput.example_value(),
             json_schema=EXECUTE_CONTEXT_SQL_SCHEMA,
             handler=handle_execute_context_sql,
         ),
@@ -174,7 +153,6 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "CSV values, JSON fields, Markdown text, and SQLite text columns. "
                 "Use this to check whether a value exists in any file."
             ),
-            input_schema=GrepContextInput.example_value(),
             json_schema=GREP_CONTEXT_SCHEMA,
             handler=handle_grep_context,
         ),
@@ -186,7 +164,6 @@ def create_explorer_tool_registry() -> ToolRegistry:
                 "Pass a structured JSON string with keys: files, schema_map, knowledge, "
                 "join_paths, value_samples, warnings."
             ),
-            input_schema=ReportInput.example_value(),
             json_schema=REPORT_SCHEMA,
             handler=handle_report,
             is_terminal=True,

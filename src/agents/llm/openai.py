@@ -43,7 +43,7 @@ def _strip_think_tags(text: str) -> str:
     """把潜在的 `<think>...</think>` 块剔除，返回干净的外部可见文本。
 
     即便 vLLM 启用了 `--reasoning-parser qwen3`，少数旧版本或并非 Qwen 的后端仍可能
-    把思考段塞进 `message.content`，让文本 ReAct 解析器困惑，这里做一层防御性处理。
+    把思考段塞进 `message.content`，污染正常输出，这里做一层防御性处理。
     """
     return _THINK_TAG_PATTERN.sub("", text).strip()
 
@@ -227,9 +227,15 @@ class _BaseOpenAIAdapter(abc.ABC):
         self.backend_kind: BackendKind = _resolve_backend_kind(backend_kind, self.api_base)
         self.max_retries = max_retries
         self.timeout = timeout
+        self._client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.api_base,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
+        )
 
     def estimate_prompt_tokens(self, messages: list[ModelMessage]) -> int:
-        """Estimate text-protocol request tokens; no tool schema is sent on this path."""
+        """Estimate request tokens; no tool schema is sent on this path."""
         from agents.llm.rate_limit import (
             estimate_prompt_tokens as estimate_message_prompt_tokens,
         )
@@ -277,13 +283,6 @@ class _BaseOpenAIAdapter(abc.ABC):
         if not self.api_key:
             raise RuntimeError("Missing model API key in config.agent.api_key.")
 
-        client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.api_base,
-            timeout=self.timeout,
-            max_retries=self.max_retries,
-        )
-
         request_kwargs["stream"] = True
         request_kwargs["stream_options"] = {"include_usage": True}
 
@@ -294,7 +293,7 @@ class _BaseOpenAIAdapter(abc.ABC):
 
         started = perf_counter()
         try:
-            stream = client.chat.completions.create(**request_kwargs)  # pyright: ignore[reportUnknownVariableType]
+            stream = self._client.chat.completions.create(**request_kwargs)  # pyright: ignore[reportUnknownVariableType]
             for chunk in cast(list[Any], stream):
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage is not None:

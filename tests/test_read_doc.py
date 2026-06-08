@@ -6,7 +6,6 @@ import pytest
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.tools.filesystem import read_doc_preview
-from agents.tools.registry import create_default_tool_registry
 
 
 @pytest.fixture
@@ -238,17 +237,3 @@ def test_read_doc_empty_file_returns_stable_empty_result(task: PublicTask) -> No
 def test_read_doc_rejects_path_escape(task: PublicTask) -> None:
     with pytest.raises(ValueError, match="Path escapes context dir"):
         read_doc_preview(task, "../secret.md")
-
-
-def test_read_doc_registry_schema_uses_line_pagination() -> None:
-    registry = create_default_tool_registry()
-
-    schema = registry.definitions["read_doc"].input_schema
-
-    assert "max_chars" not in schema
-    assert schema == {
-        "path": "relative/path/to/file.md",
-        "start_line": 1,
-        "line_count": 100,
-        "keyword": "optional search text",
-    }

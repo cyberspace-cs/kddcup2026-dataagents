@@ -46,7 +46,7 @@ StepCallback = Callable[[AgentRuntimeState], None]
 
 @dataclass(frozen=True, slots=True)
 class ModelErrorEvent:
-    """`model.complete` 抛异常。文本协议与原生协议共用。
+    """`model.complete` 抛异常。
 
     `prompt_messages`：当步发给 LLM 的完整 messages（已序列化为 JSON 友好的 dict 列表）；
     API 失败路径下没有响应，故无 `response_message`。

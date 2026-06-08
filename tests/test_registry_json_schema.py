@@ -81,20 +81,6 @@ def test_default_tool_descriptions_are_use_case_oriented(registry) -> None:
         ), f"{name} description should explain when to use the tool"
 
 
-def test_retrieval_tool_examples_are_domain_neutral(registry) -> None:
-    """Tool examples should show shape without leaking public-task domain terms."""
-    examples = [
-        registry.definitions["search_context"].input_schema,
-        registry.definitions["lookup_field"].input_schema,
-    ]
-    rendered = json.dumps(examples, sort_keys=True).lower()
-
-    for phrase in ("creatinine", "fibrinogen", "patient", "normal range"):
-        assert phrase not in rendered
-    assert "threshold phrase" in rendered
-    assert "field_name unit code label" in rendered
-
-
 def test_answer_description_explains_submission_contract(registry) -> None:
     description = registry.definitions["answer"].description.lower()
 
@@ -190,7 +176,6 @@ def test_to_openai_tools_skips_definitions_without_json_schema() -> None:
             "ok_tool": ToolDefinition(
                 name="ok_tool",
                 description="ok",
-                input_schema={},
                 json_schema={
                     "type": "object",
                     "properties": {},
@@ -202,7 +187,6 @@ def test_to_openai_tools_skips_definitions_without_json_schema() -> None:
             "schema_less": ToolDefinition(
                 name="schema_less",
                 description="no schema",
-                input_schema={},
                 json_schema=None,
                 handler=_noop_handler,
             ),

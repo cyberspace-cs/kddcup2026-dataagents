@@ -133,7 +133,6 @@ def create_explore_tool_definition(
             "identifies join paths — all in one call. Returns a complete data map "
             "so you can skip manual multi-step discovery."
         ),
-        input_schema=ExploreInput.example_value(),
         json_schema=EXPLORE_SCHEMA,
         handler=handler,
     )

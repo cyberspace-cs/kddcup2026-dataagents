@@ -18,7 +18,7 @@ class ModelMessage:
 
 @dataclass(frozen=True, slots=True)
 class ModelToolCall:
-    """Normalized tool call emitted by text or native model protocols."""
+    """Normalized tool call emitted by the native model protocol."""
 
     id: str
     name: str
