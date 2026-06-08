@@ -159,7 +159,7 @@ def test_extract_usage_handles_missing_usage() -> None:
     assert _extract_usage(response) == TokenUsage()
 
 
-# ---------- OpenAIModelAdapter（文本协议）---------- #
+# ---------- OpenAIModelAdapter（无工具）---------- #
 
 
 def test_openai_adapter_sends_max_tokens_when_positive(monkeypatch: pytest.MonkeyPatch) -> None:

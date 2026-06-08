@@ -362,11 +362,10 @@ class _BaseOpenAIAdapter(abc.ABC):
 
 
 class OpenAIModelAdapter(_BaseOpenAIAdapter):
-    """对 OpenAI 兼容 chat.completions 接口的包装（文本协议）。
+    """对 OpenAI 兼容 chat.completions 接口的包装（无工具）。
 
     仅依赖 `openai` 官方 SDK；通过 `api_base` 切换后端（本地 vLLM、代理网关等）。
-    每次 `complete` 都新建 client，避免跨线程共享 HTTP 连接导致的状态问题。
-    不传 `tools=` 参数，模型响应必须是纯文本 —— 文本 ReAct 协议。
+    不传 `tools=` 参数，模型响应为纯文本。
     """
 
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
