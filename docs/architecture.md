@@ -43,7 +43,7 @@ These are the current implementation anchors for the main runtime surfaces.
 | --- | --- | --- |
 | ReAct loop | `src/agents/agent.py` | Bounded loop, model-call state machine, tool dispatch, and step callbacks. |
 | Runtime support | `src/agents/runtime/` | **Agent runtime** (not infrastructure runtime): run state, step records, message replay, media attachment, budget guardrails, step events, and callback notification. Deliberately depends upward on `prompts/` and `tools/` because it assembles agent-facing messages from both. |
-| Protocol adapter | `src/agents/llm/protocol.py` | Text-fenced JSON and native function-calling responses normalized into a common turn shape. |
+| Protocol adapter | `src/agents/llm/protocol.py` | Native function-calling responses normalized into a common turn shape. |
 | Model types | `src/agents/llm/types.py` | Provider-neutral message, response, tool-call, usage, and adapter protocol types shared by runtime, tracing, verification, and tests. |
 | Model I/O | `src/agents/llm/openai.py` | OpenAI-compatible `chat.completions` adapters, Qwen3 `<think>` stripping, usage capture, latency capture, and native tool-call parsing. |
 | Tool inventory | `src/agents/tools/registry.py` plus `src/agents/tools/dispatcher.py` | `ToolDefinition`, immutable `ToolRegistry`, default tool inventory, Pydantic input validation, OpenAI tool schema export, and tool-call dispatch. |
