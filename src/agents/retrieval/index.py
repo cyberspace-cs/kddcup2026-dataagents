@@ -117,11 +117,6 @@ def _source_files(task: PublicTask) -> list[_SourceFile]:
                     kind="context",
                 )
             )
-
-    etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
-    if etl_dir.is_dir():
-        for path in sorted(etl_dir.glob("*.csv")):
-            sources.append(_SourceFile(label=path.as_posix(), path=path, kind="etl_csv"))
     return sources
 
 

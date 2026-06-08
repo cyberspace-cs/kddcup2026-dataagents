@@ -112,27 +112,17 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
     files_summary: list[dict[str, Any]] = []
     unsupported_formats: set[str] = set()
 
-    etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
-    etl_csv: dict[str, Path] = {}
-    if etl_dir.is_dir():
-        for f in etl_dir.iterdir():
-            if f.is_file() and f.suffix == ".csv":
-                etl_csv[f.stem] = f
-
     candidates: list[tuple[str, Path]] = []
     for child in context_root.rglob("*"):
         if not child.is_file():
             continue
         if any(part.startswith(".") for part in child.relative_to(context_root).parts):
             continue
-        if child.suffix.lower() in {".md", ".pdf"} and child.stem in etl_csv:
-            csv_path = etl_csv[child.stem]
-            candidates.append((str(csv_path), csv_path))
-            continue
         rel = child.relative_to(context_root).as_posix()
         candidates.append((rel, child))
     candidates.sort(key=lambda item: item[0])
 
+    etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
     cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
 
     truncated = len(candidates) > constants.INSPECT_FILES_MAX_FILES
@@ -140,7 +130,8 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
         entry = _format_for_inspect(rel_path, abs_path)
         if not entry["supported"]:
             unsupported_formats.add(str(entry["format"]))
-        if abs_path.is_relative_to(etl_dir) and cache_dir.is_dir():
+        real_path = abs_path.resolve()
+        if real_path.is_relative_to(etl_dir) and cache_dir.is_dir():
             units_path = cache_dir / f"{abs_path.stem}_units.json"
             if units_path.is_file():
                 try:

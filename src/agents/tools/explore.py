@@ -121,14 +121,6 @@ def create_explore_tool_definition(
                             f.setdefault("column_conversions", {})[", ".join(conv["columns"])] = (
                                 conv["instruction"]
                             )
-            # Fix paths: explorer LLM sometimes strips the leading '/' from
-            # absolute paths like /tmp/dabench/... — restore it so execute_python
-            # can open these files directly.
-            all_files: list[dict[str, Any]] = content.get("files") or []
-            for f in all_files:
-                p = f.get("path", "")
-                if p and not p.startswith("/") and "dabench" in p:
-                    f["path"] = "/" + p
         else:
             content = result.to_tool_content()
         return ToolExecutionResult(ok=result.success, content=content)

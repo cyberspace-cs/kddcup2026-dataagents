@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from agents.benchmark.schema import PublicTask
-from agents.config import ETL_SCRATCH_ROOT
 from agents.tools.filesystem.constants import (
     CSV_EXTS,
     DOC_EXTS,
@@ -144,7 +143,6 @@ def grep_context(
     Returns matching lines/rows with file path and location.
     """
     context_root = task.context_dir.resolve()
-    etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
 
     try:
         compiled = re.compile(pattern, re.IGNORECASE)
@@ -152,13 +150,6 @@ def grep_context(
         return {"error": f"Invalid regex: {exc}", "pattern": pattern}
 
     candidates: list[tuple[str, Path]] = []
-
-    etl_csv: dict[str, Path] = {}
-    if etl_dir.is_dir():
-        for f in etl_dir.iterdir():
-            if f.is_file() and f.suffix == ".csv":
-                etl_csv[f.stem] = f
-
     for child in context_root.rglob("*"):
         if not child.is_file():
             continue
@@ -167,18 +158,8 @@ def grep_context(
         suffix = child.suffix.lower()
         if suffix not in ALL_SEARCHABLE_EXTS:
             continue
-        if suffix in {".md", ".pdf"} and child.stem in etl_csv:
-            csv_path = etl_csv[child.stem]
-            candidates.append((str(csv_path), csv_path))
-            continue
         rel = child.relative_to(context_root).as_posix()
         candidates.append((rel, child))
-
-    if etl_dir.is_dir():
-        for _rel_stem, csv_path in etl_csv.items():
-            if not any(p == csv_path for _, p in candidates):
-                candidates.append((str(csv_path), csv_path))
-
     candidates.sort(key=lambda item: item[0])
 
     if path_filter:

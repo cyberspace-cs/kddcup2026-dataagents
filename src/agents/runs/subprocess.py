@@ -17,7 +17,8 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from agents.application import build_application
-from agents.config import AppConfig
+from agents.benchmark.schema import PublicTask, TaskAssets
+from agents.config import ETL_SCRATCH_ROOT, AppConfig
 from agents.runs.artifacts import (
     crash_payload,
     timeout_payload,
@@ -99,6 +100,15 @@ def run_single_task_core(
             run_etl_for_task(task, app.model_adapter)
         except Exception:
             pass
+
+        from agents.tools.filesystem.path import build_virtual_context
+
+        virtual_ctx = build_virtual_context(task)
+        task = PublicTask(
+            record=task.record,
+            assets=TaskAssets(task_dir=task.task_dir, context_dir=virtual_ctx),
+        )
+
         retrieval_index: dict[str, Any] | None = None
         try:
             from agents.retrieval.index import prepare_task_retrieval_index
@@ -134,6 +144,9 @@ def run_single_task_core(
         finally:
             if _agent_span is not None:
                 _agent_span.finish(reset_current=True)
+            import shutil
+
+            shutil.rmtree(ETL_SCRATCH_ROOT / task_id / "context", ignore_errors=True)
 
         if retrieval_index is not None:
             result["retrieval_index"] = retrieval_index
