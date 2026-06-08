@@ -163,8 +163,8 @@ def _build_explorer_adapter(config: AppConfig) -> ModelAdapter:
     """Build a model adapter for the Explorer sub-agent.
 
     Uses the same model/API/sampling config as the main agent. The Explorer's
-    tool registry is internal (created inside ``run_explorer``), so this adapter
-    needs its own registry wired here.
+    tool registry (``create_explorer_tool_registry``) is wired directly into
+    the ``NativeToolsOpenAIAdapter`` constructed here.
 
     Rate limiting is shared: both adapters use the same ``api_key`` →
     ``FileTokenBucket`` automatically deduplicates on the same bucket file.
