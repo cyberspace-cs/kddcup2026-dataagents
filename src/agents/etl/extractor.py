@@ -998,6 +998,22 @@ def run_etl_for_task(
             km_text = km_path.read_text(encoding="utf-8")
 
     def _process(pf: Path) -> ETLResult | None:
+        # Early cache check: skip file reading and all LLM calls if CSV exists.
+        etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
+        csv_path = etl_dir / f"{pf.stem}.csv"
+        cached = validate_csv(csv_path)
+        if cached:
+            header, row_count = cached
+            logger.info(
+                "ETL cache hit (early): %s (%d cols, %d rows)", csv_path, len(header), row_count
+            )
+            return ETLResult(
+                source_file=pf.name,
+                csv_path=str(csv_path),
+                columns=header,
+                row_count=row_count,
+            )
+
         if pf.suffix.lower() == ".pdf":
             logger.info("ETL PDF→markdown: %s", pf.name)
             text: str = pdf_to_markdown(pf)  # pyright: ignore[reportUnknownVariableType]
