@@ -397,10 +397,10 @@ def create_default_tool_registry(
         ToolDefinition(
             name="grep_context",
             description=(
-                "Search for a regex pattern across ALL context files at once: "
-                "CSV column values, JSON fields, Markdown/text content, and SQLite "
-                "text columns. Returns matching lines/rows with file path and location. "
-                "Use this to check whether a specific value exists in the data "
+                "Use this when you need to search for a regex pattern across ALL context "
+                "files at once: CSV column values, JSON fields, Markdown/text content, "
+                "and SQLite text columns. Returns matching lines/rows with file path "
+                "and location. Checks whether a specific value exists in the data "
                 "(e.g., does province column contain '全国'?) without needing to "
                 "read each file individually."
             ),

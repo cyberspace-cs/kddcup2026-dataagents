@@ -32,6 +32,7 @@ _EXPECTED_ORDER = [
     "read_json",
     "inspect_sqlite_schema",
     "execute_context_sql",
+    "grep_context",
     "execute_python",
     "answer",
 ]
