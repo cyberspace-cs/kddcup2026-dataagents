@@ -1,7 +1,7 @@
 """grep_context：跨 context 目录的纯文本 + SQLite 正则搜索。
 
 文本文件（csv/json/md/txt）按行 regex 匹配，类似 ripgrep；
-SQLite（db/sqlite）按表×文本列做 LIKE '%pattern%' 查询。
+SQLite（db/sqlite）注册 REGEXP 函数后按相同 regex 语义查询。
 PDF 等二进制格式跳过（ETL 已提取为 CSV）。
 """
 
@@ -60,17 +60,24 @@ def _grep_sqlite(
     path: Path,
     rel_path: str,
     pattern: str,
+    compiled: re.Pattern[str],
     remaining: int,
 ) -> list[dict[str, Any]]:
-    """Search text columns across all tables; deduplicate by table×column."""
+    """Search text columns across all tables with the compiled regex."""
     hits: list[dict[str, Any]] = []
-    like_pattern = f"%{pattern}%"
     uri = f"file:{path.resolve().as_posix()}?mode=ro"
     try:
         conn = sqlite3.connect(uri, uri=True)
     except sqlite3.Error:
         return []
     try:
+
+        def regexp(_pattern: str, value: object) -> int:
+            if value is None:
+                return 0
+            return 1 if compiled.search(str(value)) else 0
+
+        conn.create_function("regexp", 2, regexp)
         tables = conn.execute(
             "SELECT name FROM sqlite_master "
             "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
@@ -90,19 +97,19 @@ def _grep_sqlite(
                 continue
             for col in text_cols:
                 col_quoted = col.replace('"', '""')
-                sql = f'SELECT COUNT(*) FROM "{quoted}" WHERE "{col_quoted}" LIKE ?'
+                sql = f'SELECT COUNT(*) FROM "{quoted}" WHERE "{col_quoted}" REGEXP ?'
                 try:
-                    total = conn.execute(sql, [like_pattern]).fetchone()[0]
+                    total = conn.execute(sql, [pattern]).fetchone()[0]
                 except sqlite3.Error:
                     continue
                 if total == 0:
                     continue
                 sample_sql = (
                     f'SELECT rowid, "{col_quoted}" FROM "{quoted}" '
-                    f'WHERE "{col_quoted}" LIKE ? LIMIT {SQLITE_SAMPLE_PER_TABLE}'
+                    f'WHERE "{col_quoted}" REGEXP ? LIMIT {SQLITE_SAMPLE_PER_TABLE}'
                 )
                 try:
-                    sample_rows = conn.execute(sample_sql, [like_pattern]).fetchall()
+                    sample_rows = conn.execute(sample_sql, [pattern]).fetchall()
                 except sqlite3.Error:
                     sample_rows = []
                 samples: list[str] = []
@@ -139,7 +146,7 @@ def grep_context(
     """Search for a regex pattern across all context files.
 
     Text files (csv/json/md/txt) are searched line-by-line.
-    SQLite databases are searched via LIKE across text columns.
+    SQLite databases are searched via a registered REGEXP function.
     Returns matching lines/rows with file path and location.
     """
     context_root = task.context_dir.resolve()
@@ -177,7 +184,7 @@ def grep_context(
         if suffix in TEXT_EXTS:
             all_hits.extend(_grep_text_file(abs_path, rel_path, compiled, remaining))
         elif suffix in SQLITE_EXTS:
-            all_hits.extend(_grep_sqlite(abs_path, rel_path, pattern, remaining))
+            all_hits.extend(_grep_sqlite(abs_path, rel_path, pattern, compiled, remaining))
         files_searched += 1
 
     return {
