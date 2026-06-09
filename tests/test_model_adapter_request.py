@@ -628,21 +628,191 @@ def test_backend_kind_does_not_emit_extra_body_when_thinking_none(
     assert "extra_body" not in kwargs
 
 
-def test_resolve_backend_kind_explicit_value_wins() -> None:
-    """单独验证 _resolve_backend_kind helper 的显式优先语义。"""
-    from agents.llm.openai import _resolve_backend_kind
+def testresolve_backend_kind_explicit_value_wins() -> None:
+    """单独验证 resolve_backend_kind helper 的显式优先语义。"""
+    from agents.llm.openai import resolve_backend_kind
 
-    assert _resolve_backend_kind("vllm", "https://dashscope.aliyuncs.com/v1") == "vllm"
-    assert _resolve_backend_kind("dashscope", "http://localhost:8000/v1") == "dashscope"
+    assert resolve_backend_kind("vllm", "https://dashscope.aliyuncs.com/v1") == "vllm"
+    assert resolve_backend_kind("dashscope", "http://localhost:8000/v1") == "dashscope"
+    assert resolve_backend_kind("deepseek", "http://localhost:8000/v1") == "deepseek"
 
 
-def test_resolve_backend_kind_inference_fallback() -> None:
+def testresolve_backend_kind_inference_fallback() -> None:
     """None 时按 host 子串匹配；命中 aliyuncs.com 或 dashscope → dashscope，否则 vllm。"""
-    from agents.llm.openai import _resolve_backend_kind
+    from agents.llm.openai import resolve_backend_kind
 
-    assert _resolve_backend_kind(None, "https://dashscope.aliyuncs.com/v1") == "dashscope"
-    assert _resolve_backend_kind(None, "https://api.dashscope.com/v1") == "dashscope"
-    assert _resolve_backend_kind(None, "http://localhost:8000/v1") == "vllm"
-    assert _resolve_backend_kind(None, "http://10.0.0.5:8001") == "vllm"
-    # 大小写不敏感（_resolve_backend_kind 内做 lower）
-    assert _resolve_backend_kind(None, "HTTPS://DASHSCOPE.ALIYUNCS.COM/v1") == "dashscope"
+    assert resolve_backend_kind(None, "https://dashscope.aliyuncs.com/v1") == "dashscope"
+    assert resolve_backend_kind(None, "https://api.dashscope.com/v1") == "dashscope"
+    assert resolve_backend_kind(None, "http://localhost:8000/v1") == "vllm"
+    assert resolve_backend_kind(None, "http://10.0.0.5:8001") == "vllm"
+    # 大小写不敏感（resolve_backend_kind 内做 lower）
+    assert resolve_backend_kind(None, "HTTPS://DASHSCOPE.ALIYUNCS.COM/v1") == "dashscope"
+    # DeepSeek API 自动推断
+    assert resolve_backend_kind(None, "https://api.deepseek.com/v1") == "deepseek"
+    assert resolve_backend_kind(None, "https://API.DEEPSEEK.COM/v1") == "deepseek"
+
+
+# ---------- DeepSeek V4 thinking mode 矩阵 ----------
+
+
+def test_openai_adapter_deepseek_thinking_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """thinking_mode="enabled" → extra_body 含 thinking 对象。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="deepseek-v4-flash",
+        api_base="https://api.deepseek.com/v1",
+        api_key="k",
+        thinking_mode="enabled",
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
+def test_openai_adapter_deepseek_thinking_enabled_with_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """thinking_mode="enabled" + reasoning_effort="max"。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="deepseek-v4-pro",
+        api_base="https://api.deepseek.com/v1",
+        api_key="k",
+        thinking_mode="enabled",
+        reasoning_effort="max",
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {
+        "thinking": {"type": "enabled", "reasoning_effort": "max"},
+    }
+
+
+def test_openai_adapter_deepseek_thinking_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """thinking_mode="disabled" → thinking 对象只含 type，不含 reasoning_effort。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="deepseek-v4-flash",
+        api_base="https://api.deepseek.com/v1",
+        api_key="k",
+        thinking_mode="disabled",
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_openai_adapter_deepseek_thinking_disabled_ignores_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """thinking_mode="disabled" 时 reasoning_effort 不写入 thinking 对象。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="deepseek-v4-flash",
+        api_base="https://api.deepseek.com/v1",
+        api_key="k",
+        thinking_mode="disabled",
+        reasoning_effort="max",
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_openai_adapter_deepseek_no_thinking_mode_no_extra_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """thinking_mode=None 且 enable_thinking=None → 不下发 extra_body。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="deepseek-v4-flash",
+        api_base="https://api.deepseek.com/v1",
+        api_key="k",
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert "extra_body" not in kwargs
+
+
+def test_native_adapter_deepseek_thinking_enabled_with_top_k(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NativeToolsOpenAIAdapter: thinking + top_k 在 extra_body 里共存。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
+    adapter = _native_adapter(
+        api_base="https://api.deepseek.com/v1",
+        thinking_mode="enabled",
+        reasoning_effort="high",
+        top_k=20,
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {
+        "thinking": {"type": "enabled", "reasoning_effort": "high"},
+        "top_k": 20,
+    }
+
+
+def test_deepseek_thinking_takes_precedence_over_enable_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """若同时设置了 thinking_mode 和 enable_thinking，thinking_mode 优先。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
+    adapter = OpenAIModelAdapter(
+        model="deepseek-v4-flash",
+        api_base="https://api.deepseek.com/v1",
+        api_key="k",
+        thinking_mode="enabled",
+        enable_thinking=True,
+    )
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
+# ---------- DeepSeek usage 兼容 ----------
+
+
+def test_extract_usage_deepseek_cache_hit_tokens() -> None:
+    """DeepSeek V4 返回 prompt_cache_hit_tokens 在 usage 顶层。"""
+    usage_ns = types.SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        total_tokens=1200,
+        prompt_cache_hit_tokens=600,
+        prompt_cache_miss_tokens=400,
+        completion_tokens_details=types.SimpleNamespace(reasoning_tokens=50),
+    )
+    response = types.SimpleNamespace(usage=usage_ns)
+    result = _extract_usage(response)
+
+    assert result.prompt_tokens == 1000
+    assert result.completion_tokens == 200
+    assert result.cached_tokens == 600
+    assert result.reasoning_tokens == 50
+
+
+def test_extract_usage_prefers_larger_cached_value() -> None:
+    """同时存在嵌套 cached_tokens 和顶层 prompt_cache_hit_tokens 时取 max。"""
+    usage_ns = types.SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        total_tokens=1200,
+        prompt_tokens_details=types.SimpleNamespace(cached_tokens=300),
+        prompt_cache_hit_tokens=600,
+    )
+    response = types.SimpleNamespace(usage=usage_ns)
+    result = _extract_usage(response)
+
+    assert result.cached_tokens == 600

@@ -747,13 +747,15 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
     seed: int | None = getattr(source, "seed", None)
     top_p: float | None = getattr(source, "top_p", None)
     top_k: int | None = getattr(source, "top_k", None)
+    is_deepseek = backend_kind == "deepseek" or getattr(source, "thinking_mode", None) is not None
 
     inner: ModelAdapter = OpenAIModelAdapter(
         model=model,
         api_base=api_base,
         api_key=api_key,
         temperature=0.1,
-        enable_thinking=False,
+        enable_thinking=None if is_deepseek else False,
+        thinking_mode="disabled" if is_deepseek else None,
         backend_kind=backend_kind,
         seed=seed,
         top_p=top_p,

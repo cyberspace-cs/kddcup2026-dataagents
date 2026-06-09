@@ -48,21 +48,18 @@ def _strip_think_tags(text: str) -> str:
     return _THINK_TAG_PATTERN.sub("", text).strip()
 
 
-# 后端类型字面量。决定 `enable_thinking` 在 extra_body 中的位置：
-# - "vllm":      嵌套到 `chat_template_kwargs`（chat template 渲染参数）
-# - "dashscope": 顶层 `enable_thinking`（DashScope OpenAI 兼容模式约定）
-# 错置会被对端静默忽略 —— vLLM 路径下顶层 enable_thinking 不进 chat template，
-# 模型只会按 chat_template 默认值（Qwen3 系列默认 thinking on）渲染，配置开关失灵。
-BackendKind = Literal["vllm", "dashscope"]
+# 后端类型字面量。决定思考模式参数在 extra_body 中的位置：
+# - "vllm":      enable_thinking 嵌套到 `chat_template_kwargs`
+# - "dashscope": enable_thinking 走顶层
+# - "deepseek":  thinking 对象走顶层（DeepSeek V4 API 协议，与 Qwen3 不同）
+BackendKind = Literal["vllm", "dashscope", "deepseek"]
 
-# 推断 dashscope 用的 host 关键字。命中即判 dashscope，否则归 vllm。
-# DashScope 兼容模式入口 `dashscope.aliyuncs.com`、讯飞 MaaS `xf-yun.com` 均走
-# 顶层 enable_thinking；vLLM 自部署通常是 IP/localhost/内网域名。
-# 误判时调用方显式写 backend_kind 即可覆盖。
+# 推断 dashscope / deepseek 用的 host 关键字。
 _DASHSCOPE_HOST_HINTS = ("aliyuncs.com", "dashscope", "xf-yun.com")
+_DEEPSEEK_HOST_HINTS = ("api.deepseek.com",)
 
 
-def _resolve_backend_kind(backend_kind: BackendKind | None, api_base: str) -> BackendKind:
+def resolve_backend_kind(backend_kind: BackendKind | None, api_base: str) -> BackendKind:
     """显式 `backend_kind` 优先；为 None 时按 `api_base` 主机名推断。
 
     `api_base` 已在 adapter 构造时 `rstrip("/")`，可直接 lower 后做子串匹配。
@@ -70,11 +67,15 @@ def _resolve_backend_kind(backend_kind: BackendKind | None, api_base: str) -> Ba
     if backend_kind is not None:
         return backend_kind
     lowered = api_base.lower()
-    return "dashscope" if any(hint in lowered for hint in _DASHSCOPE_HOST_HINTS) else "vllm"
+    if any(hint in lowered for hint in _DEEPSEEK_HOST_HINTS):
+        return "deepseek"
+    if any(hint in lowered for hint in _DASHSCOPE_HOST_HINTS):
+        return "dashscope"
+    return "vllm"
 
 
 def _thinking_extra_body(enable_thinking: bool, backend_kind: BackendKind) -> dict[str, Any]:
-    """按 backend_kind 把 `enable_thinking` 包成正确的 extra_body 片段。
+    """按 backend_kind 把 `enable_thinking` 包成正确的 extra_body 片段（Qwen3 路径）。
 
     返回值用于 dict 合并。两条路径产出**不同 key**，互斥：
     - vLLM:      `{"chat_template_kwargs": {"enable_thinking": <bool>}}`
@@ -83,6 +84,22 @@ def _thinking_extra_body(enable_thinking: bool, backend_kind: BackendKind) -> di
     if backend_kind == "vllm":
         return {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
     return {"enable_thinking": enable_thinking}
+
+
+def _deepseek_thinking_extra_body(
+    thinking_mode: str,
+    reasoning_effort: str | None = None,
+) -> dict[str, Any]:
+    """构造 DeepSeek V4 的 thinking extra_body 片段。
+
+    DeepSeek V4 API 协议：
+    - `thinking.type`: "enabled" | "disabled"
+    - `thinking.reasoning_effort`: "high" | "max"（仅 type="enabled" 时有意义）
+    """
+    thinking: dict[str, str] = {"type": thinking_mode}
+    if reasoning_effort is not None and thinking_mode == "enabled":
+        thinking["reasoning_effort"] = reasoning_effort
+    return {"thinking": thinking}
 
 
 def _message_to_payload(message: ModelMessage) -> dict[str, Any]:
@@ -145,9 +162,12 @@ def _as_int(value: Any) -> int:
 def _extract_usage(response: Any) -> TokenUsage:
     """从 `chat.completions` 响应构造 `TokenUsage`。
 
-    对嵌套字段（`prompt_tokens_details.cached_tokens` /
-    `completion_tokens_details.reasoning_tokens`）全部走 `getattr(..., None)`，
-    不同后端返回的字段集不一致，缺失一律视为 0。
+    对嵌套字段全部走 `getattr(..., None)`，不同后端返回的字段集不一致，缺失一律视为 0。
+
+    缓存 token 兼容两种格式：
+    - OpenAI / vLLM / DashScope: `prompt_tokens_details.cached_tokens`
+    - DeepSeek V4: `prompt_cache_hit_tokens`（顶层直接暴露）
+    两者取 max 保证无论哪种后端都能正确提取。
     """
     usage_obj = getattr(response, "usage", None)
     if usage_obj is None:
@@ -162,11 +182,15 @@ def _extract_usage(response: Any) -> TokenUsage:
         else None
     )
 
+    # DeepSeek V4 returns prompt_cache_hit_tokens at top level instead of nested
+    ds_cached = getattr(usage_obj, "prompt_cache_hit_tokens", None)
+    resolved_cached = max(_as_int(cached), _as_int(ds_cached))
+
     return TokenUsage(
         prompt_tokens=_as_int(getattr(usage_obj, "prompt_tokens", 0)),
         completion_tokens=_as_int(getattr(usage_obj, "completion_tokens", 0)),
         total_tokens=_as_int(getattr(usage_obj, "total_tokens", 0)),
-        cached_tokens=_as_int(cached),
+        cached_tokens=resolved_cached,
         reasoning_tokens=_as_int(reasoning),
     )
 
@@ -201,30 +225,25 @@ class _BaseOpenAIAdapter(abc.ABC):
         min_p: float | None = None,
         presence_penalty: float | None = None,
         seed: int | None = None,
+        thinking_mode: str | None = None,
+        reasoning_effort: str | None = None,
         max_retries: int = 2,
         timeout: float = 120.0,
     ) -> None:
         self.model = model
-        # 去掉尾部斜杠：OpenAI SDK 会自行拼 `/chat/completions`，重复的 `/` 在部分
-        # 反向代理下会被当成不同的 URL 命中 404
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
-        # 采样字段统一以 None = "不下发" 为约定；is not None 时按位置（顶层 vs extra_body）
-        # 透传。temperature / top_p / presence_penalty / seed 走顶层（DashScope 文档支持），
-        # top_k / min_p 走 extra_body 并与 enable_thinking 合并而非覆盖。
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
         self.min_p = min_p
         self.presence_penalty = presence_penalty
         self.seed = seed
-        # 0 = 不下发 max_tokens（服务端默认）；>0 = 显式上限
         self.max_tokens = max_tokens
-        # None = 不下发 enable_thinking（服务端默认）；True/False = 经 extra_body 透传
         self.enable_thinking = enable_thinking
-        # 解析后的 backend_kind 决定 enable_thinking 走顶层还是 chat_template_kwargs。
-        # 显式优先；未指定则按 self.api_base 自动推断（含 aliyuncs.com/dashscope → dashscope）。
-        self.backend_kind: BackendKind = _resolve_backend_kind(backend_kind, self.api_base)
+        self.thinking_mode = thinking_mode
+        self.reasoning_effort = reasoning_effort
+        self.backend_kind: BackendKind = resolve_backend_kind(backend_kind, self.api_base)
         self.max_retries = max_retries
         self.timeout = timeout
         self._client = OpenAI(
@@ -258,11 +277,12 @@ class _BaseOpenAIAdapter(abc.ABC):
             request_kwargs["seed"] = self.seed
         if self.max_tokens > 0:
             request_kwargs["max_tokens"] = self.max_tokens
-        # extra_body 累积构建：top_k / min_p 与 enable_thinking 合并下发，避免后来者覆盖前者。
-        # enable_thinking 的位置依赖 self.backend_kind：vLLM 必须嵌套到 chat_template_kwargs，
-        # DashScope 兼容模式则放顶层；错置会被对端静默忽略，详见 _thinking_extra_body 注释。
         extra_body: dict[str, Any] = {}
-        if self.enable_thinking is not None:
+        if self.thinking_mode is not None:
+            extra_body.update(
+                _deepseek_thinking_extra_body(self.thinking_mode, self.reasoning_effort)
+            )
+        elif self.enable_thinking is not None:
             extra_body.update(_thinking_extra_body(self.enable_thinking, self.backend_kind))
         if self.top_k is not None:
             extra_body["top_k"] = self.top_k
@@ -403,6 +423,8 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
         min_p: float | None = None,
         presence_penalty: float | None = None,
         seed: int | None = None,
+        thinking_mode: str | None = None,
+        reasoning_effort: str | None = None,
         max_retries: int = 2,
         timeout: float = 120.0,
     ) -> None:
@@ -419,6 +441,8 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
             min_p=min_p,
             presence_penalty=presence_penalty,
             seed=seed,
+            thinking_mode=thinking_mode,
+            reasoning_effort=reasoning_effort,
             max_retries=max_retries,
             timeout=timeout,
         )

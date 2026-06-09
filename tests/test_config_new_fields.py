@@ -353,6 +353,93 @@ def test_no_warning_when_thinking_disabled_with_greedy(tmp_path: Path) -> None:
     assert not any("greedy" in str(w.message).lower() for w in user_warnings)
 
 
+# ---------- DeepSeek thinking_mode / reasoning_effort ----------
+
+
+def test_thinking_mode_default_is_none(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "")
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.thinking_mode is None
+    assert cfg.agent.reasoning_effort is None
+
+
+def test_thinking_mode_enabled(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "cfg.yaml",
+        '  thinking_mode: "enabled"\n  reasoning_effort: "high"\n',
+    )
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.thinking_mode == "enabled"
+    assert cfg.agent.reasoning_effort == "high"
+
+
+def test_thinking_mode_disabled(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", '  thinking_mode: "disabled"\n')
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.thinking_mode == "disabled"
+
+
+def test_thinking_mode_enabled_with_max_effort(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "cfg.yaml",
+        '  thinking_mode: "enabled"\n  reasoning_effort: "max"\n',
+    )
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.thinking_mode == "enabled"
+    assert cfg.agent.reasoning_effort == "max"
+
+
+def test_thinking_mode_rejects_invalid_value(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", '  thinking_mode: "auto"\n')
+    with pytest.raises(ValueError):
+        load_app_config(cfg_path)
+
+
+def test_reasoning_effort_rejects_invalid_value(tmp_path: Path) -> None:
+    cfg_path = _write_config(
+        tmp_path / "cfg.yaml",
+        '  thinking_mode: "enabled"\n  reasoning_effort: "low"\n',
+    )
+    with pytest.raises(ValueError):
+        load_app_config(cfg_path)
+
+
+def test_enable_thinking_and_thinking_mode_mutual_exclusion(tmp_path: Path) -> None:
+    """enable_thinking 和 thinking_mode 不能同时为非 None。"""
+    cfg_path = _write_config(
+        tmp_path / "cfg.yaml",
+        '  enable_thinking: true\n  thinking_mode: "enabled"\n',
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        load_app_config(cfg_path)
+
+
+def test_reasoning_effort_requires_thinking_mode_enabled(tmp_path: Path) -> None:
+    """reasoning_effort 只能在 thinking_mode="enabled" 时设置。"""
+    cfg_path = _write_config(
+        tmp_path / "cfg.yaml",
+        '  thinking_mode: "disabled"\n  reasoning_effort: "high"\n',
+    )
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        load_app_config(cfg_path)
+
+
+def test_reasoning_effort_without_thinking_mode_rejected(tmp_path: Path) -> None:
+    """reasoning_effort 单独设置（thinking_mode=None）被拒绝。"""
+    cfg_path = _write_config(
+        tmp_path / "cfg.yaml",
+        '  reasoning_effort: "high"\n',
+    )
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        load_app_config(cfg_path)
+
+
+def test_backend_kind_deepseek_explicit(tmp_path: Path) -> None:
+    cfg_path = _write_config(tmp_path / "cfg.yaml", "  backend_kind: deepseek\n")
+    cfg = load_app_config(cfg_path)
+    assert cfg.agent.backend_kind == "deepseek"
+
+
 # ---------- enable_preact ----------
 
 
