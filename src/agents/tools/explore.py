@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from agents.benchmark.schema import PublicTask
 from agents.tools.handlers import ToolExecutionResult
@@ -103,7 +103,12 @@ def create_explore_tool_definition(
         content: dict[str, Any]
         if result.success:
             try:
-                content = json.loads(result.findings)
+                parsed: Any = json.loads(result.findings)
+                content = (
+                    cast(dict[str, Any], parsed)
+                    if isinstance(parsed, dict)
+                    else {"findings": result.findings}
+                )
             except (json.JSONDecodeError, TypeError):
                 content = {"findings": result.findings}
             content["explorer_steps_used"] = result.steps_used
@@ -112,7 +117,13 @@ def create_explore_tool_definition(
                 content["unit_conversion"] = unit_conversions
                 # Also inject per-file conversion notes into schema_map/files
                 # so the agent sees them alongside the columns.
-                files: list[dict[str, Any]] = content.get("files") or []
+                raw_files: list[Any] | dict[str, Any] = content.get("files") or []
+                if isinstance(raw_files, dict):
+                    unwrapped: Any = raw_files.get("inventory") or list(raw_files.values())
+                    if unwrapped and isinstance(unwrapped[0], list):
+                        unwrapped = unwrapped[0]
+                    raw_files = list(unwrapped)
+                files: list[dict[str, Any]] = [f for f in raw_files if isinstance(f, dict)]
                 for conv in unit_conversions:
                     fname: str = conv.get("file", "")
                     for f in files:

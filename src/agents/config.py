@@ -56,11 +56,13 @@ def _default_retrieval_cache_dir() -> Path:
     return PROJECT_ROOT / "artifacts" / "indexes"
 
 
-# 后端类型字面量：决定 enable_thinking 在 extra_body 里的位置
-# - "vllm":      嵌套到 chat_template_kwargs（vLLM `--reasoning-parser qwen3` 要求）
-# - "dashscope": 顶层 enable_thinking（DashScope OpenAI 兼容模式约定）
-# None = 由 adapter 按 api_base 主机名自动推断（含 aliyuncs.com/dashscope → dashscope）。
-BackendKindLiteral = Literal["vllm", "dashscope"]
+# 后端类型字面量：决定思考模式参数在 extra_body 里的位置
+# - "vllm":      enable_thinking 嵌套到 chat_template_kwargs（vLLM `--reasoning-parser qwen3` 要求）
+# - "dashscope": enable_thinking 走顶层（DashScope OpenAI 兼容模式约定）
+# - "deepseek":  thinking 对象走 extra_body 顶层（DeepSeek V4 API 协议）
+# None = 由 adapter 按 api_base 主机名自动推断（含 aliyuncs.com/dashscope → dashscope，
+#        api.deepseek.com → deepseek）。
+BackendKindLiteral = Literal["vllm", "dashscope", "deepseek"]
 
 _PYDANTIC_DATACLASS_CONFIG = ConfigDict(extra="forbid")
 
@@ -268,13 +270,22 @@ class AgentConfig:
     - True:  显式开；与线上行为对齐
     - False: 显式关；本地省 token 时可选，但线上不可用→慎用
 
-    backend_kind 决定 `enable_thinking` 在 extra_body 里的放置位置（两端协议不一致）：
+    backend_kind 决定思考模式参数在 extra_body 里的放置位置（各后端协议不一致）：
     - None (默认):  由 adapter 按 api_base 主机名自动推断
-                    （含 aliyuncs.com/dashscope → dashscope，其余 → vllm）
+                    （含 aliyuncs.com/dashscope → dashscope，api.deepseek.com → deepseek，
+                    其余 → vllm）
     - "vllm":       嵌套到 chat_template_kwargs.enable_thinking
                     （vLLM `--reasoning-parser qwen3` 要求；顶层会被静默忽略）
     - "dashscope":  顶层 enable_thinking（DashScope OpenAI 兼容模式约定）
-    误判时显式声明即可覆盖；只在 enable_thinking is not None 时影响请求体。
+    - "deepseek":   顶层 thinking 对象（DeepSeek V4 API 协议）
+    误判时显式声明即可覆盖。
+
+    thinking_mode / reasoning_effort 是 DeepSeek V4 专用的思考模式控制：
+    - 与 enable_thinking（Qwen3 专用）互斥；两者同时非 None 会 load 时报错
+    - thinking_mode="enabled"/"disabled" → extra_body.thinking.type
+    - reasoning_effort="high"/"max" → extra_body.thinking.reasoning_effort
+    - DeepSeek V4 thinking 默认 enabled，默认 effort 为 high
+    - thinking enabled 时 temperature/top_p 被服务端忽略（可设但无效）
 
     采样字段（temperature / top_p / top_k / min_p / presence_penalty / seed）保存
     "用户原始意图"：None = 未显式设置，由 `application.py:_resolve_sampling_defaults` 按
@@ -307,7 +318,18 @@ class AgentConfig:
     allow_parallel_tool_calls: StrictBool = True
     max_tokens: StrictInt = 16384  # 单次输出上限；0=不下发（用服务端默认）
     enable_thinking: StrictBool | None = None  # None=不下发；True/False=走 extra_body 透传
-    # 后端类型（决定 enable_thinking 走顶层还是 chat_template_kwargs）；None=按 api_base 推断
+    # DeepSeek V4 thinking 参数（与 Qwen3 enable_thinking 互斥使用）：
+    # thinking_mode 控制 DeepSeek V4 的推理模式：
+    # - None:       不下发 thinking 对象（沿用服务端默认，V4 默认 enabled）
+    # - "enabled":  显式开启 thinking
+    # - "disabled": 显式关闭 thinking
+    thinking_mode: Literal["enabled", "disabled"] | None = None
+    # reasoning_effort 控制 thinking 的深度（仅 thinking_mode="enabled" 时有意义）：
+    # - None:   不下发（沿用服务端默认 high）
+    # - "high": 默认推理深度
+    # - "max":  最大推理深度
+    reasoning_effort: Literal["high", "max"] | None = None
+    # 后端类型（决定思考模式参数的放置位置）；None=按 api_base 推断
     backend_kind: BackendKindLiteral | None = None
     # PR-2：本地 Key 池；runner 按 task_index 轮询并下推单 Key 视图给子进程。空元组=禁用
     api_keys: tuple[str, ...] = ()
@@ -380,9 +402,10 @@ class AgentConfig:
         if v is None:
             return v
         normalized = str(v).strip().lower()
-        if normalized not in {"vllm", "dashscope"}:
+        if normalized not in {"vllm", "dashscope", "deepseek"}:
             raise ValueError(
-                f"agent.backend_kind must be 'vllm', 'dashscope', or null; got {normalized!r}."
+                f"agent.backend_kind must be 'vllm', 'dashscope', 'deepseek', or null; "
+                f"got {normalized!r}."
             )
         return normalized
 
@@ -449,6 +472,17 @@ class AgentConfig:
                 UserWarning,
                 stacklevel=2,
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_thinking_mutual_exclusion(self) -> AgentConfig:
+        if self.enable_thinking is not None and self.thinking_mode is not None:
+            raise ValueError(
+                "agent.enable_thinking (Qwen3) and agent.thinking_mode (DeepSeek) "
+                "are mutually exclusive; set one and leave the other null."
+            )
+        if self.reasoning_effort is not None and self.thinking_mode != "enabled":
+            raise ValueError("agent.reasoning_effort requires agent.thinking_mode='enabled'.")
         return self
 
 

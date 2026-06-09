@@ -26,6 +26,7 @@ from agents.llm import (
     OpenAIModelAdapter,
     RateLimitedAdapter,
 )
+from agents.llm.openai import resolve_backend_kind
 from agents.runtime import StepCallback
 from agents.tools import ToolRegistry, create_default_tool_registry
 from agents.tools.explore import create_explore_tool_definition
@@ -61,20 +62,31 @@ _ANSWER_VERIFIER_MAX_TOKENS = 512
 
 
 def _resolve_sampling_defaults(agent_config: AgentConfig) -> dict[str, Any]:
-    """按 `enable_thinking` 给未显式设置的采样字段填 Qwen3 官方推荐兜底。
+    """按思考模式给未显式设置的采样字段填推荐兜底。
 
-    规则：
-    - `enable_thinking=True`  且字段为 None → 从 _THINKING_DEFAULTS 取
-    - `enable_thinking=False` 且字段为 None → 从 _NON_THINKING_DEFAULTS 取
-    - `enable_thinking=None`                → 不填，全部 None 透传（不下发）；
-      与 `enable_thinking=None → 不下发 extra_body` 的语义对偶
-    - 用户显式值（非 None）原样保留，不会被默认值覆盖
+    Qwen3 路径（enable_thinking）：
+    - True  → _THINKING_DEFAULTS
+    - False → _NON_THINKING_DEFAULTS
+    - None  → 不填，全部 None 透传
 
-    `seed` 不在任一套兜底里——两个 mode 都让其保持用户原始意图（None=不下发）。
+    DeepSeek 路径（thinking_mode）：
+    - "enabled"  → 清除全部采样参数，服务端忽略
+    - "disabled" → 仅清除 seed（DeepSeek API 不支持 seed）
+    - None       → 不填
+
+    `seed` 在 Qwen3 路径保持用户原始意图（None=不下发），但 DeepSeek 不支持。
 
     返回值是 ``{field: resolved_value_or_None}``，调用方逐字段下发到 Adapter。
     """
     resolved: dict[str, Any] = {field: getattr(agent_config, field) for field in _SAMPLING_FIELDS}
+
+    if agent_config.thinking_mode is not None:
+        if agent_config.thinking_mode == "enabled":
+            for field in _SAMPLING_FIELDS:
+                resolved[field] = None
+        else:
+            resolved["seed"] = None
+        return resolved
 
     if agent_config.enable_thinking is None:
         return resolved
@@ -125,6 +137,8 @@ def build_model_adapter(config: AppConfig, tools: ToolRegistry) -> ModelAdapter:
         allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
         max_tokens=config.agent.max_tokens,
         enable_thinking=config.agent.enable_thinking,
+        thinking_mode=config.agent.thinking_mode,
+        reasoning_effort=config.agent.reasoning_effort,
         backend_kind=config.agent.backend_kind,
         max_retries=0 if has_rate_limiter else 2,
         **sampling,
@@ -141,6 +155,8 @@ def build_no_tools_model_adapter(config: AppConfig) -> ModelAdapter:
     """
     reject_placeholder_api_key(config.agent.api_key, field="agent.api_key")
     has_rate_limiter = _has_rate_limiter(config)
+    resolved_kind = resolve_backend_kind(config.agent.backend_kind, config.agent.api_base)
+    is_deepseek = config.agent.thinking_mode is not None or resolved_kind == "deepseek"
     inner = OpenAIModelAdapter(
         model=config.agent.model,
         api_base=config.agent.api_base,
@@ -151,7 +167,8 @@ def build_no_tools_model_adapter(config: AppConfig) -> ModelAdapter:
         min_p=0.0,
         presence_penalty=0.0,
         max_tokens=_ANSWER_VERIFIER_MAX_TOKENS,
-        enable_thinking=False,
+        enable_thinking=None if is_deepseek else False,
+        thinking_mode="disabled" if is_deepseek else None,
         backend_kind=config.agent.backend_kind,
         seed=config.agent.seed,
         max_retries=0 if has_rate_limiter else 2,
@@ -183,6 +200,8 @@ def _build_explorer_adapter(config: AppConfig) -> ModelAdapter:
         allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
         max_tokens=config.agent.max_tokens,
         enable_thinking=config.agent.enable_thinking,
+        thinking_mode=config.agent.thinking_mode,
+        reasoning_effort=config.agent.reasoning_effort,
         backend_kind=config.agent.backend_kind,
         max_retries=0 if has_rate_limiter else 2,
         **sampling,

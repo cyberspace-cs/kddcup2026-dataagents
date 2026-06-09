@@ -9,12 +9,12 @@ agent:
   allow_parallel_tool_calls: true          # bool；个别后端不支持 parallel_tool_calls 时设 false
   max_tokens: 16384                        # int >= 0；0=不下发上限走服务端默认
   enable_thinking: true                    # bool | null；null = 不下发 extra_body
-  # backend_kind 决定 enable_thinking 在 extra_body 里的位置（vLLM 与 DashScope 协议不一致）：
-  # - "vllm":      嵌套到 chat_template_kwargs.enable_thinking（vLLM `--reasoning-parser qwen3` 要求）
-  # - "dashscope": 顶层 enable_thinking（DashScope OpenAI 兼容模式约定）
-  # - null:        由 adapter 按 api_base 主机名自动推断（含 aliyuncs.com/dashscope → dashscope）
-  # 自部署 vLLM 建议显式 "vllm"；line-up 走 DashScope 兼容模式时显式 "dashscope"。
-  backend_kind: vllm                       # "vllm" | "dashscope" | null
+  # backend_kind 决定思考模式参数在 extra_body 里的位置：
+  # - "vllm":      enable_thinking 嵌套到 chat_template_kwargs
+  # - "dashscope": enable_thinking 走顶层（DashScope OpenAI 兼容模式约定）
+  # - "deepseek":  thinking 对象走顶层（DeepSeek V4 API 协议）
+  # - null:        按 api_base 主机名自动推断
+  backend_kind: vllm                       # "vllm" | "dashscope" | "deepseek" | null
 
   # ---- 最优采样参数 (benchmarked: avg 0.80, best 0.82) ----
   # temp=0.6 在 Qwen3 thinking 模���下平衡了质量与稳定性：
@@ -27,6 +27,11 @@ agent:
   presence_penalty: 0.0                    # float in [-2, 2] — Qwen3 thinking-mode default
 
   seed: 1024                               # int；与评测机 vLLM `--seed 1024` 对齐
+
+  # ---- DeepSeek V4 思考模式（与 enable_thinking 互斥）----
+  # thinking_mode: "enabled"               # "enabled" | "disabled" | null
+  # reasoning_effort: "high"               # "high" | "max"；仅 thinking_mode="enabled" 时有效
+  # 注意：DeepSeek thinking enabled 时 temperature/top_p 被服务端忽略。
 
   # ---- Pre-Act Planning (optional) ----
   # enable_preact: true adds a planning instruction on the first turn.
