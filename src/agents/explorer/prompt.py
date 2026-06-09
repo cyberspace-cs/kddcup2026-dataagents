@@ -27,29 +27,25 @@ You may only read files inside that `context/` directory.
 
 ## Workflow
 
-Turn 1: Call `inspect_files`. Note file schemas, unit_hint, and column profiles.
+Turn 1: Call `inspect_files`. Note file schemas, column_conversions, and column profiles.
 Turn 2: Call 1-2 targeted reads in parallel (e.g., `read_csv` + `read_doc` on knowledge.md).
          For SQLite files ONLY, use `execute_context_sql` for `SELECT DISTINCT`.
          Use `grep_context` to check whether a specific value exists across all files.
 Turn 3+: Call `report` with your structured findings JSON.
 
 ## report format
-Call `report({{"findings": "<JSON string>"}})`. The JSON string must be an object with exactly this top-level shape:
-```
-{{
-  "files": [
-    {{"path": "csv/foo.csv", "format": "CSV", "row_count": 100, "key_columns": ["id"]}},
-    {{"path": "db/bar.sqlite", "format": "SQLite", "tables": ["t1", "t2"]}}
-  ],
-  "schema_map": {{ "<file_or_table>": {{"columns": {{...}}}}, ... }},
-  "knowledge": {{ ... }},
-  "join_paths": [ {{"left": "a.col", "right": "b.col"}}, ... ],
-  "value_samples": {{ "<file.col>": ["v1", "v2"], ... }},
-  "warnings": ["fact 1", "fact 2"]
-}}
-```
+Call `report` with these **separate parameters** (NOT a single JSON string):
+- `files`: flat list of file entries, one per file.
+  Example: `[{{"path": "csv/foo.csv", "format": "CSV", "row_count": 100, "key_columns": ["id"]}}]`
+- `schema_map`: per-table/file schema with columns, dtypes, semantics, and `column_conversions` if `inspect_files` provided them.
+  Example: `{{"foo": {{"columns": {{...}}, "column_conversions": {{...}}}}}}`
+- `knowledge`: extracted mappings, formulas, units, thresholds from docs.
+- `join_paths`: discovered relationships. Example: `[{{"left": "a.col", "right": "b.col"}}]`
+- `value_samples`: sampled distinct values for filter-relevant columns. Example: `{{"file.col": ["v1", "v2"]}}`
+- `warnings`: list of objective data-quality observations (one atomic fact per string).
+
 `files` is a **flat list of objects**, one per file. Do NOT nest it inside `{{"inventory": [...]}}` or any other wrapper.
-- `schema_map`: for each relevant table/file, columns with dtypes and semantics
+- `schema_map`: for each relevant table/file, columns with dtypes and semantics. If `inspect_files` returned `column_conversions` for a file, copy them verbatim into that file's schema_map entry.
 - `knowledge`: extracted mappings, formulas, units, thresholds from docs
 - `join_paths`: discovered relationships (file_a.col ↔ file_b.col)
 - `value_samples`: sampled distinct values for filter-relevant columns

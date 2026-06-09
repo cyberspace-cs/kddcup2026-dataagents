@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from agents.benchmark.schema import PublicTask
@@ -30,35 +31,36 @@ logger = logging.getLogger(__name__)
 EXPLORE_SCHEMA = normalize_for_vllm(ExploreInput.model_json_schema())  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
 
 
-def _detect_unit_conversions(task: PublicTask) -> list[dict[str, Any]]:
-    """Compare each field's source unit against its ``_target_<field>`` unit.
+def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> None:
+    """Deterministically inject column_conversions from ``_units.json``.
 
-    The ETL stage writes per-field target units and LLM-determined conversion
-    factors as ``_target_<field>`` and ``_factor_<field>`` entries in
-    ``_cache/*_units.json``.
-
-    Returns a list of conversion instructions, one per (file, from_unit, to_unit) group.
+    1. Fills missing ``column_conversions`` in ``schema_map`` entries.
+    2. Appends a top-level ``unit_conversion`` array as a prominent reminder.
     """
     from agents.config import ETL_SCRATCH_ROOT
 
     cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
     if not cache_dir.is_dir():
-        return []
+        return
 
-    conversions: list[dict[str, Any]] = []
+    schema_map = cast(dict[str, Any], content.get("schema_map", {}) or {})
+
+    top_level: list[dict[str, Any]] = []
+
     for units_path in sorted(cache_dir.glob("*_units.json")):
         try:
             units = json.loads(units_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        # Group fields by (source_unit, target_unit, factor) triple
+
         by_group: dict[tuple[str, str, float], list[str]] = {}
+        col_conversions: dict[str, str] = {}
         for field, source_unit in units.items():
             if field.startswith("_"):
                 continue
-            target_unit = units.get(f"_target_{field}")
+            target = units.get(f"_target_{field}")
             factor_str = units.get(f"_factor_{field}")
-            if not target_unit or source_unit == target_unit or not factor_str:
+            if not target or str(source_unit) == str(target) or not factor_str:
                 continue
             try:
                 factor = float(factor_str)
@@ -66,10 +68,32 @@ def _detect_unit_conversions(task: PublicTask) -> list[dict[str, Any]]:
                 continue
             if factor == 0 or factor == 1:
                 continue
-            by_group.setdefault((source_unit, target_unit, factor), []).append(field)
+            col_conversions[field] = f"CONVERT: ×{factor_str} ({source_unit} → {target})"
+            by_group.setdefault((source_unit, target, factor), []).append(field)
+
+        if not col_conversions:
+            continue
+
         stem = units_path.stem.removesuffix("_units")
+
+        # 1. Inject into schema_map (match by exact key or Path stem)
+        for key, raw_entry in schema_map.items():
+            if not isinstance(raw_entry, dict):
+                continue
+            entry = cast(dict[str, Any], raw_entry)
+            key_stem = Path(key).stem if "/" in key else key
+            if key_stem != stem:
+                continue
+            existing = cast(dict[str, str], entry.get("column_conversions", {}) or {})
+            for col, note in col_conversions.items():
+                if col not in existing:
+                    existing[col] = note
+            if existing:
+                entry["column_conversions"] = existing
+
+        # 2. Build top-level unit_conversion entries
         for (from_unit, to_unit, factor), columns in by_group.items():
-            conversions.append(
+            top_level.append(
                 {
                     "file": stem,
                     "columns": columns,
@@ -82,7 +106,9 @@ def _detect_unit_conversions(task: PublicTask) -> list[dict[str, Any]]:
                     ),
                 }
             )
-    return conversions
+
+    if top_level:
+        content["unit_conversion"] = top_level
 
 
 def create_explore_tool_definition(
@@ -112,25 +138,7 @@ def create_explore_tool_definition(
             except (json.JSONDecodeError, TypeError):
                 content = {"findings": result.findings}
             content["explorer_steps_used"] = result.steps_used
-            unit_conversions = _detect_unit_conversions(task)
-            if unit_conversions:
-                content["unit_conversion"] = unit_conversions
-                # Also inject per-file conversion notes into schema_map/files
-                # so the agent sees them alongside the columns.
-                raw_files: list[Any] | dict[str, Any] = content.get("files") or []
-                if isinstance(raw_files, dict):
-                    unwrapped: Any = raw_files.get("inventory") or list(raw_files.values())
-                    if unwrapped and isinstance(unwrapped[0], list):
-                        unwrapped = unwrapped[0]
-                    raw_files = list(unwrapped)
-                files: list[dict[str, Any]] = [f for f in raw_files if isinstance(f, dict)]
-                for conv in unit_conversions:
-                    fname: str = conv.get("file", "")
-                    for f in files:
-                        if fname and fname in f.get("path", ""):
-                            f.setdefault("column_conversions", {})[", ".join(conv["columns"])] = (
-                                conv["instruction"]
-                            )
+            _ensure_column_conversions(task, content)
         else:
             content = result.to_tool_content()
         return ToolExecutionResult(ok=result.success, content=content)

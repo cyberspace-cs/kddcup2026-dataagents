@@ -150,8 +150,8 @@ def _synthesize_findings(steps: list[Any]) -> str:
                         entry["columns"] = schema["columns"]
                     if "row_count" in schema:
                         entry["row_count"] = schema["row_count"]
-                    if "unit_hint" in schema:
-                        entry["unit_hint"] = schema["unit_hint"]
+                    if "column_conversions" in schema:
+                        entry["column_conversions"] = schema["column_conversions"]
                     if "tables" in schema:
                         tables = cast(dict[str, Any], schema["tables"])
                         entry["tables"] = {
@@ -212,10 +212,19 @@ def _synthesize_findings(steps: list[Any]) -> str:
 
 
 def _extract_findings(steps: list[Any]) -> str | None:
-    """Walk steps backward to find the report tool's findings."""
+    """Walk steps backward to find the report tool's structured findings."""
+    import json as _json
+
+    _KEYS = ("files", "schema_map", "knowledge", "join_paths", "value_samples", "warnings")
     for step in reversed(steps):
         if getattr(step, "action", None) == "report":
             raw_args: Any = getattr(step, "action_input", None)
-            if isinstance(raw_args, dict) and "findings" in raw_args:
-                return str(cast(dict[str, Any], raw_args)["findings"])
+            if not isinstance(raw_args, dict):
+                continue
+            d = cast(dict[str, Any], raw_args)
+            if "files" in d or "schema_map" in d:
+                assembled = {
+                    k: d.get(k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS
+                }
+                return _json.dumps(assembled, ensure_ascii=False)
     return None
