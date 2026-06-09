@@ -257,6 +257,7 @@ def _vote_target_units(
     adapter: ModelAdapter,
     km_text: str,
     field_units: dict[str, str],
+    question: str = "",
 ) -> dict[str, tuple[str, float]]:
     """Ask the LLM for each field's target unit and conversion factor.
 
@@ -283,8 +284,13 @@ def _vote_target_units(
         "unit already matches the target, repeat it unchanged. "
         "Dimensionless fields (price indices, ranks) must keep their "
         "source unit as-is — do NOT replace with '_default' or any placeholder.\n\n"
-        "PERCENTAGE RULE: only convert to 'ratio' when knowledge.md "
-        "EXPLICITLY uses the word 'ratio' (e.g. 'ratio', 'decimal ratio') "
+        "PERCENTAGE RULE:\n"
+        "1. If the QUESTION asks for a '比例' (proportion/ratio) and the "
+        "field's source unit is '%', convert to 'ratio' (factor 0.01). "
+        "In Chinese financial data, '比例' means a decimal fraction "
+        "(e.g. 0.0155 = 1.55%), matching the canonical database storage.\n"
+        "2. Otherwise, only convert to 'ratio' when knowledge.md "
+        "EXPLICITLY uses the word 'ratio' or 'decimal ratio' "
         "in that field's definition. If knowledge.md merely says '%', "
         "'percentage', '百分比', or the field is just a return/rate expressed "
         "in percent, keep the source unit as '%' — do NOT convert.\n\n"
@@ -300,11 +306,13 @@ def _vote_target_units(
         "  (rate source was %, target is %, so no factor)\n\n"
         f"knowledge.md:\n{km_text}"
     )
+    if question:
+        prompt += f"\n\nQUESTION (for context): {question}"
     messages = [
         ModelMessage(
             role="system",
             content=(
-                "Map each field to its target unit per knowledge.md. "
+                "Map each field to its target unit per knowledge.md and the question. "
                 "Output field=unit*factor pairs. Omit *factor when source==target."
             ),
         ),
@@ -1026,7 +1034,7 @@ def run_etl_for_task(
             schema, anchors, field_types, units, defs = parsed
             units.pop("_default", None)
             if km_text and units:
-                targets = _vote_target_units(adapter, km_text, units)
+                targets = _vote_target_units(adapter, km_text, units, question=task.question)
                 if targets:
                     for field, (target_unit, factor) in targets.items():
                         units[f"_target_{field}"] = target_unit

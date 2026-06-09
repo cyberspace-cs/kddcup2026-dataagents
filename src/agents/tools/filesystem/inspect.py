@@ -122,7 +122,6 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
         candidates.append((rel, child))
     candidates.sort(key=lambda item: item[0])
 
-    etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
     cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
 
     truncated = len(candidates) > constants.INSPECT_FILES_MAX_FILES
@@ -130,8 +129,7 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
         entry = _format_for_inspect(rel_path, abs_path)
         if not entry["supported"]:
             unsupported_formats.add(str(entry["format"]))
-        real_path = abs_path.resolve()
-        if real_path.is_relative_to(etl_dir) and cache_dir.is_dir():
+        if cache_dir.is_dir():
             units_path = cache_dir / f"{abs_path.stem}_units.json"
             if units_path.is_file():
                 try:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,16 +35,34 @@ from agents.tools.schema_normalize import normalize_for_vllm
 
 
 class ReportInput(BaseModel):
-    """Explorer report terminal tool input."""
+    """Explorer report terminal tool input — structured fields."""
 
     model_config = ConfigDict(extra="forbid")
 
-    findings: str = Field(
+    files: list[dict[str, Any]] = Field(
+        description="Flat list of file entries, one per file.",
+    )
+    schema_map: dict[str, Any] = Field(
         description=(
-            "Structured JSON string containing exploration findings: "
-            "files, schema_map, knowledge, join_paths, value_samples, "
-            "warnings."
+            "Per-table/file schema: columns with dtypes, semantics, "
+            "and column_conversions if inspect_files provided them."
         ),
+    )
+    knowledge: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extracted mappings, formulas, units, thresholds from docs.",
+    )
+    join_paths: list[dict[str, str]] = Field(  # pyright: ignore[reportUnknownVariableType]
+        default_factory=list,
+        description='Discovered relationships, e.g. [{"left": "a.col", "right": "b.col"}].',
+    )
+    value_samples: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Sampled distinct values for filter-relevant columns.",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Objective data-quality observations (one atomic fact each).",
     )
 
 
@@ -52,13 +70,17 @@ REPORT_SCHEMA = normalize_for_vllm(ReportInput.model_json_schema())
 
 
 def handle_report(_task: PublicTask, args: Any) -> ToolExecutionResult:
-    from typing import cast
+    import json as _json
 
-    if isinstance(args, dict):
-        d = cast(dict[str, str], args)
-        findings = d.get("findings", "")
-    else:
-        findings = str(getattr(args, "findings", ""))
+    _KEYS = ("files", "schema_map", "knowledge", "join_paths", "value_samples", "warnings")
+    d: dict[str, Any] = cast(
+        dict[str, Any],
+        args if isinstance(args, dict) else {k: getattr(args, k, None) for k in _KEYS},
+    )
+    findings = _json.dumps(
+        {k: d.get(k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS},
+        ensure_ascii=False,
+    )
     return ToolExecutionResult(
         ok=True,
         content={"status": "reported", "findings": findings},
@@ -78,7 +100,7 @@ def create_explorer_tool_registry() -> ToolRegistry:
             name="inspect_files",
             description=(
                 "One-shot summary of every file under context "
-                "(columns, dtypes, row counts, table schemas, unit_hint)."
+                "(columns, dtypes, row counts, table schemas, column_conversions)."
             ),
             json_schema=INSPECT_FILES_SCHEMA,
             handler=handle_inspect_files,
@@ -161,8 +183,8 @@ def create_explorer_tool_registry() -> ToolRegistry:
             description=(
                 "Submit your exploration findings. This is the ONLY way to complete "
                 "the exploration — call it when you have mapped the data landscape. "
-                "Pass a structured JSON string with keys: files, schema_map, knowledge, "
-                "join_paths, value_samples, warnings."
+                "Pass each field (files, schema_map, knowledge, join_paths, "
+                "value_samples, warnings) as a separate parameter."
             ),
             json_schema=REPORT_SCHEMA,
             handler=handle_report,
