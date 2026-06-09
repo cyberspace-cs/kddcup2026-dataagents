@@ -34,8 +34,21 @@ Turn 2: Call 1-2 targeted reads in parallel (e.g., `read_csv` + `read_doc` on kn
 Turn 3+: Call `report` with your structured findings JSON.
 
 ## report format
-Call `report({{"findings": "<JSON string>"}})` with a JSON object containing:
-- `files`: brief inventory (file → format, row_count, key columns)
+Call `report({{"findings": "<JSON string>"}})`. The JSON string must be an object with exactly this top-level shape:
+```
+{{
+  "files": [
+    {{"path": "csv/foo.csv", "format": "CSV", "row_count": 100, "key_columns": ["id"]}},
+    {{"path": "db/bar.sqlite", "format": "SQLite", "tables": ["t1", "t2"]}}
+  ],
+  "schema_map": {{ "<file_or_table>": {{"columns": {{...}}}}, ... }},
+  "knowledge": {{ ... }},
+  "join_paths": [ {{"left": "a.col", "right": "b.col"}}, ... ],
+  "value_samples": {{ "<file.col>": ["v1", "v2"], ... }},
+  "warnings": ["fact 1", "fact 2"]
+}}
+```
+`files` is a **flat list of objects**, one per file. Do NOT nest it inside `{{"inventory": [...]}}` or any other wrapper.
 - `schema_map`: for each relevant table/file, columns with dtypes and semantics
 - `knowledge`: extracted mappings, formulas, units, thresholds from docs
 - `join_paths`: discovered relationships (file_a.col ↔ file_b.col)
