@@ -628,7 +628,7 @@ def test_backend_kind_does_not_emit_extra_body_when_thinking_none(
     assert "extra_body" not in kwargs
 
 
-def testresolve_backend_kind_explicit_value_wins() -> None:
+def test_resolve_backend_kind_explicit_value_wins() -> None:
     """单独验证 resolve_backend_kind helper 的显式优先语义。"""
     from agents.llm.openai import resolve_backend_kind
 
@@ -637,7 +637,7 @@ def testresolve_backend_kind_explicit_value_wins() -> None:
     assert resolve_backend_kind("deepseek", "http://localhost:8000/v1") == "deepseek"
 
 
-def testresolve_backend_kind_inference_fallback() -> None:
+def test_resolve_backend_kind_inference_fallback() -> None:
     """None 时按 host 子串匹配；命中 aliyuncs.com 或 dashscope → dashscope，否则 vllm。"""
     from agents.llm.openai import resolve_backend_kind
 
