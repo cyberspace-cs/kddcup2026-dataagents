@@ -7,12 +7,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Explorer reports stay data maps.** The explorer prompt now forbids
+  resolving cross-source joins during exploration (extracting key lists
+  from one source to look up another, paginating to match records,
+  tallying toward the final answer): it reports the join relationship in
+  `join_paths` plus both schemas, and the main agent performs the actual
+  join via `execute_python`.
+- **Superlative tie-breaking uses the minimal literal query.** For
+  "last/first/latest/earliest" questions the agent now submits the first
+  row of `ORDER BY <time column> DESC/ASC LIMIT 1` without adding
+  secondary sort keys or treating record ids as time — gold references
+  resolve ties by the table's natural storage order.
 - **Default ReAct config renamed.** The tracked example config is now
   `configs/react.example.yaml`; local overrides should use
   `configs/react.local.yaml`. The old config naming has been
   removed from user-facing docs and submission defaults.
 
 ### Fixed
+- **Fabricated sequential primary keys repaired before entity merge.**
+  When compression renumbers paragraphs (1, 2, 3, ...) instead of copying
+  the stated record label, the pre-merge step now rewrites the primary
+  key from a sibling identity column when two deterministic signatures
+  hold: the column agrees with the PK on ≥3 lines and more often than it
+  disagrees, and the disagreeing PKs form a dense integer run starting
+  at 1. True dual-ID documents and legitimate ID disagreements never
+  qualify; previously each fabricated fragment became its own bogus row.
 - **Scoped superlative answer-shape checks.** Agent self-checks and the
   answer verifier now treat global singular superlatives as one-row
   answers while preserving grouped extrema such as "for each" or "per
@@ -36,6 +55,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   controlled by the new `agent.backend_kind` field below.
 
 ### Added
+- **LLM-verified entity grouping in prose ETL.** Paragraph-to-entity
+  grouping for prose→CSV conversion is now LLM-driven with deterministic
+  verification (anchor presence, hijack guard, contested-index resolution,
+  distinctness gate against time-series collapse); the builtin record-ID
+  regex survives only as infrastructure-failure fallback and as the
+  verification primitive. Digit fragments inside formatted numbers
+  ("8,408,793" → "408") no longer spawn spurious entities, entity chunks
+  carry `[RECORD_ID: N]` markers so compression copies authoritative IDs
+  instead of renumbering, schema sampling is token-budgeted with centered
+  per-section sampling, knowledge.md governance tables act as a schema
+  floor, and unit conversion factors within known scale families are
+  computed deterministically instead of trusting LLM arithmetic.
+  Previously up to 3 of 50 entities per document were silently dropped
+  from converted CSVs (task_59 regression). The grouping prompt
+  disambiguates multi-ID paragraphs — group by the document-local record
+  label that introduces the record, never by domain codes
+  (identification/company/security codes), dates, or amounts stated as
+  the record's data (task_13 mf_fcretscalerank: 37/152 paragraphs keyed
+  by advisor code split 50 entities into 83 groups, invisible to anchor
+  verification) — and all its example IDs are placeholders, never
+  concrete digits a model could echo into verifiable group claims. The
+  response parser strips enumeration prefixes echoing the input's
+  paragraph numbering ("1) 9: 1"), which previously dropped whole
+  batches to the leftover path as unparsed lines.
 - **`agent.backend_kind` config field (`vllm` | `dashscope` | `null`).**
   Picks where `enable_thinking` is placed in the chat completions
   request: `"vllm"` → `extra_body.chat_template_kwargs.enable_thinking`

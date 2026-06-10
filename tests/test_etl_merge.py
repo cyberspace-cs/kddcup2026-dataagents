@@ -200,3 +200,90 @@ def test_deterministic_kv_to_csv_blanks_values_with_wrong_schema_type() -> None:
         "iffof": "",
         "ifinitiatingfund": "false",
     }
+
+
+def test_pre_merge_repairs_fabricated_sequential_pks() -> None:
+    """Fragments renumbered 1..N by the LLM fold back into their real rows.
+
+    Regression: task_53 in_meansofproductionpi — value-bearing paragraphs
+    got record_id 1..29 while the true id sat in strategic_unit_id.
+    """
+    text = "\n".join(
+        [
+            "record_id: 300 | strategic_unit_id: 300 | scope: National",
+            "record_id: 338 | strategic_unit_id: 338 | scope: National",
+            "record_id: 532 | strategic_unit_id: 532 | scope: National",
+            "record_id: 1 | strategic_unit_id: 300 | indexvalue: 101.2",
+            "record_id: 2 | strategic_unit_id: 338 | indexvalue: 100.1",
+        ]
+    )
+    merged = pre_merge_entity_lines(
+        text,
+        primary_key="record_id",
+        anchor_keys=["record_id", "strategic_unit_id"],
+    )
+    lines = [ln for ln in merged.splitlines() if ln.strip()]
+
+    assert len(lines) == 3
+    row300 = next(ln for ln in lines if ln.startswith("record_id: 300"))
+    assert "indexvalue: 101.2" in row300
+    assert not any(ln.startswith("record_id: 1 ") for ln in lines)
+
+
+def test_pre_merge_alias_column_need_not_be_declared_anchor() -> None:
+    """The alias column is discovered from the data even without anchor_keys."""
+    text = "\n".join(
+        [
+            "record_id: 300 | strategic_unit_id: 300 | scope: National",
+            "record_id: 338 | strategic_unit_id: 338 | scope: National",
+            "record_id: 532 | strategic_unit_id: 532 | scope: National",
+            "record_id: 1 | strategic_unit_id: 532 | indexvalue: 99.8",
+        ]
+    )
+    merged = pre_merge_entity_lines(text, primary_key="record_id")
+    lines = [ln for ln in merged.splitlines() if ln.strip()]
+
+    assert len(lines) == 3
+    row532 = next(ln for ln in lines if ln.startswith("record_id: 532"))
+    assert "indexvalue: 99.8" in row532
+
+
+def test_pre_merge_keeps_legitimate_id_disagreements() -> None:
+    """Sparse large-code disagreements (secucode vs companycode) stay intact."""
+    text = "\n".join(
+        [
+            "record_id: 600001 | companycode: 600001 | label: a",
+            "record_id: 600002 | companycode: 600002 | label: b",
+            "record_id: 600003 | companycode: 600003 | label: c",
+            "record_id: 600009 | companycode: 81143 | label: d",
+        ]
+    )
+    merged = pre_merge_entity_lines(
+        text,
+        primary_key="record_id",
+        anchor_keys=["record_id", "companycode"],
+    )
+    lines = [ln for ln in merged.splitlines() if ln.strip()]
+
+    assert len(lines) == 4
+    assert any("record_id: 600009 | companycode: 81143" in ln for ln in lines)
+
+
+def test_pre_merge_keeps_genuine_small_sequential_pks() -> None:
+    """Docs whose real pk space is 1..N with an unrelated id column are untouched."""
+    text = "\n".join(
+        [
+            "record_id: 1 | personalcode: 101001 | label: a",
+            "record_id: 2 | personalcode: 101002 | label: b",
+            "record_id: 3 | personalcode: 101003 | label: c",
+        ]
+    )
+    merged = pre_merge_entity_lines(
+        text,
+        primary_key="record_id",
+        anchor_keys=["record_id", "personalcode"],
+    )
+    lines = [ln for ln in merged.splitlines() if ln.strip()]
+
+    assert len(lines) == 3
+    assert any(ln.startswith("record_id: 1 ") for ln in lines)

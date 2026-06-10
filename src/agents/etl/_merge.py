@@ -93,6 +93,86 @@ def resolve_id_conflicts(compressed: str) -> str:
     return "\n".join(fixed_lines)
 
 
+def _repair_fabricated_pks(
+    parsed: list[tuple[str | None, list[tuple[str, str]]]],
+    primary_key: str | None,
+    anchor_keys: list[str] | None,
+) -> list[tuple[str | None, list[tuple[str, str]]]]:
+    """Rewrite sequentially fabricated primary keys from an alias column.
+
+    When compression renumbers paragraphs (1, 2, 3, ...) instead of copying
+    the stated record label, the true id usually still lands in a sibling
+    identity column (e.g. "Strategic Unit 300" → strategic_unit_id).  Two
+    deterministic signatures gate the repair:
+
+    - alias column: pk == column on at least 3 lines and on more lines than
+      it differs (true dual-id documents, e.g. record_id vs personalcode,
+      agree on ~0 lines and never qualify);
+    - fabricated run: the disagreeing pk values are integers forming a dense
+      run starting at 1 (legitimate disagreeing id pairs such as secucode
+      vs companycode are large sparse codes and never qualify).
+
+    Lines whose pk falls inside the run get pk := alias value, so round-1
+    grouping folds each fragment into its real entity row.
+    """
+    if not primary_key:
+        return parsed
+
+    # Candidate columns: declared anchors first, then remaining columns in
+    # first-seen order — the alias column is not always a declared anchor.
+    candidates: list[str] = [a for a in (anchor_keys or []) if a != primary_key]
+    for _, pairs in parsed:
+        for key, _val in pairs:
+            if key != primary_key and key not in candidates:
+                candidates.append(key)
+
+    for column in candidates:
+        agree = 0
+        disagree_pks: list[str] = []
+        for pk_val, pairs in parsed:
+            if not pk_val or is_placeholder(pk_val):
+                continue
+            col_val = next((v for k, v in pairs if k == column and v.strip()), "")
+            if not col_val or is_placeholder(col_val):
+                continue
+            if pk_val == col_val:
+                agree += 1
+            else:
+                disagree_pks.append(pk_val)
+        if agree < 3 or len(disagree_pks) >= agree or not disagree_pks:
+            continue
+        if not all(pk.isdigit() for pk in disagree_pks):
+            continue
+        run = {int(pk) for pk in disagree_pks}
+        if min(run) != 1 or max(run) > len(run) + max(2, len(run) // 5):
+            continue
+
+        repaired = 0
+        out: list[tuple[str | None, list[tuple[str, str]]]] = []
+        for pk_val, pairs in parsed:
+            col_val = next((v for k, v in pairs if k == column and v.strip()), "")
+            if (
+                pk_val
+                and pk_val.isdigit()
+                and int(pk_val) in run
+                and col_val
+                and not is_placeholder(col_val)
+                and col_val != pk_val
+            ):
+                pairs = [(k, col_val if k == primary_key else v) for k, v in pairs]
+                pk_val = col_val
+                repaired += 1
+            out.append((pk_val, pairs))
+        logger.info(
+            "ETL pre-merge: rewrote %d fabricated sequential PKs (run 1..%d) from alias column %r",
+            repaired,
+            max(run),
+            column,
+        )
+        return out
+    return parsed
+
+
 def pre_merge_entity_lines(
     text: str,
     primary_key: str | None = None,
@@ -164,12 +244,14 @@ def pre_merge_entity_lines(
                     return f"{TEMP_ANCHOR_PREFIX}{anchor}:{anchor_val}"
         return None
 
+    parsed = [_parse_kv(line) for line in entity_lines]
+    parsed = _repair_fabricated_pks(parsed, primary_key, anchor_keys)
+
     # Round 1: group by primary key
     groups: dict[str, dict[str, str]] = {}
     order: list[str] = []
 
-    for line in entity_lines:
-        pk_val, pairs = _parse_kv(line)
+    for pk_val, pairs in parsed:
         group_key = _group_key(pk_val, pairs)
         if group_key is None:
             continue
