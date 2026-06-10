@@ -36,6 +36,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   controlled by the new `agent.backend_kind` field below.
 
 ### Added
+- **LLM-verified entity grouping in prose ETL.** Paragraph-to-entity
+  grouping for prose→CSV conversion is now LLM-driven with deterministic
+  verification (anchor presence, hijack guard, contested-index resolution,
+  distinctness gate against time-series collapse); the builtin record-ID
+  regex survives only as infrastructure-failure fallback and as the
+  verification primitive. Digit fragments inside formatted numbers
+  ("8,408,793" → "408") no longer spawn spurious entities, entity chunks
+  carry `[RECORD_ID: N]` markers so compression copies authoritative IDs
+  instead of renumbering, schema sampling is token-budgeted with centered
+  per-section sampling, knowledge.md governance tables act as a schema
+  floor, and unit conversion factors within known scale families are
+  computed deterministically instead of trusting LLM arithmetic.
+  Previously up to 3 of 50 entities per document were silently dropped
+  from converted CSVs (task_59 regression).
 - **`agent.backend_kind` config field (`vllm` | `dashscope` | `null`).**
   Picks where `enable_thinking` is placed in the chat completions
   request: `"vllm"` → `extra_body.chat_template_kwargs.enable_thinking`

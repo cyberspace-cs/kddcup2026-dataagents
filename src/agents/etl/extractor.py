@@ -253,6 +253,49 @@ def _complete_schema_field_types(
     return result
 
 
+# Magnitude scales for unit families whose conversion factors are exactly
+# computable. Within a family, factor(source→target) = scale[source] / scale[target].
+# Families must never be mixed (a 元→% "conversion" is meaningless).
+_UNIT_SCALE_FAMILIES: tuple[dict[str, float], ...] = (
+    {  # CNY monetary magnitudes
+        "元": 1.0,
+        "千元": 1e3,
+        "万元": 1e4,
+        "十万元": 1e5,
+        "百万元": 1e6,
+        "千万元": 1e7,
+        "亿元": 1e8,
+        "十亿元": 1e9,
+        "百亿元": 1e10,
+        "千亿元": 1e11,
+        "万亿元": 1e12,
+    },
+    {  # bare count magnitudes (人/吨/股 suffixes share these prefixes)
+        "万": 1e4,
+        "亿": 1e8,
+        "万亿": 1e12,
+    },
+    {  # percentage ↔ decimal ratio
+        "%": 0.01,
+        "ratio": 1.0,
+    },
+)
+
+
+def _deterministic_factor(source_unit: str, target_unit: str) -> float | None:
+    """Compute the exact source→target multiplier when both units share a scale family.
+
+    Returns None when the pair is not exactly computable (unknown unit, or the
+    units belong to different families).
+    """
+    src = source_unit.strip()
+    tgt = target_unit.strip()
+    for family in _UNIT_SCALE_FAMILIES:
+        if src in family and tgt in family:
+            return family[src] / family[tgt]
+    return None
+
+
 def _vote_target_units(
     adapter: ModelAdapter,
     km_text: str,
@@ -295,14 +338,18 @@ def _vote_target_units(
         "'percentage', '百分比', or the field is just a return/rate expressed "
         "in percent, keep the source unit as '%' — do NOT convert.\n\n"
         "For each field where source ≠ target, also output the numeric "
-        "multiplication factor to convert from source to target.\n\n"
+        "multiplication factor: target_value = source_value × factor. "
+        "Mind the direction — converting to a LARGER unit needs a factor "
+        "BELOW 1.\n\n"
         "Output format — one field per entry, comma-separated:\n"
         "  field=target_unit*factor\n"
         "If source == target (no conversion needed), omit the *factor part:\n"
         "  field=target_unit\n\n"
         "Examples:\n"
-        "  gdp=万元*10000, revenue=万元*10000, rate=%\n"
+        "  gdp=万元*10000, deposits=万元*0.0001, rate=%\n"
         "  (gdp source was 亿元, target is 万元, so factor=10000)\n"
+        "  (deposits source was 元, target is 万元 — larger unit, "
+        "so factor=0.0001)\n"
         "  (rate source was %, target is %, so no factor)\n\n"
         f"knowledge.md:\n{km_text}"
     )
@@ -334,6 +381,9 @@ def _parse_unit_factor_response(
     """Parse ``field=unit*factor`` response into {field: (unit, factor)}.
 
     Only returns entries where source_unit != target_unit and factor is valid.
+    For unit pairs within a known scale family the factor is computed
+    deterministically, overriding whatever the LLM produced — the LLM is
+    trusted only for choosing the target unit, not the arithmetic.
     """
     result: dict[str, tuple[str, float]] = {}
     raw = text.split(":", 1)[-1] if ":" in text else text
@@ -353,6 +403,23 @@ def _parse_unit_factor_response(
         if not unit_part or unit_part.startswith("_"):
             continue
         if unit_part == source_fields[field]:
+            continue
+        exact = _deterministic_factor(source_fields[field], unit_part)
+        if exact is not None:
+            if exact == 1:
+                continue
+            if star:
+                with contextlib.suppress(ValueError, TypeError):
+                    if float(factor_part.strip()) != exact:
+                        logger.warning(
+                            "Unit factor for %s (%s→%s) corrected: LLM gave %s, exact is %s",
+                            field,
+                            source_fields[field],
+                            unit_part,
+                            factor_part.strip(),
+                            exact,
+                        )
+            result[field] = (unit_part, exact)
             continue
         if not star:
             continue
@@ -378,6 +445,94 @@ def _write_units_sidecar(
     cache_dir.mkdir(parents=True, exist_ok=True)
     units_path = cache_dir / f"{prose_stem}_units.json"
     units_path.write_text(json.dumps(field_units, ensure_ascii=False), encoding="utf-8")
+
+
+_KM_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+_KM_TABLE_SEPARATOR = re.compile(r":?-{3,}:?")
+# Column-name cells: ASCII identifiers or CJK names, optionally carrying a
+# unit suffix like "(百万元)"; anything with spaces/backticks inside is prose.
+_KM_FIELD_CELL = re.compile(r"^[\w一-鿿][\w一-鿿()（）%/·\-]{0,39}$")
+
+
+def _km_section_table_fields(lines: list[str], start: int, end: int) -> dict[str, str]:
+    """Parse ``| column | definition |`` table rows inside one km section."""
+    fields: dict[str, str] = {}
+    in_table = False
+    header_seen = False
+    col_idx = 0
+    for ln in lines[start:end]:
+        stripped = ln.strip()
+        if not stripped.startswith("|"):
+            in_table, header_seen = False, False
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if cells and all(_KM_TABLE_SEPARATOR.fullmatch(c) for c in cells if c):
+            in_table = True
+            continue
+        if not in_table and not header_seen:
+            # Header row: locate the column-name column, default first.
+            header_seen = True
+            col_idx = next(
+                (k for k, c in enumerate(cells) if re.search(r"column|field|字段|列", c, re.I)),
+                0,
+            )
+            continue
+        if not in_table or col_idx >= len(cells):
+            continue
+        cell = cells[col_idx].strip().strip("`").strip()
+        if _KM_FIELD_CELL.fullmatch(cell):
+            fields[cell] = cells[col_idx + 1].strip() if col_idx + 1 < len(cells) else ""
+    return fields
+
+
+def _km_table_fields(km_text: str, prose_stem: str) -> dict[str, str]:
+    """Deterministically parse the governance field table for ``prose_stem``.
+
+    Locates heading lines mentioning the stem (backticked or word-bounded —
+    ``\\b`` keeps "mf_netvalue" from anchoring inside
+    "mf_netvalueperformancehis"), bounds the section at the next heading of
+    the same or higher level, and parses its markdown column table.  The
+    first matching heading whose section yields fields wins.  Returns {} when
+    nothing parses — callers fall back to the LLM-only schema unchanged.
+    """
+    lines = km_text.splitlines()
+    starts: list[tuple[int, int]] = []
+    for i, ln in enumerate(lines):
+        m = _KM_HEADING.match(ln)
+        if m and re.search(rf"`{re.escape(prose_stem)}`|\b{re.escape(prose_stem)}\b", m.group(2)):
+            starts.append((i, len(m.group(1))))
+    for start, level in starts:
+        end = len(lines)
+        for j in range(start + 1, len(lines)):
+            m = _KM_HEADING.match(lines[j])
+            if m and len(m.group(1)) <= level:
+                end = j
+                break
+        fields = _km_section_table_fields(lines, start, end)
+        if fields:
+            return fields
+    return {}
+
+
+def _apply_km_schema_floor(
+    columns: list[str],
+    raw_defs: dict[str, str],
+    km_fields: dict[str, str],
+) -> list[str]:
+    """Re-add governance-listed columns the LLM omitted from the schema.
+
+    The governance document's field table is authoritative: a column listed
+    there must survive into the schema even when the prose sample happens to
+    show no values for it (task_53 lost ``totalliabilities`` exactly this
+    way).  Mutates ``columns``/``raw_defs`` in place; returns the re-added
+    column names.
+    """
+    existing = {c.lower() for c in columns}
+    readded = [c for c in km_fields if c.lower() not in existing]
+    for c in readded:
+        columns.append(c)
+        raw_defs.setdefault(c, km_fields[c])
+    return readded
 
 
 def _extract_relevant_entity(
@@ -460,13 +615,40 @@ def _parse_knowledge_schema(
     except OSError:
         return None
 
-    prose_sample = sample_paragraphs_by_section(prose_text, per_section=1) if prose_text else ""
-
     prose_stem = prose_path.stem
 
+    # Deterministic gate: a governance document that never mentions this
+    # table cannot define its schema.  Skipping the knowledge path outright
+    # keeps the LLM entity matcher from force-matching a DIFFERENT table's
+    # section (task_59 ed_consumerpriceindex inherited retailvalueofscgoods
+    # columns that way) and saves two LLM calls.
+    if prose_stem.lower() not in km_text.lower():
+        logger.info(
+            "ETL schema: '%s' not mentioned in knowledge.md — skipping knowledge path",
+            prose_stem,
+        )
+        return None
+
+    prose_sample = sample_paragraphs_by_section(prose_text) if prose_text else ""
+
+    # Deterministic field floor, parsed from the ORIGINAL governance text —
+    # before the LLM pre-filter gets a chance to drop table rows.
+    km_fields = _km_table_fields(km_text, prose_stem)
+
     filtered_km = _extract_relevant_entity(adapter, km_text, prose_stem, prose_sample or "")
-    if filtered_km:
+    if filtered_km and prose_stem.lower() in filtered_km.lower():
         km_text = filtered_km
+    elif filtered_km:
+        # The filter returned a section that never mentions this table — it
+        # matched some other entity.  A real section would carry the table
+        # name in its heading; treat as no-match instead of letting the
+        # schema call inherit a wrong table's columns.
+        logger.warning(
+            "ETL schema: knowledge pre-filter for '%s' returned a section "
+            "not mentioning it — treating as no-match",
+            prose_stem,
+        )
+        return None
 
     prose_section = ""
     if prose_sample:
@@ -514,7 +696,11 @@ def _parse_knowledge_schema(
         - ANCHORS should include the PK and any name/label/secondary identifier \
         field that could be used to recognize the same entity across different \
         sections of the document (e.g. a person's name, a record label).
-        - Start with fields from the governance document.
+        - MANDATORY: include EVERY column listed in the governance document's \
+        table for the matched entity — even when the prose sample shows no \
+        values for it (the sample covers a fraction of the document; absence \
+        from the sample is NOT absence from the data). Omitting a governance \
+        column is an error.
         - Use simple type labels such as integer_scalar_id, scalar_id, date, time, \
         number, integer_count, integer_rank, string, category, boolean, url.
         - For document-local record_id fields use type "integer_scalar local_record_id"; \
@@ -554,6 +740,13 @@ def _parse_knowledge_schema(
         or governance document. Fields whose values appear with "%" in the \
         prose or are described as "percentage" / "比例" in the governance \
         document MUST be tagged with unit=%. \
+        A currency denomination statement (e.g. "denominated in Chinese \
+        Yuan", "currency: CNY", "以人民币计价") declares the CURRENCY, not \
+        the magnitude — it is NOT a unit. NEVER emit field=元 from such a \
+        statement; only tag a field 元 when its numeric values carry an \
+        explicit 元 suffix. Monetary fields with no visible magnitude suffix \
+        are already in the governance document's default unit and must be \
+        OMITTED. \
         Dimensionless fields (price indices, ranks, counts without unit) and \
         fields with no visible unit suffix \
         must be OMITTED entirely — do NOT write them with "_default", \
@@ -585,6 +778,16 @@ def _parse_knowledge_schema(
     if not parsed:
         return None
     _, anchor_keys, explicit_types, columns, field_units, raw_defs = parsed
+
+    if km_fields:
+        readded = _apply_km_schema_floor(columns, raw_defs, km_fields)
+        if readded:
+            logger.warning(
+                "ETL schema: LLM omitted %d columns listed in knowledge.md for '%s': %s — re-added",
+                len(readded),
+                prose_stem,
+                readded,
+            )
 
     columns, anchor_keys = _ensure_local_record_anchor(
         prose_text,
@@ -620,7 +823,7 @@ def _infer_schema_from_sample(
 
     Returns (columns, anchor_keys, field_types, field_units, field_defs) or None.
     """
-    sample = sample_paragraphs_by_section(prose_text, per_section=2)
+    sample = sample_paragraphs_by_section(prose_text)
     if not sample or len(sample) < 50:
         return None
 
