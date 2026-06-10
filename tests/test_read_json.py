@@ -86,40 +86,22 @@ def test_array_returns_head_and_length(tmp_path: Path) -> None:
     assert out["head_truncation"] is None
 
 
-def test_scalar_json_int(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("raw", "value"),
+    [
+        pytest.param("42", 42, id="int"),
+        pytest.param('"hello"', "hello", id="string"),
+        pytest.param("true", True, id="bool"),
+        pytest.param("null", None, id="null"),
+    ],
+)
+def test_scalar_json(tmp_path: Path, raw: str, value: Any) -> None:
     task = _make_task(tmp_path)
-    (task.context_dir / "int.json").write_text("42")
+    (task.context_dir / "scalar.json").write_text(raw)
 
-    out = read_json_preview(task, "int.json")
+    out = read_json_preview(task, "scalar.json")
 
-    assert out == {"path": "int.json", "kind": "scalar", "value": 42}
-
-
-def test_scalar_json_string(tmp_path: Path) -> None:
-    task = _make_task(tmp_path)
-    _write_json(task.context_dir / "str.json", "hello")
-
-    out = read_json_preview(task, "str.json")
-
-    assert out == {"path": "str.json", "kind": "scalar", "value": "hello"}
-
-
-def test_scalar_json_bool(tmp_path: Path) -> None:
-    task = _make_task(tmp_path)
-    (task.context_dir / "bool.json").write_text("true")
-
-    out = read_json_preview(task, "bool.json")
-
-    assert out == {"path": "bool.json", "kind": "scalar", "value": True}
-
-
-def test_scalar_json_null(tmp_path: Path) -> None:
-    task = _make_task(tmp_path)
-    (task.context_dir / "null.json").write_text("null")
-
-    out = read_json_preview(task, "null.json")
-
-    assert out == {"path": "null.json", "kind": "scalar", "value": None}
+    assert out == {"path": "scalar.json", "kind": "scalar", "value": value}
 
 
 def test_empty_array(tmp_path: Path) -> None:

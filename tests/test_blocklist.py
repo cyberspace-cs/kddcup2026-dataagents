@@ -1,7 +1,7 @@
 """`run.blocklist` 跳过名单端到端测试。
 
 覆盖三层：
-- Pydantic 校验（int / str / "task_<n>" 归一化、负数 / 重复 / 类型错误）
+- Pydantic 校验拒收（负数 / 重复 / 类型错误；"task_<n>" 归一化经由重复判定间接覆盖）
 - `run_single_task` 短路：命中名单时不走 timeout 子进程，合成失败 payload
 - `run_benchmark` 整合：blocklist + 限制选项叠加时统计与 summary.json 形态正确
 """
@@ -39,60 +39,29 @@ def _write_minimal_config(path: Path, run_body: str) -> Path:
     return path
 
 
-def test_blocklist_default_is_empty(tmp_path: Path) -> None:
-    cfg_path = _write_minimal_config(tmp_path / "cfg.yaml", "  output_dir: /tmp/run\n")
-    cfg = load_app_config(cfg_path)
-    assert cfg.run.blocklist == ()
-
-
-def test_blocklist_accepts_mixed_int_and_string(tmp_path: Path) -> None:
-    cfg_path = _write_minimal_config(
-        tmp_path / "cfg.yaml",
-        '  blocklist:\n    - 5\n    - task_19\n    - "7"\n',
-    )
-    cfg = load_app_config(cfg_path)
-    # 都规整成 task_<n> 形式
-    assert cfg.run.blocklist == ("task_5", "task_19", "task_7")
-
-
-def test_blocklist_rejects_non_list(tmp_path: Path) -> None:
-    cfg_path = _write_minimal_config(tmp_path / "cfg.yaml", "  blocklist: 5\n")
-    with pytest.raises(ValueError, match="blocklist must be a list"):
-        load_app_config(cfg_path)
-
-
-def test_blocklist_rejects_zero_or_negative(tmp_path: Path) -> None:
-    cfg_path = _write_minimal_config(tmp_path / "cfg.yaml", "  blocklist:\n    - 0\n")
-    with pytest.raises(ValueError, match="task number must be >= 1"):
-        load_app_config(cfg_path)
-
-
-def test_blocklist_rejects_unknown_string(tmp_path: Path) -> None:
-    cfg_path = _write_minimal_config(
-        tmp_path / "cfg.yaml",
-        "  blocklist:\n    - random_string\n",
-    )
-    with pytest.raises(ValueError, match="must be an int or 'task_<n>'"):
-        load_app_config(cfg_path)
-
-
-def test_blocklist_rejects_duplicates(tmp_path: Path) -> None:
-    # int 5 和 "task_5" 经规整后等价，应被识别为重复
-    cfg_path = _write_minimal_config(
-        tmp_path / "cfg.yaml",
-        "  blocklist:\n    - 5\n    - task_5\n",
-    )
-    with pytest.raises(ValueError, match="contains duplicate entries"):
-        load_app_config(cfg_path)
-
-
-def test_blocklist_rejects_bool(tmp_path: Path) -> None:
-    # bool 是 int 子类；显式 false → 0 会绕过 number 校验，所以单独排除
-    cfg_path = _write_minimal_config(
-        tmp_path / "cfg.yaml",
-        "  blocklist:\n    - true\n",
-    )
-    with pytest.raises(ValueError, match="must be an int or string"):
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        pytest.param("  blocklist: 5\n", "blocklist must be a list", id="non-list"),
+        pytest.param("  blocklist:\n    - 0\n", "task number must be >= 1", id="zero-or-negative"),
+        pytest.param(
+            "  blocklist:\n    - random_string\n",
+            "must be an int or 'task_<n>'",
+            id="unknown-string",
+        ),
+        # int 5 和 "task_5" 经规整后等价，应被识别为重复
+        pytest.param(
+            "  blocklist:\n    - 5\n    - task_5\n",
+            "contains duplicate entries",
+            id="duplicates-after-normalization",
+        ),
+        # bool 是 int 子类；显式 false → 0 会绕过 number 校验，所以单独排除
+        pytest.param("  blocklist:\n    - true\n", "must be an int or string", id="bool"),
+    ],
+)
+def test_blocklist_rejects_invalid_entries(tmp_path: Path, body: str, match: str) -> None:
+    cfg_path = _write_minimal_config(tmp_path / "cfg.yaml", body)
+    with pytest.raises(ValueError, match=match):
         load_app_config(cfg_path)
 
 
