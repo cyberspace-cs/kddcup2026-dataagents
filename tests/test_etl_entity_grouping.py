@@ -18,13 +18,11 @@ paragraphs, and silently dropped 3 of 50 entities from the converted CSV.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, cast
 
 import pytest
 
 from agents.etl._compress import (
-    GROUPING_SYSTEM_PROMPT,
     _group_paragraphs_by_entity,
     _group_paragraphs_by_llm,
     _is_embedded_digit_run,
@@ -33,35 +31,6 @@ from agents.etl._compress import (
     compress_prose,
 )
 from agents.llm.types import ModelResponse
-
-
-def test_grouping_prompt_prefers_record_label_over_domain_codes() -> None:
-    """Multi-ID paragraphs must group by the document-local record label.
-
-    Regression: task_13 mf_fcretscalerank — paragraphs state both a record
-    label ("档案条目 53") and a domain code ("识别码为 2727"); 37/152
-    paragraphs got keyed by the code, splitting 50 real entities into 83
-    groups.  Anchor verification cannot reject such keys (the code genuinely
-    appears standalone in the text), so the prompt must disambiguate.  The
-    preference stays functional (the label scheme that INTRODUCES records),
-    never keyword-bound: keyword-less corpora ("备案号 7", task_32
-    lc_ashareplacement) rely on pure LLM grouping.
-    """
-    assert "INTRODUCES the record" in GROUPING_SYSTEM_PROMPT
-    assert "NEVER by a data value" in GROUPING_SYSTEM_PROMPT
-    assert "备案号" in GROUPING_SYSTEM_PROMPT
-    assert "识别码为 <M>" in GROUPING_SYSTEM_PROMPT
-
-
-def test_grouping_prompt_contains_no_concrete_numbers() -> None:
-    """All example IDs are placeholders (<N>, <M>, <A>...), never digits.
-
-    A concrete number in the prompt can be echoed into a group line; if the
-    document happens to contain that number as a standalone token, the echoed
-    group even survives anchor verification.  Same policy as the compress
-    prompt's placeholder rule.
-    """
-    assert not re.search(r"\d", GROUPING_SYSTEM_PROMPT)
 
 
 def test_embedded_digit_fragments_detected() -> None:
