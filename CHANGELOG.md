@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Explorer reports stay data maps.** The explorer prompt now forbids
+  resolving cross-source joins during exploration (extracting key lists
+  from one source to look up another, paginating to match records,
+  tallying toward the final answer): it reports the join relationship in
+  `join_paths` plus both schemas, and the main agent performs the actual
+  join via `execute_python`.
 - **Default ReAct config renamed.** The tracked example config is now
   `configs/react.example.yaml`; local overrides should use
   `configs/react.local.yaml`. The old config naming has been
