@@ -13,6 +13,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tallying toward the final answer): it reports the join relationship in
   `join_paths` plus both schemas, and the main agent performs the actual
   join via `execute_python`.
+- **Superlative tie-breaking uses the minimal literal query.** For
+  "last/first/latest/earliest" questions the agent now submits the first
+  row of `ORDER BY <time column> DESC/ASC LIMIT 1` without adding
+  secondary sort keys or treating record ids as time — gold references
+  resolve ties by the table's natural storage order.
 - **Default ReAct config renamed.** The tracked example config is now
   `configs/react.example.yaml`; local overrides should use
   `configs/react.local.yaml`. The old config naming has been
