@@ -382,8 +382,13 @@ def sample_paragraphs_by_section(text: str, token_limit: int = SCHEMA_SAMPLE_TOK
 GROUPING_BATCH_SIZE = 40
 GROUPING_TRUNCATE_CHARS = 300
 
-_GROUP_LINE = re.compile(r"^[-*\s]*(\d{1,8})\s*[:：]\s*(.+)$")
-_NONE_LINE = re.compile(r"^[-*\s]*NONE\s*[:：]\s*(.+)$", re.IGNORECASE)
+# Models sometimes echo the input's paragraph numbering as a line prefix
+# ("1) 9: 1" = paragraph 1 → record 9): the optional enumeration prefix is
+# stripped.  It requires ")"/"."/"）" after the digits, so a plain
+# "<rid>: ..." line can never lose its rid to it.
+_ENUM_PREFIX = r"(?:\d{1,8}\s*[).．）]\s*)?"
+_GROUP_LINE = re.compile(rf"^[-*\s]*{_ENUM_PREFIX}(\d{{1,8}})\s*[:：]\s*(.+)$")
+_NONE_LINE = re.compile(rf"^[-*\s]*{_ENUM_PREFIX}NONE\s*[:：]\s*(.+)$", re.IGNORECASE)
 _GROUPS_NONE = re.compile(r"GROUPS\s*[:：]\s*NONE", re.IGNORECASE)
 _INDEX_TOKEN = re.compile(r"\d+")
 
@@ -394,8 +399,8 @@ You group data-document paragraphs by entity.
 
 The user supplies numbered paragraph openings from a data document. Most \
 paragraphs describe exactly ONE record/entity, introduced somewhere in the \
-text by a numeric record ID (phrasings vary: "Record 25", "档案 286", \
-"registered as 16", "the strategic unit identified as 21", ...). Some \
+text by a numeric record ID (phrasings vary: "Record <N>", "档案 <N>", \
+"registered as <N>", "the strategic unit identified as <N>", ...). Some \
 paragraphs are narrative filler describing no record, and some CONTINUE the \
 previous record without restating its ID.
 
@@ -407,10 +412,18 @@ Output format — one line per entity, nothing else:
 Rules:
 - <record_id> is the numeric ID stated IN the paragraph text. COPY it exactly. \
 NEVER invent IDs and NEVER renumber paragraphs sequentially.
+- A paragraph usually states OTHER numbers besides its record ID: domain \
+codes (identification/company/security codes), dates, years, amounts. The \
+record ID is the document-local label that INTRODUCES the record, using the \
+same labeling scheme across the whole document ("Record <N>", \
+"档案条目 <N>", "备案号 <N>"); the other numbers are that record's DATA \
+values. When a paragraph states both, group by the record label — NEVER by \
+a data value, even when that value is a unique code (e.g. \
+"档案条目 <N>，识别码为 <M>" groups as <N>, not <M>).
 - A paragraph that continues an earlier entity without restating the ID goes \
 on that entity's line.
 - A GROUP paragraph that explicitly states the record IDs of SEVERAL entities \
-(e.g. "for units 206, 211 and 216, the index ...") goes on EACH stated \
+(e.g. "for units <A>, <B> and <C>, the index ...") goes on EACH stated \
 entity's line.
 - Narrative/filler paragraphs that describe no record: put their numbers on a \
 single line `NONE: <numbers>`.
