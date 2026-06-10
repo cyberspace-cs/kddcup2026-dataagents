@@ -13,6 +13,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed from user-facing docs and submission defaults.
 
 ### Fixed
+- **Fabricated sequential primary keys repaired before entity merge.**
+  When compression renumbers paragraphs (1, 2, 3, ...) instead of copying
+  the stated record label, the pre-merge step now rewrites the primary
+  key from a sibling identity column when two deterministic signatures
+  hold: the column agrees with the PK on ≥3 lines and more often than it
+  disagrees, and the disagreeing PKs form a dense integer run starting
+  at 1. True dual-ID documents and legitimate ID disagreements never
+  qualify; previously each fabricated fragment became its own bogus row.
 - **Scoped superlative answer-shape checks.** Agent self-checks and the
   answer verifier now treat global singular superlatives as one-row
   answers while preserving grouped extrema such as "for each" or "per
