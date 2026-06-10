@@ -2,8 +2,11 @@
 
 真正的 OpenAI/vLLM 在 CI 上不可达，用 `monkeypatch` 把 `openai.OpenAI` 替换成
 返回 `MagicMock` 的伪客户端，专注断言：
-- 请求 kwargs 随配置正确组装（max_tokens / extra_body 的条件下发）
+- 请求 kwargs 随配置正确组装（max_tokens / 采样字段 / extra_body 的条件下发）
 - 响应侧把 `reasoning_content` 与 `usage`（含嵌套字段）解析到 `ModelResponse`
+
+两个 adapter 共享 `_BaseOpenAIAdapter._build_request_kwargs`，请求组装断言统一
+参数化在 adapter_cls 上跑两遍，防止任一 override 路径单独回归。
 
 使用 `types.SimpleNamespace` 充当 SDK pydantic 对象的鸭子替身 —— 我们只读几个字段，
 不需要真正的 pydantic 行为。
@@ -24,6 +27,7 @@ from agents.llm.openai import (
     ToolCallParseError,
     _extract_reasoning_content,
     _extract_usage,
+    resolve_backend_kind,
 )
 from agents.llm.rate_limit import estimate_prompt_tokens
 from agents.llm.types import ModelMessage, TokenUsage
@@ -122,286 +126,245 @@ def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, chunks: Any) -> MagicM
     return create_mock
 
 
+ADAPTER_CLASSES = [
+    pytest.param(OpenAIModelAdapter, id="openai"),
+    pytest.param(NativeToolsOpenAIAdapter, id="native"),
+]
+
+
+def _adapter(adapter_cls: type, **overrides: Any) -> Any:
+    """构造任一 adapter；native 额外注入默认工具注册表。"""
+    defaults: dict[str, Any] = {
+        "model": "m",
+        "api_base": "http://x",
+        "api_key": "k",
+        "temperature": 0.0,
+        "max_tokens": 0,
+        "enable_thinking": None,
+    }
+    if adapter_cls is NativeToolsOpenAIAdapter:
+        defaults["tools"] = create_default_tool_registry()
+    defaults.update(overrides)
+    return adapter_cls(**defaults)
+
+
 # ---------- 基础 helper 的小单测：先保证 _extract_* 行为可靠 ----------
 
 
-def test_extract_reasoning_uses_direct_attribute() -> None:
-    message = types.SimpleNamespace(reasoning_content="pondering")
-    assert _extract_reasoning_content(message) == "pondering"
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        pytest.param(
+            types.SimpleNamespace(reasoning_content="pondering"), "pondering", id="direct-attr"
+        ),
+        # 没声明 reasoning_content，但底层 JSON 挂在 model_extra 上
+        pytest.param(
+            types.SimpleNamespace(model_extra={"reasoning_content": "hidden"}),
+            "hidden",
+            id="model-extra-fallback",
+        ),
+        pytest.param(types.SimpleNamespace(), "", id="absent"),
+    ],
+)
+def test_extract_reasoning_content(message: Any, expected: str) -> None:
+    assert _extract_reasoning_content(message) == expected
 
 
-def test_extract_reasoning_falls_back_to_model_extra() -> None:
-    # 没声明 reasoning_content，但底层 JSON 挂在 model_extra 上
-    message = types.SimpleNamespace(model_extra={"reasoning_content": "hidden"})
-    assert _extract_reasoning_content(message) == "hidden"
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        pytest.param(
+            _make_usage(prompt=1200, completion=450, total=1650, cached=800, reasoning=300),
+            TokenUsage(1200, 450, 1650, 800, 300),
+            id="full-nested-payload",
+        ),
+        # 没有 details 嵌套对象 → cached / reasoning 归零，不抛错
+        pytest.param(
+            _make_usage(prompt=100, completion=50, total=150),
+            TokenUsage(100, 50, 150, 0, 0),
+            id="missing-details",
+        ),
+        pytest.param(None, TokenUsage(), id="missing-usage"),
+    ],
+)
+def test_extract_usage_payload_shapes(usage: Any, expected: TokenUsage) -> None:
+    assert _extract_usage(types.SimpleNamespace(usage=usage)) == expected
 
 
-def test_extract_reasoning_returns_empty_when_absent() -> None:
-    message = types.SimpleNamespace()  # 两条路径都没有
-    assert _extract_reasoning_content(message) == ""
+@pytest.mark.parametrize(
+    ("usage", "expected_cached", "expected_reasoning"),
+    [
+        # DeepSeek V4 返回 prompt_cache_hit_tokens 在 usage 顶层
+        pytest.param(
+            types.SimpleNamespace(
+                prompt_tokens=1000,
+                completion_tokens=200,
+                total_tokens=1200,
+                prompt_cache_hit_tokens=600,
+                prompt_cache_miss_tokens=400,
+                completion_tokens_details=types.SimpleNamespace(reasoning_tokens=50),
+            ),
+            600,
+            50,
+            id="deepseek-top-level-cache-hit",
+        ),
+        # 同时存在嵌套 cached_tokens 和顶层 prompt_cache_hit_tokens 时取 max
+        pytest.param(
+            types.SimpleNamespace(
+                prompt_tokens=1000,
+                completion_tokens=200,
+                total_tokens=1200,
+                prompt_tokens_details=types.SimpleNamespace(cached_tokens=300),
+                prompt_cache_hit_tokens=600,
+            ),
+            600,
+            0,
+            id="prefers-larger-cached-value",
+        ),
+    ],
+)
+def test_extract_usage_deepseek_cache_fields(
+    usage: Any, expected_cached: int, expected_reasoning: int
+) -> None:
+    result = _extract_usage(types.SimpleNamespace(usage=usage))
+
+    assert result.prompt_tokens == 1000
+    assert result.completion_tokens == 200
+    assert result.cached_tokens == expected_cached
+    assert result.reasoning_tokens == expected_reasoning
 
 
-def test_extract_usage_handles_full_nested_payload() -> None:
-    response = types.SimpleNamespace(
-        usage=_make_usage(prompt=1200, completion=450, total=1650, cached=800, reasoning=300)
-    )
-    assert _extract_usage(response) == TokenUsage(1200, 450, 1650, 800, 300)
+# ---------- 请求 kwargs 组装：两个 adapter 共享 _build_request_kwargs ----------
 
 
-def test_extract_usage_defaults_missing_details_to_zero() -> None:
-    response = types.SimpleNamespace(usage=_make_usage(prompt=100, completion=50, total=150))
-    # 没有 details 嵌套对象 → cached / reasoning 归零，不抛错
-    assert _extract_usage(response) == TokenUsage(100, 50, 150, 0, 0)
-
-
-def test_extract_usage_handles_missing_usage() -> None:
-    response = types.SimpleNamespace(usage=None)
-    assert _extract_usage(response) == TokenUsage()
-
-
-# ---------- OpenAIModelAdapter（无工具）---------- #
-
-
-def test_openai_adapter_sends_max_tokens_when_positive(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m", api_base="http://x", api_key="k", temperature=0.0, max_tokens=4096
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["max_tokens"] == 4096
-
-
-def test_openai_adapter_omits_max_tokens_when_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m", api_base="http://x", api_key="k", temperature=0.0, max_tokens=0
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert "max_tokens" not in kwargs
-
-
-def test_openai_adapter_sends_extra_body_when_enable_thinking_true(
+@pytest.mark.parametrize("adapter_cls", ADAPTER_CLASSES)
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        pytest.param({"max_tokens": 4096}, {"max_tokens": 4096}, id="max-tokens"),
+        pytest.param({"top_p": 0.95}, {"top_p": 0.95}, id="top-p"),
+        pytest.param({"seed": 42}, {"seed": 42}, id="seed"),
+        pytest.param({"presence_penalty": 1.5}, {"presence_penalty": 1.5}, id="presence-penalty"),
+    ],
+)
+def test_adapter_sends_sampling_fields_when_set(
     monkeypatch: pytest.MonkeyPatch,
+    adapter_cls: type,
+    overrides: dict[str, Any],
+    expected: dict[str, Any],
 ) -> None:
     create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    # api_base="http://x" 不含 dashscope hint → 自动推断为 vllm → 嵌套形式
-    adapter = OpenAIModelAdapter(
-        model="m", api_base="http://x", api_key="k", temperature=0.0, enable_thinking=True
-    )
+    adapter = _adapter(adapter_cls, **overrides)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
     kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
+    for key, value in expected.items():
+        assert kwargs[key] == value
 
 
-def test_openai_adapter_sends_extra_body_when_enable_thinking_false(
+@pytest.mark.parametrize("adapter_cls", ADAPTER_CLASSES)
+@pytest.mark.parametrize(
+    ("overrides", "absent_key"),
+    [
+        # 0 = 不下发 max_tokens
+        pytest.param({"max_tokens": 0}, "max_tokens", id="max-tokens-zero"),
+        pytest.param({"temperature": None}, "temperature", id="temperature-none"),
+        pytest.param({}, "top_p", id="top-p-unset"),
+        pytest.param({"enable_thinking": None}, "extra_body", id="thinking-none"),
+    ],
+)
+def test_adapter_omits_optional_fields_when_unset(
     monkeypatch: pytest.MonkeyPatch,
+    adapter_cls: type,
+    overrides: dict[str, Any],
+    absent_key: str,
 ) -> None:
     create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m", api_base="http://x", api_key="k", temperature=0.0, enable_thinking=False
-    )
+    adapter = _adapter(adapter_cls, **overrides)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
-    kwargs = create_mock.call_args.kwargs
-    # False 也要显式下发 —— 避免服务端默认 on 时用户的关闭意图被吞掉；vLLM 推断走嵌套
-    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert absent_key not in create_mock.call_args.kwargs
 
 
-def test_openai_adapter_omits_extra_body_when_enable_thinking_none(
+@pytest.mark.parametrize("adapter_cls", ADAPTER_CLASSES)
+@pytest.mark.parametrize(
+    ("overrides", "expected_extra_body"),
+    [
+        # api_base="http://x" 不含 dashscope hint → 自动推断 vllm → 嵌套形式
+        pytest.param(
+            {"enable_thinking": True},
+            {"chat_template_kwargs": {"enable_thinking": True}},
+            id="thinking-true",
+        ),
+        # False 也要显式下发 —— 避免服务端默认 on 时用户的关闭意图被吞掉
+        pytest.param(
+            {"enable_thinking": False},
+            {"chat_template_kwargs": {"enable_thinking": False}},
+            id="thinking-false",
+        ),
+        # 关键回归：top_k / min_p 必须与 enable_thinking 在 extra_body 里共存而非覆盖
+        pytest.param(
+            {"enable_thinking": True, "top_k": 20, "min_p": 0.0},
+            {
+                "chat_template_kwargs": {"enable_thinking": True},
+                "top_k": 20,
+                "min_p": 0.0,
+            },
+            id="thinking-merges-top-k",
+        ),
+        pytest.param(
+            {"enable_thinking": None, "top_k": 20},
+            {"top_k": 20},
+            id="only-top-k-when-thinking-none",
+        ),
+    ],
+)
+def test_adapter_extra_body_composition(
     monkeypatch: pytest.MonkeyPatch,
+    adapter_cls: type,
+    overrides: dict[str, Any],
+    expected_extra_body: dict[str, Any],
 ) -> None:
     create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m", api_base="http://x", api_key="k", temperature=0.0, enable_thinking=None
-    )
+    adapter = _adapter(adapter_cls, **overrides)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    assert create_mock.call_args.kwargs["extra_body"] == expected_extra_body
+
+
+def test_native_adapter_sends_tool_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """native function calling 的请求必须带 tools / tool_choice / parallel_tool_calls。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
+    adapter = _adapter(NativeToolsOpenAIAdapter, max_tokens=8192)
     adapter.complete([ModelMessage(role="user", content="hello")])
 
     kwargs = create_mock.call_args.kwargs
-    assert "extra_body" not in kwargs
+    assert kwargs["max_tokens"] == 8192
+    assert kwargs["tool_choice"] == "auto"
+    assert kwargs["parallel_tool_calls"] is True
+    assert isinstance(kwargs["tools"], list) and len(kwargs["tools"]) > 0
 
 
-def test_openai_adapter_omits_temperature_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(model="m", api_base="http://x", api_key="k", temperature=None)
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert "temperature" not in kwargs
+# ---------- 响应解析 ----------
 
 
-def test_openai_adapter_sends_top_p_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m", api_base="http://x", api_key="k", temperature=0.6, top_p=0.95
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["top_p"] == 0.95
-
-
-def test_openai_adapter_omits_top_p_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(model="m", api_base="http://x", api_key="k", temperature=0.6)
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert "top_p" not in kwargs
-
-
-def test_openai_adapter_sends_seed_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m", api_base="http://x", api_key="k", temperature=0.6, seed=42
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["seed"] == 42
-
-
-def test_openai_adapter_sends_presence_penalty_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m", api_base="http://x", api_key="k", temperature=0.7, presence_penalty=1.5
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["presence_penalty"] == 1.5
-
-
-def test_openai_adapter_extra_body_merges_top_k_and_enable_thinking(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("adapter_cls", ADAPTER_CLASSES)
+def test_adapter_captures_reasoning_and_usage(
+    monkeypatch: pytest.MonkeyPatch, adapter_cls: type
 ) -> None:
-    """关键回归测试：top_k / min_p 必须与 enable_thinking 在 extra_body 里共存而非覆盖。
-
-    vLLM 推断路径下 enable_thinking 走 chat_template_kwargs 嵌套，
-    与顶层的 top_k / min_p 互不冲突。
-    """
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m",
-        api_base="http://x",
-        api_key="k",
-        temperature=0.6,
-        enable_thinking=True,
-        top_k=20,
-        min_p=0.0,
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {
-        "chat_template_kwargs": {"enable_thinking": True},
-        "top_k": 20,
-        "min_p": 0.0,
-    }
-
-
-def test_openai_adapter_extra_body_contains_only_top_k_when_thinking_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m",
-        api_base="http://x",
-        api_key="k",
-        temperature=0.6,
-        enable_thinking=None,
-        top_k=20,
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"top_k": 20}
-
-
-def test_openai_adapter_captures_reasoning_and_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     chunks = _make_stream_chunks(
         content="final answer",
         reasoning_content="step-by-step thought",
         usage=_make_usage(prompt=100, completion=50, total=150, cached=40, reasoning=20),
     )
     _install_fake_openai(monkeypatch, chunks)
-    adapter = OpenAIModelAdapter(model="m", api_base="http://x", api_key="k", temperature=0.0)
+    adapter = _adapter(adapter_cls)
 
     result = adapter.complete([ModelMessage(role="user", content="hello")])
 
     assert result.content == "final answer"
     assert result.reasoning_content == "step-by-step thought"
     assert result.usage == TokenUsage(100, 50, 150, 40, 20)
-    assert result.latency_ms >= 0
-
-
-def test_openai_adapter_prompt_estimate_is_message_only() -> None:
-    messages = [ModelMessage(role="user", content="hello")]
-    adapter = OpenAIModelAdapter(model="m", api_base="http://x", api_key="k", temperature=0.0)
-
-    assert adapter.estimate_prompt_tokens(messages) == estimate_prompt_tokens(messages)
-
-
-# ---------- NativeToolsOpenAIAdapter（原生 function calling）---------- #
-
-
-def _native_adapter(**overrides: Any) -> NativeToolsOpenAIAdapter:
-    """构造 native adapter，复用默认工具注册表，支持部分字段覆盖。"""
-    defaults: dict[str, Any] = {
-        "model": "m",
-        "api_base": "http://x",
-        "api_key": "k",
-        "temperature": 0.0,
-        "tools": create_default_tool_registry(),
-        "max_tokens": 0,
-        "enable_thinking": None,
-    }
-    defaults.update(overrides)
-    return NativeToolsOpenAIAdapter(**defaults)
-
-
-def test_native_adapter_sends_max_tokens_and_extra_body(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(max_tokens=8192, enable_thinking=True)
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["max_tokens"] == 8192
-    # api_base="http://x" → 推断 vllm → 嵌套形式
-    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
-    # 保留原有 native 字段确保没被改动回归
-    assert kwargs["tool_choice"] == "auto"
-    assert kwargs["parallel_tool_calls"] is True
-    assert isinstance(kwargs["tools"], list) and len(kwargs["tools"]) > 0
-
-
-def test_native_adapter_omits_optional_fields_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter()  # max_tokens=0, enable_thinking=None
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert "max_tokens" not in kwargs
-    assert "extra_body" not in kwargs
-
-
-def test_native_adapter_captures_reasoning_and_usage(monkeypatch: pytest.MonkeyPatch) -> None:
-    chunks = _make_stream_chunks(
-        content="",
-        reasoning_content="I should call inspect_files",
-        usage=_make_usage(prompt=500, completion=80, total=580, cached=200, reasoning=60),
-    )
-    _install_fake_openai(monkeypatch, chunks)
-    adapter = _native_adapter()
-
-    result = adapter.complete([ModelMessage(role="user", content="hello")])
-
-    assert result.reasoning_content == "I should call inspect_files"
-    assert result.usage == TokenUsage(500, 80, 580, 200, 60)
     assert result.latency_ms >= 0
 
 
@@ -423,7 +386,7 @@ def test_native_adapter_malformed_tool_arguments_preserve_partial_response(
         tool_calls=[{**raw_tool_call, "_index": 0}],
     )
     _install_fake_openai(monkeypatch, chunks)
-    adapter = _native_adapter()
+    adapter = _adapter(NativeToolsOpenAIAdapter)
 
     with pytest.raises(ToolCallParseError) as exc_info:
         adapter.complete([ModelMessage(role="user", content="hello")])
@@ -439,84 +402,16 @@ def test_native_adapter_malformed_tool_arguments_preserve_partial_response(
     assert partial.latency_ms >= 0
 
 
-def test_native_adapter_omits_temperature_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(temperature=None)
-    adapter.complete([ModelMessage(role="user", content="hello")])
+def test_openai_adapter_prompt_estimate_is_message_only() -> None:
+    messages = [ModelMessage(role="user", content="hello")]
+    adapter = _adapter(OpenAIModelAdapter)
 
-    kwargs = create_mock.call_args.kwargs
-    assert "temperature" not in kwargs
-
-
-def test_native_adapter_sends_top_p_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(temperature=0.6, top_p=0.95)
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["top_p"] == 0.95
-
-
-def test_native_adapter_omits_top_p_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(temperature=0.6)
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert "top_p" not in kwargs
-
-
-def test_native_adapter_sends_seed_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(seed=7)
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["seed"] == 7
-
-
-def test_native_adapter_sends_presence_penalty_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(presence_penalty=1.5)
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["presence_penalty"] == 1.5
-
-
-def test_native_adapter_extra_body_merges_top_k_and_enable_thinking(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """关键回归测试：top_k / min_p 必须与 enable_thinking 在 extra_body 里共存而非覆盖。
-
-    vLLM 推断路径下 enable_thinking 嵌入 chat_template_kwargs，与顶层 top_k/min_p 并存。
-    """
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(enable_thinking=True, top_k=20, min_p=0.0)
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {
-        "chat_template_kwargs": {"enable_thinking": True},
-        "top_k": 20,
-        "min_p": 0.0,
-    }
-
-
-def test_native_adapter_extra_body_contains_only_top_k_when_thinking_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(enable_thinking=None, top_k=20)
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"top_k": 20}
+    assert adapter.estimate_prompt_tokens(messages) == estimate_prompt_tokens(messages)
 
 
 def test_native_adapter_prompt_estimate_includes_tool_schema() -> None:
     messages = [ModelMessage(role="user", content="hello")]
-    adapter = _native_adapter()
+    adapter = _adapter(NativeToolsOpenAIAdapter)
 
     message_only = estimate_prompt_tokens(messages)
     estimated = adapter.estimate_prompt_tokens(messages)
@@ -528,110 +423,91 @@ def test_native_adapter_prompt_estimate_includes_tool_schema() -> None:
 # ---------- backend_kind 矩阵：vllm vs dashscope，自动推断 vs 显式覆盖 ----------
 
 
-def test_openai_adapter_dashscope_api_base_auto_infers_dashscope_top_level(
+@pytest.mark.parametrize(
+    ("adapter_cls", "api_base", "backend_kind", "enable_thinking", "expected_extra_body"),
+    [
+        # api_base 含 aliyuncs.com → 自动推断 dashscope → enable_thinking 走顶层
+        pytest.param(
+            OpenAIModelAdapter,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            None,
+            True,
+            {"enable_thinking": True},
+            id="openai-dashscope-auto-infer",
+        ),
+        # 显式 backend_kind="dashscope" 覆盖 localhost api_base 的 vllm 推断
+        pytest.param(
+            OpenAIModelAdapter,
+            "http://localhost:8000/v1",
+            "dashscope",
+            True,
+            {"enable_thinking": True},
+            id="openai-explicit-dashscope-wins",
+        ),
+        # 显式 backend_kind="vllm" 覆盖 dashscope api_base 的自动推断 → 仍走嵌套
+        pytest.param(
+            OpenAIModelAdapter,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "vllm",
+            True,
+            {"chat_template_kwargs": {"enable_thinking": True}},
+            id="openai-explicit-vllm-wins",
+        ),
+        # 两个 adapter 共用 _thinking_extra_body，显式 backend_kind 行为一致
+        pytest.param(
+            NativeToolsOpenAIAdapter,
+            "http://x",
+            "vllm",
+            True,
+            {"chat_template_kwargs": {"enable_thinking": True}},
+            id="native-explicit-vllm",
+        ),
+        pytest.param(
+            NativeToolsOpenAIAdapter,
+            "http://x",
+            "dashscope",
+            False,
+            {"enable_thinking": False},
+            id="native-explicit-dashscope",
+        ),
+        # enable_thinking=None 时无论 backend_kind 是什么都不下发 extra_body，
+        # 避免 backend_kind 单独下发误触发未定义 chat template 行为
+        pytest.param(
+            OpenAIModelAdapter,
+            "http://x",
+            "vllm",
+            None,
+            None,
+            id="thinking-none-no-extra-body",
+        ),
+    ],
+)
+def test_backend_kind_thinking_placement_matrix(
     monkeypatch: pytest.MonkeyPatch,
+    adapter_cls: type,
+    api_base: str,
+    backend_kind: str | None,
+    enable_thinking: bool | None,
+    expected_extra_body: dict[str, Any] | None,
 ) -> None:
-    """api_base 含 aliyuncs.com → 自动推断 dashscope → enable_thinking 走顶层。"""
     create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m",
-        api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        api_key="k",
-        temperature=0.0,
-        enable_thinking=True,
+    adapter = _adapter(
+        adapter_cls,
+        api_base=api_base,
+        backend_kind=backend_kind,
+        enable_thinking=enable_thinking,
     )
     adapter.complete([ModelMessage(role="user", content="hello")])
 
     kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"enable_thinking": True}
-
-
-def test_openai_adapter_explicit_dashscope_overrides_localhost_inference(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """显式 backend_kind="dashscope" 覆盖 localhost api_base 的 vllm 推断。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m",
-        api_base="http://localhost:8000/v1",
-        api_key="k",
-        temperature=0.0,
-        enable_thinking=True,
-        backend_kind="dashscope",
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"enable_thinking": True}
-
-
-def test_openai_adapter_explicit_vllm_overrides_dashscope_inference(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """显式 backend_kind="vllm" 覆盖 dashscope api_base 的自动推断 → 仍走嵌套。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m",
-        api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        api_key="k",
-        temperature=0.0,
-        enable_thinking=True,
-        backend_kind="vllm",
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
-
-
-def test_native_adapter_explicit_vllm_uses_chat_template_kwargs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """NativeToolsOpenAIAdapter 与 OpenAIModelAdapter 共用 _thinking_extra_body 工具，
-    显式 backend_kind="vllm" 行为应当一致：走嵌套。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(enable_thinking=True, backend_kind="vllm")
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
-
-
-def test_native_adapter_explicit_dashscope_uses_top_level(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(enable_thinking=False, backend_kind="dashscope")
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"enable_thinking": False}
-
-
-def test_backend_kind_does_not_emit_extra_body_when_thinking_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """enable_thinking=None 时无论 backend_kind 是什么，都不应下发对应字段；
-    避免 backend_kind 单独下发误触发未定义 chat template 行为。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="m",
-        api_base="http://x",
-        api_key="k",
-        temperature=0.0,
-        enable_thinking=None,
-        backend_kind="vllm",
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert "extra_body" not in kwargs
+    if expected_extra_body is None:
+        assert "extra_body" not in kwargs
+    else:
+        assert kwargs["extra_body"] == expected_extra_body
 
 
 def test_resolve_backend_kind_explicit_value_wins() -> None:
     """单独验证 resolve_backend_kind helper 的显式优先语义。"""
-    from agents.llm.openai import resolve_backend_kind
-
     assert resolve_backend_kind("vllm", "https://dashscope.aliyuncs.com/v1") == "vllm"
     assert resolve_backend_kind("dashscope", "http://localhost:8000/v1") == "dashscope"
     assert resolve_backend_kind("deepseek", "http://localhost:8000/v1") == "deepseek"
@@ -639,8 +515,6 @@ def test_resolve_backend_kind_explicit_value_wins() -> None:
 
 def test_resolve_backend_kind_inference_fallback() -> None:
     """None 时按 host 子串匹配；命中 aliyuncs.com 或 dashscope → dashscope，否则 vllm。"""
-    from agents.llm.openai import resolve_backend_kind
-
     assert resolve_backend_kind(None, "https://dashscope.aliyuncs.com/v1") == "dashscope"
     assert resolve_backend_kind(None, "https://api.dashscope.com/v1") == "dashscope"
     assert resolve_backend_kind(None, "http://localhost:8000/v1") == "vllm"
@@ -655,100 +529,68 @@ def test_resolve_backend_kind_inference_fallback() -> None:
 # ---------- DeepSeek V4 thinking mode 矩阵 ----------
 
 
-def test_openai_adapter_deepseek_thinking_enabled(
+@pytest.mark.parametrize(
+    ("overrides", "expected_extra_body"),
+    [
+        pytest.param(
+            {"thinking_mode": "enabled"},
+            {"thinking": {"type": "enabled"}},
+            id="enabled",
+        ),
+        pytest.param(
+            {"thinking_mode": "enabled", "reasoning_effort": "max"},
+            {"thinking": {"type": "enabled", "reasoning_effort": "max"}},
+            id="enabled-with-effort",
+        ),
+        pytest.param(
+            {"thinking_mode": "disabled"},
+            {"thinking": {"type": "disabled"}},
+            id="disabled",
+        ),
+        # thinking_mode="disabled" 时 reasoning_effort 不写入 thinking 对象
+        pytest.param(
+            {"thinking_mode": "disabled", "reasoning_effort": "max"},
+            {"thinking": {"type": "disabled"}},
+            id="disabled-ignores-effort",
+        ),
+        # thinking_mode=None 且 enable_thinking=None → 不下发 extra_body
+        pytest.param({}, None, id="no-thinking-mode-no-extra-body"),
+        # 若同时设置了 thinking_mode 和 enable_thinking，thinking_mode 优先
+        pytest.param(
+            {"thinking_mode": "enabled", "enable_thinking": True},
+            {"thinking": {"type": "enabled"}},
+            id="precedence-over-enable-thinking",
+        ),
+    ],
+)
+def test_openai_adapter_deepseek_thinking_matrix(
     monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, Any],
+    expected_extra_body: dict[str, Any] | None,
 ) -> None:
-    """thinking_mode="enabled" → extra_body 含 thinking 对象。"""
     create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
+    adapter = _adapter(
+        OpenAIModelAdapter,
         model="deepseek-v4-flash",
         api_base="https://api.deepseek.com/v1",
-        api_key="k",
-        thinking_mode="enabled",
+        **overrides,
     )
     adapter.complete([ModelMessage(role="user", content="hello")])
 
     kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+    if expected_extra_body is None:
+        assert "extra_body" not in kwargs
+    else:
+        assert kwargs["extra_body"] == expected_extra_body
 
 
-def test_openai_adapter_deepseek_thinking_enabled_with_effort(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """thinking_mode="enabled" + reasoning_effort="max"。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="deepseek-v4-pro",
-        api_base="https://api.deepseek.com/v1",
-        api_key="k",
-        thinking_mode="enabled",
-        reasoning_effort="max",
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {
-        "thinking": {"type": "enabled", "reasoning_effort": "max"},
-    }
-
-
-def test_openai_adapter_deepseek_thinking_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """thinking_mode="disabled" → thinking 对象只含 type，不含 reasoning_effort。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="deepseek-v4-flash",
-        api_base="https://api.deepseek.com/v1",
-        api_key="k",
-        thinking_mode="disabled",
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
-
-
-def test_openai_adapter_deepseek_thinking_disabled_ignores_effort(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """thinking_mode="disabled" 时 reasoning_effort 不写入 thinking 对象。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="deepseek-v4-flash",
-        api_base="https://api.deepseek.com/v1",
-        api_key="k",
-        thinking_mode="disabled",
-        reasoning_effort="max",
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
-
-
-def test_openai_adapter_deepseek_no_thinking_mode_no_extra_body(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """thinking_mode=None 且 enable_thinking=None → 不下发 extra_body。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="deepseek-v4-flash",
-        api_base="https://api.deepseek.com/v1",
-        api_key="k",
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert "extra_body" not in kwargs
-
-
-def test_native_adapter_deepseek_thinking_enabled_with_top_k(
+def test_native_adapter_deepseek_thinking_merges_top_k(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """NativeToolsOpenAIAdapter: thinking + top_k 在 extra_body 里共存。"""
     create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
-    adapter = _native_adapter(
+    adapter = _adapter(
+        NativeToolsOpenAIAdapter,
         api_base="https://api.deepseek.com/v1",
         thinking_mode="enabled",
         reasoning_effort="high",
@@ -761,58 +603,3 @@ def test_native_adapter_deepseek_thinking_enabled_with_top_k(
         "thinking": {"type": "enabled", "reasoning_effort": "high"},
         "top_k": 20,
     }
-
-
-def test_deepseek_thinking_takes_precedence_over_enable_thinking(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """若同时设置了 thinking_mode 和 enable_thinking，thinking_mode 优先。"""
-    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content="hi"))
-    adapter = OpenAIModelAdapter(
-        model="deepseek-v4-flash",
-        api_base="https://api.deepseek.com/v1",
-        api_key="k",
-        thinking_mode="enabled",
-        enable_thinking=True,
-    )
-    adapter.complete([ModelMessage(role="user", content="hello")])
-
-    kwargs = create_mock.call_args.kwargs
-    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
-
-
-# ---------- DeepSeek usage 兼容 ----------
-
-
-def test_extract_usage_deepseek_cache_hit_tokens() -> None:
-    """DeepSeek V4 返回 prompt_cache_hit_tokens 在 usage 顶层。"""
-    usage_ns = types.SimpleNamespace(
-        prompt_tokens=1000,
-        completion_tokens=200,
-        total_tokens=1200,
-        prompt_cache_hit_tokens=600,
-        prompt_cache_miss_tokens=400,
-        completion_tokens_details=types.SimpleNamespace(reasoning_tokens=50),
-    )
-    response = types.SimpleNamespace(usage=usage_ns)
-    result = _extract_usage(response)
-
-    assert result.prompt_tokens == 1000
-    assert result.completion_tokens == 200
-    assert result.cached_tokens == 600
-    assert result.reasoning_tokens == 50
-
-
-def test_extract_usage_prefers_larger_cached_value() -> None:
-    """同时存在嵌套 cached_tokens 和顶层 prompt_cache_hit_tokens 时取 max。"""
-    usage_ns = types.SimpleNamespace(
-        prompt_tokens=1000,
-        completion_tokens=200,
-        total_tokens=1200,
-        prompt_tokens_details=types.SimpleNamespace(cached_tokens=300),
-        prompt_cache_hit_tokens=600,
-    )
-    response = types.SimpleNamespace(usage=usage_ns)
-    result = _extract_usage(response)
-
-    assert result.cached_tokens == 600

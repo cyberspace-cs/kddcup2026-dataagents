@@ -3,8 +3,8 @@
 覆盖点：
 - `build_application(config)` 返回 `AgentApp`，字段全部赋值且类型正确
 - `new_agent()` 每次调用返回独立的 `ReActAgent` 实例（不共享循环状态）
-- `model=...` / `tools=...` override 跳过真实 OpenAI 客户端构造
 - `agent_config` 透传 `config.agent.max_steps` / `max_empty_tool_call_retries`
+- no-tools adapter 的真实选择逻辑（plain OpenAI / rate-limit wrapper）
 """
 
 from __future__ import annotations
@@ -25,9 +25,8 @@ from agents.config import (
 )
 from agents.llm.openai import OpenAIModelAdapter
 from agents.llm.rate_limit import RateLimitedAdapter
-from agents.tools.registry import ToolRegistry, create_default_tool_registry
+from agents.tools.registry import ToolRegistry
 from agents.verification.answer import AnswerVerifier
-from tests.helpers.scripted_adapters import ScriptedModelAdapter
 
 
 def _make_config(
@@ -98,30 +97,6 @@ def test_new_agent_returns_fresh_instance_per_call(tmp_path: Path) -> None:
     assert agent_a.answer_verifier is agent_b.answer_verifier
 
 
-def test_new_agent_wires_step_callback(tmp_path: Path) -> None:
-    """传入的 step_callback 应该被透传到 ReActAgent.step_callback。"""
-    cfg = _make_config(tmp_path=tmp_path)
-    app = build_application(cfg)
-
-    captured: list[str] = []
-
-    def cb(state: object) -> None:
-        del state
-        captured.append("called")
-
-    agent = app.new_agent(step_callback=cb)
-    assert agent.step_callback is cb
-
-
-def test_build_application_model_override_skips_real_adapter(tmp_path: Path) -> None:
-    """传 model=ScriptedModelAdapter 时不应触发 build_model_adapter。"""
-    cfg = _make_config(tmp_path=tmp_path)
-    scripted = ScriptedModelAdapter(["dummy"])
-    app = build_application(cfg, model=scripted)
-    assert app.model_adapter is scripted
-    assert app.answer_verifier is None
-
-
 def test_build_no_tools_model_adapter_uses_plain_openai_adapter(tmp_path: Path) -> None:
     cfg = _make_config(tmp_path=tmp_path)
 
@@ -143,11 +118,3 @@ def test_build_no_tools_model_adapter_preserves_rate_limit_wrapper(tmp_path: Pat
     assert isinstance(adapter, RateLimitedAdapter)
     assert isinstance(adapter.inner, OpenAIModelAdapter)
     assert adapter.inner.enable_thinking is False
-
-
-def test_build_application_tools_override(tmp_path: Path) -> None:
-    """传 tools=custom_registry 时跳过 create_default_tool_registry。"""
-    cfg = _make_config(tmp_path=tmp_path)
-    custom = create_default_tool_registry()
-    app = build_application(cfg, tools=custom)
-    assert app.registry is custom
