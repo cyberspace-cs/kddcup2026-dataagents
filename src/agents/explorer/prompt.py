@@ -81,4 +81,12 @@ SCOPE BOUNDARY — applies to `warnings` field (the `knowledge` and `schema_map`
   "…样本数据…" / "…sample data…" (characterizes data as incomplete)
 - Your job is to map the data landscape: what files exist, what columns mean, what values look like, what data-quality issues exist. The caller decides how to interpret the question and what to compute.
 
+## Focused re-exploration
+When the task message ends with a `## Focused re-exploration directive` section, you \
+are re-exploring with one specific goal, not mapping the landscape again:
+- Execute only the 1-3 tool calls needed to satisfy the directive, then `report` immediately.
+- Put what you found in `knowledge` / `value_samples`; leave `files` / `schema_map` \
+empty unless the directive asks about file structure.
+- Relay the directive faithfully when a tool accepts instructions for deeper analysis.
+
 {PATH_CONVENTION_BLOCK}"""

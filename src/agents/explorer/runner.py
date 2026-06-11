@@ -16,6 +16,7 @@ from agents.explorer.prompt import EXPLORER_SYSTEM_PROMPT
 from agents.explorer.registry import create_explorer_tool_registry
 from agents.llm import ModelAdapter
 from agents.runtime import StepCallback
+from agents.tools.registry import ToolDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,8 @@ class ExplorerResult:
     steps_used: int
     success: bool
     failure_reason: str | None = None
+    # explore_video 成功 observation 的确定性透传（None = 本次运行没有视频调用）
+    video_findings: tuple[dict[str, Any], ...] | None = None
 
     def to_tool_content(self) -> dict[str, Any]:
         """Format as a tool observation for the main agent."""
@@ -61,18 +64,21 @@ def _maybe_trace(model: ModelAdapter, registry: Any) -> tuple[ModelAdapter, Any]
 
 def run_explorer(
     task: PublicTask,
-    question: str,  # reserved for future prompt override
+    question: str,
     model: ModelAdapter,
     *,
     max_steps: int = EXPLORER_MAX_STEPS,
     step_callback: StepCallback | None = None,
+    video_tool: ToolDefinition | None = None,
 ) -> ExplorerResult:
     """Run the Explorer sub-agent on a task and return findings.
 
     The Explorer uses a read-only tool subset (no execute_python, no answer)
     and terminates via a `report` tool. It aims to complete in 3-6 steps.
+    When `question` differs from `task.question`, it is a focused
+    re-exploration directive appended to the initial task message.
     """
-    registry = create_explorer_tool_registry()
+    registry = create_explorer_tool_registry(video_tool=video_tool)
     traced_model, traced_registry = _maybe_trace(model, registry)
 
     agent = ReActAgent(
@@ -86,7 +92,19 @@ def run_explorer(
         step_callback=step_callback,
     )
 
-    result = agent.run(task)
+    # focus 模式：question 与任务原始问题不同 → 这是主 agent 发来的定向重探指令
+    initial_content: str | None = None
+    if question and question != task.question:
+        from agents.runtime import build_initial_user_content
+
+        initial_content = (
+            build_initial_user_content(task)
+            + "\n\n## Focused re-exploration directive\n"
+            + question
+        )
+
+    result = agent.run(task, initial_user_content=initial_content)
+    video_findings = _extract_video_findings(result.steps) or None
 
     # Extract findings from steps: find the report tool call
     findings = _extract_findings(result.steps)
@@ -96,6 +114,7 @@ def run_explorer(
             findings=findings,
             steps_used=len(result.steps),
             success=True,
+            video_findings=video_findings,
         )
 
     # Fallback: model didn't call answer — synthesize findings from observations
@@ -106,6 +125,7 @@ def run_explorer(
             findings=synthesized,
             steps_used=len(result.steps),
             success=True,
+            video_findings=video_findings,
         )
 
     return ExplorerResult(
@@ -222,9 +242,19 @@ def _extract_findings(steps: list[Any]) -> str | None:
             if not isinstance(raw_args, dict):
                 continue
             d = cast(dict[str, Any], raw_args)
-            if "files" in d or "schema_map" in d:
-                assembled = {
-                    k: d.get(k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS
-                }
-                return _json.dumps(assembled, ensure_ascii=False)
+            assembled = {k: d.get(k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS}
+            return _json.dumps(assembled, ensure_ascii=False)
     return None
+
+
+def _extract_video_findings(steps: list[Any]) -> tuple[dict[str, Any], ...]:
+    """Collect successful explore_video observations in step order (deterministic)."""
+    found: list[dict[str, Any]] = []
+    for step in steps:
+        if getattr(step, "action", None) != "explore_video" or not getattr(step, "ok", False):
+            continue
+        obs: Any = getattr(step, "observation", None)
+        if isinstance(obs, dict):
+            content = obs.get("content", obs)
+            found.append(cast(dict[str, Any], content if isinstance(content, dict) else obs))
+    return tuple(found)
