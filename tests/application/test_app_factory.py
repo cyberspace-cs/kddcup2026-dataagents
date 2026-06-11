@@ -147,21 +147,21 @@ def _video_cfg(
     )
 
 
-def test_build_video_adapter_forced_tool_choice(
+def test_build_video_adapter_forced_tool_choice_opt_in(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from agents.application import _build_video_adapter
 
-    adapter = _build_video_adapter(_video_cfg(monkeypatch, tmp_path))
+    adapter = _build_video_adapter(_video_cfg(monkeypatch, tmp_path, video_tool_choice="forced"))
     assert isinstance(adapter, NativeToolsOpenAIAdapter)
     assert adapter.tool_choice == {"type": "function", "function": {"name": "report"}}
     assert list(adapter.tools.definitions) == ["report"]
     assert adapter.allow_parallel_tool_calls is False
 
 
-def test_build_video_adapter_auto_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_build_video_adapter_default_auto(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from agents.application import _build_video_adapter
 
-    adapter = _build_video_adapter(_video_cfg(monkeypatch, tmp_path, video_tool_choice="auto"))
+    adapter = _build_video_adapter(_video_cfg(monkeypatch, tmp_path))
     assert isinstance(adapter, NativeToolsOpenAIAdapter)
     assert adapter.tool_choice == "auto"

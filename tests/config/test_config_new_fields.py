@@ -226,6 +226,6 @@ def test_greedy_decoding_warning_matrix(tmp_path: Path, body: str, expects_warni
     assert any("greedy" in str(w.message).lower() for w in user_warnings) is expects_warning
 
 
-def test_video_tool_choice_default_forced() -> None:
-    assert AgentConfig().video_tool_choice == "forced"
-    assert AgentConfig(video_tool_choice="auto").video_tool_choice == "auto"
+def test_video_tool_choice_default_auto() -> None:
+    assert AgentConfig().video_tool_choice == "auto"
+    assert AgentConfig(video_tool_choice="forced").video_tool_choice == "forced"

@@ -15,8 +15,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   into the run's registry, which the ReAct loop pushes per call.
 - **`explore(focus=...)` targeted re-exploration.** The main agent can re-run
   the explorer with a specific directive instead of redoing a full exploration.
-- **`agent.video_tool_choice` config field.** `"forced"` (default) pins the
-  video sub-agent's tool choice to `report`; `"auto"` is the deployment fallback.
+- **`agent.video_tool_choice` config field.** `"auto"` (default) coexists with
+  thinking on every backend — DashScope compatible-mode rejects named
+  `tool_choice` in thinking mode. `"forced"` is an opt-in optimization that
+  pins the video sub-agent's tool choice to `report` in one turn, for
+  deployments verified via `scripts/smoke_video_tool_choice.py`.
 - **Model adapters accept per-call `tools`.** `ModelAdapter.complete(messages,
   tools=...)` lets the ReAct loop push its own registry on every turn, so the
   request-body tool advertisement and the execution dispatch table are the

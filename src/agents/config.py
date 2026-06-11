@@ -338,9 +338,11 @@ class AgentConfig:
     max_empty_tool_call_retries: StrictInt = 8
     enable_preact: StrictBool = False
     # Video sub-agent report tool_choice mode:
-    # - "forced": request-level named-function tool_choice pins `report`.
-    # - "auto": deployment fallback when a backend cannot combine named tool_choice with thinking.
-    video_tool_choice: Literal["forced", "auto"] = "forced"
+    # - "auto" (default): works with thinking enabled everywhere; DashScope compatible-mode
+    #   rejects named tool_choice in thinking mode (400).
+    # - "forced": opt-in optimization — request-level named-function tool_choice pins `report`
+    #   in one turn; only for deployments verified via scripts/smoke_video_tool_choice.py.
+    video_tool_choice: Literal["forced", "auto"] = "auto"
 
     @field_validator("model", "api_base", "api_key", mode="before")
     @classmethod
