@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **%→ratio conversion decisions are grounded in sibling sources.** Whether
+  a doc-extracted percentage field converts to a decimal fraction used to
+  depend on question wording alone; the ETL now scans the task's sibling
+  SQLite tables and CSVs for proportion-named columns, classifies each by
+  value magnitude (a fraction of a whole cannot exceed 1), and aggregates
+  per naming subfamily (pct/percentage vs ratio vs proportion vs 比例 —
+  observed to carry different storage semantics within one database). A
+  unanimous subfamily verdict deterministically installs or cancels the
+  ×0.01 conversion for fields of that subfamily; mixed or absent evidence
+  falls back to the existing heuristic.
 - **Answer rules: conversions follow the semantic field; junk-row filters
   use identity columns only.** The unit-conversion rule now states that a
   factor bound to an empty canonical column applies to values answered

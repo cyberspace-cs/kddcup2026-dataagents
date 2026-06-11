@@ -18,7 +18,9 @@ import contextlib
 import csv
 import json
 import logging
+import math
 import re
+import sqlite3
 import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -450,6 +452,144 @@ def _write_units_sidecar(
     cache_dir.mkdir(parents=True, exist_ok=True)
     units_path = cache_dir / f"{prose_stem}_units.json"
     units_path.write_text(json.dumps(field_units, ensure_ascii=False), encoding="utf-8")
+
+
+_PROPORTION_SAMPLE_LIMIT = 500
+
+# Naming subfamilies carry distinct storage semantics within one database
+# family (observed across benchmark contexts): pct/percentage-named columns
+# store fractions of a whole (AccuPCTOfPled=0.88, HoldingPCT=0.81), while
+# ratio-named columns mix per-10-share counts (TransferPlaRatio=10) and
+# percent-form rates (RatioFloor=21.5). Convention evidence therefore never
+# crosses subfamily lines; a field is matched to evidence from columns of
+# its OWN subfamily only. Order matters: check 'pct/percent' before 'ratio'
+# so combined names resolve to the more specific class.
+_PROPORTION_SUBFAMILIES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("pct", re.compile(r"pct|percent", re.IGNORECASE)),
+    ("proportion", re.compile(r"proportion", re.IGNORECASE)),
+    ("ratio", re.compile(r"ratio", re.IGNORECASE)),
+    ("比例", re.compile(r"比例")),
+)
+
+
+def _proportion_subfamily(name: str) -> str | None:
+    """The proportion naming subfamily a column belongs to, or None."""
+    for subfamily, pattern in _PROPORTION_SUBFAMILIES:
+        if pattern.search(name):
+            return subfamily
+    return None
+
+
+def _classify_proportion_values(values: list[float]) -> str | None:
+    """'ratio' when every |v| <= 1, 'percent' when any |v| > 1, None when empty.
+
+    The boundary is semantic, not tuned: a fraction of a whole cannot exceed
+    1, so any magnitude above it proves percent-form storage.
+    """
+    finite = [abs(v) for v in values if math.isfinite(v)]
+    if not finite:
+        return None
+    return "ratio" if max(finite) <= 1.0 else "percent"
+
+
+def _infer_proportion_conventions(context_dir: Path) -> dict[str, str]:
+    """Observe per-subfamily how sibling structured sources store proportions.
+
+    The gold reference shares the storage convention of the task's database
+    family, which is directly observable: scan SQLite tables and CSV headers
+    for proportion-semantic columns, classify each by value magnitude, and
+    aggregate verdicts per naming subfamily. A subfamily enters the result
+    only when EVERY one of its columns agrees; mixed subfamilies are omitted
+    so the heuristic (question-wording) decision stays in charge for them.
+    """
+    verdicts: dict[str, set[str]] = {}
+
+    def _record(column_name: str, values: list[float]) -> None:
+        subfamily = _proportion_subfamily(column_name)
+        verdict = _classify_proportion_values(values)
+        if subfamily and verdict:
+            verdicts.setdefault(subfamily, set()).add(verdict)
+
+    for db_path in sorted(context_dir.glob("db/*.sqlite")) + sorted(context_dir.glob("db/*.db")):
+        with contextlib.suppress(sqlite3.Error, OSError, ValueError):
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            try:
+                tables = [
+                    row[0]
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                ]
+                for table in tables:
+                    columns = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
+                    for column in columns:
+                        if not _proportion_subfamily(column):
+                            continue
+                        with contextlib.suppress(sqlite3.Error, TypeError, ValueError):
+                            rows = conn.execute(
+                                f'SELECT "{column}" FROM "{table}" '
+                                f'WHERE "{column}" IS NOT NULL '
+                                f"LIMIT {_PROPORTION_SAMPLE_LIMIT}"
+                            ).fetchall()
+                            values: list[float] = []
+                            for (raw,) in rows:
+                                with contextlib.suppress(TypeError, ValueError):
+                                    values.append(float(raw))
+                            _record(column, values)
+            finally:
+                conn.close()
+
+    for csv_file in sorted(context_dir.glob("csv/*.csv")):
+        with (
+            contextlib.suppress(OSError, csv.Error, UnicodeDecodeError),
+            csv_file.open(encoding="utf-8", errors="ignore") as f,
+        ):
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header:
+                continue
+            targets = [i for i, name in enumerate(header) if _proportion_subfamily(name)]
+            if not targets:
+                continue
+            samples: dict[int, list[float]] = {i: [] for i in targets}
+            for row_num, row in enumerate(reader):
+                if row_num >= _PROPORTION_SAMPLE_LIMIT:
+                    break
+                for i in targets:
+                    if i < len(row) and row[i].strip():
+                        with contextlib.suppress(ValueError):
+                            samples[i].append(float(row[i].strip().replace(",", "")))
+            for i in targets:
+                _record(header[i], samples[i])
+
+    return {
+        subfamily: next(iter(votes)) for subfamily, votes in verdicts.items() if len(votes) == 1
+    }
+
+
+def _apply_proportion_convention(
+    field_units: dict[str, str],
+    conventions: dict[str, str] | None,
+) -> None:
+    """Align %-sourced fields with their subfamily's storage convention, in place.
+
+    Each field with source unit '%' is matched to the convention observed for
+    its OWN naming subfamily: 'ratio' installs (or overrides to) a
+    deterministic ×0.01 conversion, 'percent' cancels any heuristic
+    conversion. Fields whose subfamily has no unanimous verdict — or no
+    proportion token in their name — keep the heuristic targets.
+    """
+    if not conventions:
+        return
+    for field, source_unit in list(field_units.items()):
+        if field.startswith("_") or str(source_unit) != "%":
+            continue
+        subfamily = _proportion_subfamily(field)
+        convention = conventions.get(subfamily) if subfamily else None
+        if convention == "ratio":
+            field_units[f"_target_{field}"] = "ratio"
+            field_units[f"_factor_{field}"] = "0.01"
+        elif convention == "percent":
+            field_units.pop(f"_target_{field}", None)
+            field_units.pop(f"_factor_{field}", None)
 
 
 def _parse_alias_response(
@@ -1344,6 +1484,7 @@ def extract_prose_file(
     field_units: dict[str, str] | None = None,
     schema_field_defs: dict[str, str] | None = None,
     governance_columns: list[str] | None = None,
+    proportion_conventions: dict[str, str] | None = None,
 ) -> ETLResult | None:
     """Extract structured data from a prose file.
 
@@ -1461,6 +1602,7 @@ def extract_prose_file(
     compressed_path.write_text(compressed, encoding="utf-8")
 
     if field_units:
+        _apply_proportion_convention(field_units, proportion_conventions)
         _write_units_sidecar(task, path.stem, field_units)
 
     # ---- Phase 2a: deterministic KV→CSV (when normalized) ----
@@ -1556,6 +1698,13 @@ def run_etl_for_task(
         with contextlib.suppress(OSError):
             km_text = km_path.read_text(encoding="utf-8")
 
+    # Observe once how sibling structured sources store proportions; the
+    # per-subfamily verdicts deterministically override the heuristic
+    # %→ratio decision for fields of the same naming subfamily.
+    proportion_conventions = _infer_proportion_conventions(task.context_dir)
+    if proportion_conventions:
+        logger.info("ETL: sibling proportion conventions: %s", proportion_conventions)
+
     def _process(pf: Path) -> ETLResult | None:
         # Early cache check: skip file reading and all LLM calls if CSV exists.
         etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
@@ -1601,9 +1750,12 @@ def run_etl_for_task(
                 field_units=units,
                 schema_field_defs=defs,
                 governance_columns=governance_cols or None,
+                proportion_conventions=proportion_conventions,
             )
         logger.info("ETL: no knowledge.md schema for %s, will infer from sample", pf.name)
-        return extract_prose_file(adapter, pf, task, text)
+        return extract_prose_file(
+            adapter, pf, task, text, proportion_conventions=proportion_conventions
+        )
 
     if len(prose_files) == 1:
         result = _process(prose_files[0])
