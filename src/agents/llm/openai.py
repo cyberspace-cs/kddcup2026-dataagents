@@ -16,6 +16,7 @@ from agents.llm.types import (
     ModelResponse,
     ModelToolCall,
     TokenUsage,
+    ToolSchemaSource,
 )
 
 if TYPE_CHECKING:
@@ -207,7 +208,9 @@ class _BaseOpenAIAdapter(abc.ABC):
     """Shared init / request-build / call-and-parse for OpenAI-compatible adapters."""
 
     @abc.abstractmethod
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+    def complete(
+        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+    ) -> ModelResponse:
         raise NotImplementedError
 
     def __init__(
@@ -253,8 +256,11 @@ class _BaseOpenAIAdapter(abc.ABC):
             max_retries=self.max_retries,
         )
 
-    def estimate_prompt_tokens(self, messages: list[ModelMessage]) -> int:
+    def estimate_prompt_tokens(
+        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+    ) -> int:
         """Estimate request tokens; no tool schema is sent on this path."""
+        del tools
         from agents.llm.rate_limit import (
             estimate_prompt_tokens as estimate_message_prompt_tokens,
         )
@@ -387,8 +393,14 @@ class OpenAIModelAdapter(_BaseOpenAIAdapter):
     不传 `tools=` 参数，模型响应为纯文本。
     """
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
-        """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。"""
+    def complete(
+        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+    ) -> ModelResponse:
+        """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。
+
+        非 native 工具协议：请求体没有 tools 字段，``tools`` 参数接受但忽略。
+        """
+        del tools
         request_kwargs = self._build_request_kwargs(messages)
         base_response, _ = self._call_and_parse_base(request_kwargs)
         return base_response
@@ -452,11 +464,19 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
         # None → "auto"（现行为）；video 子代理传 named-function dict 强制指向 report
         self.tool_choice: str | dict[str, Any] = tool_choice if tool_choice is not None else "auto"
-        # 预先把不可变 ToolRegistry 的 definitions 转成 OpenAI tools 数组并缓存：
-        # registry 在构造后无法增删工具，因此该缓存在适配器生命周期内永远有效，
-        # 也保证了重复请求的 tools 字段字节稳定（prompt cache 命中）。
+        # 预先把构造期 ToolRegistry 的 definitions 转成 OpenAI tools 数组并缓存：
+        # registry 不可变，缓存在适配器生命周期内永远有效，保证默认路径（tools=None
+        # 或同一 registry 对象）重复请求的 tools 字段字节稳定（prompt cache 命中）。
+        # per-call override 现场渲染、不缓存：`to_openai_tools` 按名排序输出确定，
+        # 字节稳定不依赖缓存；身份缓存有 CPython id 复用陷阱，不值得。
         self._openai_tools = tools.to_openai_tools()
         self._tools_prompt_tokens: int | None = None
+
+    def _resolve_openai_tools(self, tools: ToolSchemaSource | None) -> list[dict[str, Any]]:
+        """Resolve the tools payload: default registry hits the cache, overrides render fresh."""
+        if tools is None or tools is self.tools:
+            return self._openai_tools
+        return tools.to_openai_tools()
 
     def _estimate_tools_prompt_tokens(self) -> int:
         """Count the stable native tools schema prompt contribution lazily."""
@@ -467,21 +487,35 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
             self._tools_prompt_tokens = count_qwen_tokens(tools_text)
         return self._tools_prompt_tokens
 
-    def estimate_prompt_tokens(self, messages: list[ModelMessage]) -> int:
+    def estimate_prompt_tokens(
+        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+    ) -> int:
         """Estimate native request tokens, including vLLM-rendered tool definitions."""
-        return super().estimate_prompt_tokens(messages) + self._estimate_tools_prompt_tokens()
+        if tools is None or tools is self.tools:
+            tools_tokens = self._estimate_tools_prompt_tokens()
+        else:
+            from agents.llm.tokenizer import count_qwen_tokens
 
-    def _build_request_kwargs(self, messages: list[ModelMessage]) -> dict[str, Any]:
+            tools_tokens = count_qwen_tokens(
+                json.dumps(tools.to_openai_tools(), ensure_ascii=False)
+            )
+        return super().estimate_prompt_tokens(messages) + tools_tokens
+
+    def _build_request_kwargs(
+        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+    ) -> dict[str, Any]:
         request_kwargs = super()._build_request_kwargs(messages)
-        request_kwargs["tools"] = self._openai_tools
+        request_kwargs["tools"] = self._resolve_openai_tools(tools)
         request_kwargs["tool_choice"] = self.tool_choice
         if self.allow_parallel_tool_calls:
             request_kwargs["parallel_tool_calls"] = True
         return request_kwargs
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+    def complete(
+        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+    ) -> ModelResponse:
         """发起一次 chat.completions 请求，返回解析好的 `ModelResponse`。"""
-        request_kwargs = self._build_request_kwargs(messages)
+        request_kwargs = self._build_request_kwargs(messages, tools=tools)
         base_response, raw_tool_calls = self._call_and_parse_base(request_kwargs)
 
         parsed_calls: list[ModelToolCall] = []

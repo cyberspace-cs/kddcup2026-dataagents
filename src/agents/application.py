@@ -28,7 +28,7 @@ from agents.llm import (
 )
 from agents.llm.openai import resolve_backend_kind
 from agents.runtime import StepCallback
-from agents.tools import ToolDefinition, ToolRegistry, create_default_tool_registry
+from agents.tools import ToolRegistry, create_default_tool_registry
 from agents.tools.explore import create_explore_tool_definition
 from agents.tools.explore_video import create_explore_video_tool_definition
 from agents.verification import AnswerVerifier
@@ -177,18 +177,16 @@ def build_no_tools_model_adapter(config: AppConfig) -> ModelAdapter:
     return _maybe_wrap_rate_limiter(config, inner)
 
 
-def _build_explorer_adapter(
-    config: AppConfig,
-    *,
-    video_tool: ToolDefinition | None = None,
-) -> ModelAdapter:
-    """Build a model adapter for the Explorer sub-agent.
+def _build_explorer_adapter(config: AppConfig) -> ModelAdapter:
+    """Build the single model adapter shared by all Explorer runs.
 
-    Uses the same model/API/sampling config as the main agent. The Explorer's
-    tool registry is wired directly into the ``NativeToolsOpenAIAdapter``.
-    ``video_tool`` is provided only for the video-capable explorer variant.
+    Uses the same model/API/sampling config as the main agent. The
+    constructor registry is the plain (no-video) explorer toolset and only
+    serves bare ``complete()`` calls as a fallback; each `run_explorer` run
+    assembles its own registry (optionally with `explore_video`) and pushes
+    it per call, so advertisement and dispatch share one instance.
 
-    Rate limiting is shared: both adapters use the same ``api_key`` →
+    Rate limiting is shared: all adapters use the same ``api_key`` →
     ``FileTokenBucket`` automatically deduplicates on the same bucket file.
     """
     sampling = _resolve_sampling_defaults(config.agent)
@@ -201,7 +199,7 @@ def _build_explorer_adapter(
         model=config.agent.model,
         api_base=config.agent.api_base,
         api_key=config.agent.api_key,
-        tools=create_explorer_tool_registry(video_tool=video_tool),
+        tools=create_explorer_tool_registry(),
         allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
         max_tokens=config.agent.max_tokens,
         enable_thinking=config.agent.enable_thinking,
@@ -309,13 +307,8 @@ def build_application(
     else:
         video_adapter = _build_video_adapter(config)
         video_tool = create_explore_video_tool_definition(video_adapter)
-        explorer_plain = _build_explorer_adapter(config)
-        explorer_with_video = _build_explorer_adapter(config, video_tool=video_tool)
-        explore_def = create_explore_tool_definition(
-            explorer_plain,
-            explorer_model_with_video=explorer_with_video,
-            video_tool=video_tool,
-        )
+        explorer_adapter = _build_explorer_adapter(config)
+        explore_def = create_explore_tool_definition(explorer_adapter, video_tool=video_tool)
         registry = create_default_tool_registry(explore_tool=explore_def)
 
     model_adapter = model if model is not None else build_model_adapter(config, tools=registry)

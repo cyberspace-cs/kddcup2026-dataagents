@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from agents.benchmark.schema import PublicTask
-from agents.llm.types import ModelAdapter, ModelMessage, ModelResponse
+from agents.llm.types import ModelAdapter, ModelMessage, ModelResponse, ToolSchemaSource
 from agents.tools import ToolExecutionResult, ToolRegistry
 from agents.tracing.create import function_span, generation_span
 from agents.tracing.spans import SpanError
@@ -45,11 +45,13 @@ class TracedModelAdapter:
     def inner(self) -> ModelAdapter:
         return self._inner
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+    def complete(
+        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+    ) -> ModelResponse:
         model_name = getattr(self._inner, "model", None)
         with generation_span(model=model_name) as span:
             span.span_data.input = _serialize_messages(messages)
-            response = self._inner.complete(messages)
+            response = self._inner.complete(messages, tools=tools)
             span.span_data.usage = {
                 "input_tokens": response.usage.prompt_tokens,
                 "output_tokens": response.usage.completion_tokens,
@@ -90,6 +92,10 @@ class TracedToolRegistry:
     @property
     def definitions(self) -> Any:
         return self._inner.definitions
+
+    def to_openai_tools(self) -> list[dict[str, Any]]:
+        """ToolSchemaSource 显式成员：agent 每轮把 traced registry 下推给 complete()。"""
+        return self._inner.to_openai_tools()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)

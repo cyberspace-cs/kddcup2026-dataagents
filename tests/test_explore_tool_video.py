@@ -1,4 +1,4 @@
-"""explore 工具：按任务选 (adapter, video_tool) 配对、focus 穿透、video_findings 注入。"""
+"""explore 工具：explore_video 按任务动态注入、focus 穿透、video_findings 注入。"""
 
 from __future__ import annotations
 
@@ -16,10 +16,7 @@ from agents.tools.registry import ToolDefinition
 
 
 class _Adapter:
-    def __init__(self, tag: str) -> None:
-        self.tag = tag
-
-    def complete(self, messages):  # pragma: no cover
+    def complete(self, messages, *, tools=None):  # pragma: no cover
         raise AssertionError("not called")
 
 
@@ -61,55 +58,38 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> dict:
     return seen
 
 
-def _make_tool(video_tool: ToolDefinition | None):
-    plain = _Adapter("plain")
-    with_video = _Adapter("with_video")
-    return (
-        create_explore_tool_definition(
-            plain, explorer_model_with_video=with_video, video_tool=video_tool
-        ),
-        plain,
-        with_video,
+@pytest.mark.parametrize("task_has_video", [True, False], ids=["video-task", "plain-task"])
+@pytest.mark.parametrize("pass_video_tool", [True, False], ids=["with-tool", "no-tool"])
+def test_video_tool_injected_only_when_task_has_video(
+    tmp_path: Path, recorded: dict, task_has_video: bool, pass_video_tool: bool
+) -> None:
+    adapter = _Adapter()
+    tool = create_explore_tool_definition(
+        adapter, video_tool=_video_tool() if pass_video_tool else None
     )
+    task = _make_task(tmp_path, with_video=task_has_video)
 
-
-def test_video_task_picks_video_pair(tmp_path: Path, recorded: dict) -> None:
-    tool, _plain, with_video = _make_tool(_video_tool())
-    task = _make_task(tmp_path, with_video=True)
     result = tool.handler(task, ExploreInput())
+
     assert result.ok is True
-    assert recorded["model"] is with_video
-    assert recorded["video_tool"] is not None
-    assert result.content["video_findings"][0]["findings"]["summary"] == "v"
-
-
-def test_no_video_task_picks_plain_pair(tmp_path: Path, recorded: dict) -> None:
-    tool, plain, _with_video = _make_tool(_video_tool())
-    task = _make_task(tmp_path, with_video=False)
-    result = tool.handler(task, ExploreInput())
-    assert recorded["model"] is plain
-    assert recorded["video_tool"] is None
-    assert "video_findings" not in result.content
+    assert recorded["model"] is adapter
+    if task_has_video and pass_video_tool:
+        assert recorded["video_tool"] is not None
+        assert result.content["video_findings"][0]["findings"]["summary"] == "v"
+    else:
+        assert recorded["video_tool"] is None
+        assert "video_findings" not in result.content
 
 
 def test_focus_overrides_question(tmp_path: Path, recorded: dict) -> None:
-    tool, _p, _w = _make_tool(_video_tool())
+    tool = create_explore_tool_definition(_Adapter(), video_tool=_video_tool())
     task = _make_task(tmp_path, with_video=False)
     tool.handler(task, ExploreInput(focus="re-check orders.status"))
     assert recorded["question"] == "re-check orders.status"
 
 
 def test_without_focus_uses_task_question(tmp_path: Path, recorded: dict) -> None:
-    tool, _p, _w = _make_tool(_video_tool())
+    tool = create_explore_tool_definition(_Adapter(), video_tool=_video_tool())
     task = _make_task(tmp_path, with_video=False)
     tool.handler(task, ExploreInput())
     assert recorded["question"] == "What is X?"
-
-
-def test_backward_compat_single_adapter(tmp_path: Path, recorded: dict) -> None:
-    plain = _Adapter("plain")
-    tool = create_explore_tool_definition(plain)
-    task = _make_task(tmp_path, with_video=True)
-    result = tool.handler(task, ExploreInput())
-    assert result.ok is True
-    assert recorded["model"] is plain and recorded["video_tool"] is None

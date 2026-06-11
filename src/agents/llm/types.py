@@ -54,8 +54,22 @@ class ModelResponse:
     rate_limit_metrics: dict[str, Any] | None = None
 
 
-class ModelAdapter(Protocol):
-    """Anything exposing ``complete(messages) -> ModelResponse`` can act as a model."""
+class ToolSchemaSource(Protocol):
+    """Anything that can render an OpenAI ``tools=[...]`` payload (e.g. ToolRegistry)."""
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+    def to_openai_tools(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+
+class ModelAdapter(Protocol):
+    """Anything exposing ``complete(messages) -> ModelResponse`` can act as a model.
+
+    ``tools`` 是 per-call 工具广告（与 chat.completions 请求形态一致）：调用方（ReAct
+    循环）每轮把自己手里的 registry 下推，保证请求体广告与执行分发同源。不支持
+    native 工具协议的适配器忽略该参数。None = 沿用适配器构造期的默认工具集。
+    """
+
+    def complete(
+        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+    ) -> ModelResponse:
         raise NotImplementedError

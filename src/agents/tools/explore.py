@@ -114,14 +114,13 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
 def create_explore_tool_definition(
     explorer_model: ModelAdapter,
     *,
-    explorer_model_with_video: ModelAdapter | None = None,
     video_tool: ToolDefinition | None = None,
 ) -> ToolDefinition:
     """Build a ToolDefinition that runs the Explorer sub-agent.
 
-    双变体配对：含视频任务用 (explorer_model_with_video, video_tool)，其余任务用
-    (explorer_model, None)。adapter 的 tools schema 缓存与运行时 registry 在同一
-    分支点选择，保证广告与执行一致。两参数都缺省时与旧行为完全相同。
+    `explore_video` 按任务动态注入：含视频任务把 ``video_tool`` 传给
+    `run_explorer`，registry 在其内部组装一次——既是执行分发表，也是该 run
+    每轮请求下推的工具广告源，广告与执行结构性同源。
     """
     from agents.tools.registry import ToolDefinition as _ToolDefinition
 
@@ -133,13 +132,8 @@ def create_explore_tool_definition(
         question = focus if isinstance(focus, str) and focus.strip() else task.question
 
         has_video = video_tool is not None and bool(find_videos(task.context_dir))
-        model = (
-            explorer_model_with_video
-            if has_video and explorer_model_with_video is not None
-            else explorer_model
-        )
         result = explorer_runner.run_explorer(
-            task, question, model, video_tool=video_tool if has_video else None
+            task, question, explorer_model, video_tool=video_tool if has_video else None
         )
         content: dict[str, Any]
         if result.success:

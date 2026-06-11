@@ -11,10 +11,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   contains a video, the explorer can launch a video sub-agent that sees the raw
   video in the leaf context only and returns a validated structured report;
   reports also pass through to the main agent verbatim as `video_findings`.
+  A single explorer adapter serves all tasks: the tool is injected per task
+  into the run's registry, which the ReAct loop pushes per call.
 - **`explore(focus=...)` targeted re-exploration.** The main agent can re-run
   the explorer with a specific directive instead of redoing a full exploration.
 - **`agent.video_tool_choice` config field.** `"forced"` (default) pins the
   video sub-agent's tool choice to `report`; `"auto"` is the deployment fallback.
+- **Model adapters accept per-call `tools`.** `ModelAdapter.complete(messages,
+  tools=...)` lets the ReAct loop push its own registry on every turn, so the
+  request-body tool advertisement and the execution dispatch table are the
+  same instance. `tools=None` (or the adapter's constructor registry) keeps
+  the byte-stable cached payload; overrides render fresh.
 
 ### Behavior changes (intentional tightening)
 - **Video is no longer inlined into main-agent/explorer conversations.** The

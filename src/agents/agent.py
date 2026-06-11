@@ -223,7 +223,8 @@ class ReActAgent:
             # prompt_messages 落进 ModelErrorEvent，方便复盘"哪条请求把 LLM 炸了"
             serialized_prompt = [serialize_message(message) for message in messages]
             try:
-                response = self.model.complete(messages)
+                # 每轮下推自己手里的 registry：请求体工具广告与执行分发同源
+                response = self.model.complete(messages, tools=self.tools)
             except ToolCallParseError as exc:
                 # tool_call arguments JSON 解析失败：携带部分响应，保留
                 # raw_tool_calls / usage / reasoning 供 trace 和回放

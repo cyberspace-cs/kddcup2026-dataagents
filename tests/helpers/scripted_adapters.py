@@ -23,10 +23,15 @@ class ScriptedModelAdapter:
     def __init__(self, responses: list[str]) -> None:
         # 拷贝一份：避免外部修改列表影响播放顺序
         self._responses = list(responses)
+        # 每次 complete 收到的 per-call tools（None 或 registry 对象），供行为断言
+        self.tools_seen: list[object | None] = []
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+    def complete(
+        self, messages: list[ModelMessage], *, tools: object | None = None
+    ) -> ModelResponse:
         # messages 对预置响应无用，显式 del 提示读者（也能在启用严格 linter 时消除未用警告）
         del messages
+        self.tools_seen.append(tools)
         if not self._responses:
             raise RuntimeError("No scripted model responses remaining.")
         text = self._responses.pop(0)
@@ -48,9 +53,14 @@ class ScriptedNativeModelAdapter:
 
     def __init__(self, responses: list[ModelResponse]) -> None:
         self._responses = list(responses)
+        # 每次 complete 收到的 per-call tools（None 或 registry 对象），供行为断言
+        self.tools_seen: list[object | None] = []
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+    def complete(
+        self, messages: list[ModelMessage], *, tools: object | None = None
+    ) -> ModelResponse:
         del messages
+        self.tools_seen.append(tools)
         if not self._responses:
             raise RuntimeError("No scripted model responses remaining.")
         return self._responses.pop(0)
