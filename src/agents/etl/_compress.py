@@ -444,6 +444,43 @@ def _split_prose_paragraphs(text: str) -> list[str]:
     return [p.strip() for p in text.split("\n\n") if p.strip() and len(p.strip()) > 30]
 
 
+_SENTENCE_END = re.compile(r"[。！？]|[.!?](?=\s|$)")
+
+
+def _leading_sentences(flat: str, count: int) -> str:
+    """First *count* sentences of whitespace-collapsed text.
+
+    A sentence ends at a CJK terminator or at ``.!?`` followed by whitespace
+    (or end of text) — the lookahead keeps decimal points inside numerals
+    ("141,389,573.43") from terminating the sentence early. Falls back to the
+    whole text when fewer terminators exist.
+    """
+    end = 0
+    for _ in range(count):
+        m = _SENTENCE_END.search(flat, end)
+        if not m:
+            return flat
+        end = m.end()
+    return flat[:end]
+
+
+def _grouping_head(para: str) -> str:
+    """Paragraph opening rendered for grouping prompts.
+
+    First sentence by default — record IDs introduce their paragraph, so that
+    is where the grouping signal lives. Extends to the second sentence only
+    when the first carries no standalone number while the paragraph does:
+    rhetorical openers ("The investigation now turns to ...") defer the ID to
+    sentence two, and a head without the ID turns a data paragraph into
+    apparent filler.
+    """
+    flat = " ".join(para.split())
+    head = _leading_sentences(flat, 1)
+    if _contains_standalone_number(head) or not _contains_standalone_number(flat):
+        return head
+    return _leading_sentences(flat, 2)
+
+
 def _make_grouping_batches(
     paras: list[str],
     batch_size: int = GROUPING_BATCH_SIZE,
@@ -472,7 +509,8 @@ def _make_grouping_batches(
         indices = list(range(start + 1, start + 1 + size))
         lines: list[str] = []
         for idx, para in zip(indices, chunk, strict=True):
-            head = " ".join(para[:truncate].split())
+            # head = " ".join(para[:truncate].split())  # 300-char opening (sentence-head A/B)
+            head = _grouping_head(para)
             lines.append(f"{idx}) {head}")
         batches.append((indices, "\n".join(lines)))
         start += size

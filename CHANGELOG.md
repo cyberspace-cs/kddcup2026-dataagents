@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Grouping prompts render paragraph heads as leading sentences.** The
+  paragraph-grouping prompt used to show each paragraph's first 300
+  characters; it now shows the first sentence, extended to the second
+  only when the first carries no standalone number while the paragraph
+  does (rhetorical openers defer the record ID to sentence two). Halves
+  grouping input tokens (37-54% of the previous cost on the benchmark
+  corpus) with equal-or-better verified coverage; record-ID retention
+  audited at 100%.
 - **No joins for columns the base table already has.** A lookup join
   against a sparse dimension table can collapse the base row set
   (task_13: an inner merge with a 50-entity doc table cut 12,962 rows

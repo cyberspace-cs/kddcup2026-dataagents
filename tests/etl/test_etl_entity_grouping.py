@@ -25,6 +25,7 @@ from agents.etl._compress import (
     GROUPING_BATCH_SIZE,
     _group_paragraphs_by_entity,
     _group_paragraphs_by_llm,
+    _grouping_head,
     _is_embedded_digit_run,
     _make_grouping_batches,
     _parse_grouping_response,
@@ -32,6 +33,48 @@ from agents.etl._compress import (
     compress_prose,
 )
 from agents.llm.types import ModelResponse
+
+
+@pytest.mark.parametrize(
+    ("para", "expected"),
+    [
+        # Decimal points inside numerals never terminate the sentence.
+        pytest.param(
+            "Unit 144 reported 196,146,682.99 in Total Liabilities. The audit went well.",
+            "Unit 144 reported 196,146,682.99 in Total Liabilities.",
+            id="decimal-safe",
+        ),
+        # CJK terminators bound sentences without trailing whitespace.
+        pytest.param(
+            "档案286的资产总额为41,740,771。该季度审计顺利完成。",
+            "档案286的资产总额为41,740,771。",
+            id="cjk-terminator",
+        ),
+        # No terminator at all: the whole (collapsed) paragraph is the head.
+        pytest.param(
+            "Record 16 carries the figures\nfor the cycle without a closing mark",
+            "Record 16 carries the figures for the cycle without a closing mark",
+            id="no-terminator-fallback",
+        ),
+        # Rhetorical opener defers the ID to sentence two: head extends so the
+        # grouping signal is not lost (in_meansofproductionpi, asset 1487).
+        pytest.param(
+            "The investigation now turns to a different methodology. "
+            "The asset registered as 1487 used a baseline of 100. Scope national.",
+            "The investigation now turns to a different methodology. "
+            "The asset registered as 1487 used a baseline of 100.",
+            id="extends-to-numberless-opener",
+        ),
+        # Pure narrative (no standalone number anywhere) stays one sentence.
+        pytest.param(
+            "Purely narrative filler about methodology. More filler follows here.",
+            "Purely narrative filler about methodology.",
+            id="narrative-stays-short",
+        ),
+    ],
+)
+def test_grouping_head_keeps_record_signal(para: str, expected: str) -> None:
+    assert _grouping_head(para) == expected
 
 
 @pytest.mark.parametrize("n", [1, 39, 40, 41, 46, 79, 80, 81, 606])
