@@ -33,6 +33,24 @@ _BOOL_TRUE = frozenset(("true", "yes", "1", "是"))
 _BOOL_FALSE = frozenset(("false", "no", "0", "否"))
 
 
+APPROX_TAG = "~"
+_APPROX_PREFIXES = ("~", "～")
+
+
+def split_approx_tag(val: str) -> tuple[str, bool]:
+    """Split a leading approximate-value marker off ``val``.
+
+    Compression tags values stated approximately in the source ("约六百九十七万"
+    → ``~6970000``) so the deterministic identity-repair pass can recompute
+    them; everything downstream of that pass must never see the tag.
+    """
+    stripped = val.strip()
+    for prefix in _APPROX_PREFIXES:
+        if stripped.startswith(prefix):
+            return stripped[len(prefix) :].strip(), True
+    return stripped, False
+
+
 def is_placeholder(val: str) -> bool:
     return val.lower().strip() in PLACEHOLDER_VALS or "(placeholder)" in val.lower()
 

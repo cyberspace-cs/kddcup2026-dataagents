@@ -199,7 +199,8 @@ def _format_hard_type_rules(
     if number_fields:
         lines.append(
             "- number/integer fields: numeric values only (integers or decimals); "
-            "strip unit suffixes and thousand separators. "
+            "strip unit suffixes and thousand separators. A leading ~ marking an "
+            "approximate value is allowed (see FUZZY NUMBERS). "
             f"Fields: {', '.join(number_fields)}."
         )
     if date_fields:
@@ -928,11 +929,12 @@ def _generate_compress_guide(
            paragraph (large share count, large pct ~1-50%), NEVER from the
            transaction paragraph (small transfer count, tiny ratio ~0.001-0.01%).
 
-        4. FUZZY NUMBER RESOLUTION: if any values use approximate language
+        4. FUZZY NUMBER MARKING: if any values use approximate language
            ("约", "大约", "近", Chinese number words like "六百九十七万"),
-           instruct the extractor to compute the exact value from other
-           precise numbers in the same paragraph (e.g. pre = post + transfer).
-           Always output computed precise values, never fuzzy approximations.
+           instruct the extractor to convert the numeral mechanically and
+           prefix it with ~ (e.g. "约六百九十七万" → ~6970000) — never to
+           attempt arithmetic on it; a downstream deterministic pass
+           recomputes exact values from sibling fields.
 
         Output ONLY the system prompt text (under 1200 words), no wrapping
         or commentary.""")
@@ -1211,12 +1213,15 @@ def compress_chunk(
         ratio you picked doesn't satisfy this, you grabbed the wrong one.
           If any check fails, re-read the paragraph and pick the value that \
         satisfies all three constraints.
-        - FUZZY NUMBERS: when a value is approximate (marked with "约", \
-        "大约", "近", "roughly", Chinese number words like "六百九十七万"), \
-        compute the exact value from other precise numbers in the SAME \
-        paragraph if possible (e.g. pre = post + transferred, or \
-        post = pre - transferred). Output the computed precise value, \
-        not the fuzzy approximation.
+        - FUZZY NUMBERS: when a value is approximate — marked with "约", \
+        "大约", "近", "左右", "roughly", "approximately", or written in \
+        coarse Chinese number words like "六百九十七万" — convert the \
+        numeral mechanically and prefix it with ~ (e.g. "约六百九十七万股" \
+        → ~6970000). Do NOT attempt arithmetic to sharpen it, and NEVER \
+        omit a value merely because it is approximate — always output it \
+        with the ~ prefix: a downstream deterministic pass recomputes exact \
+        values from sibling fields. Values stated as exact digits get NO \
+        prefix.
         {placeholder_rule}
         - For corrections: output the FINAL corrected value directly — e.g. \
         "label: positive", not "label: positive (placeholder)".

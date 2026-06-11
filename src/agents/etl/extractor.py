@@ -48,6 +48,7 @@ from agents.etl._merge import (
     deterministic_kv_to_csv,
     normalize_entity_lines,
     pre_merge_entity_lines,
+    repair_numeric_identities,
     resolve_id_conflicts,
     validate_csv,
 )
@@ -711,6 +712,46 @@ def _unify_csv_synonyms(
     return applied
 
 
+def _repair_csv_numeric_identities(csv_path: Path) -> list[tuple[int, str, str, str]]:
+    """Run additive-identity repair over a materialized CSV, in place.
+
+    Recomputes approximate numerals (tagged ``~`` by compression, or untagged
+    coarse values) from table invariants mined deterministically from the
+    exact rows, and strips all approx tags. Rewrites the file only when a
+    cell changed. Returns the applied repairs.
+    """
+    try:
+        with csv_path.open(encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            rows = list(reader)
+    except (OSError, csv.Error):
+        return []
+    if not header or not rows:
+        return []
+    width = len(header)
+    rows = [row + [""] * (width - len(row)) if len(row) < width else row[:width] for row in rows]
+
+    repaired_rows, repairs = repair_numeric_identities(header, rows)
+    if repaired_rows == rows:
+        return repairs
+
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(repaired_rows)
+    for row_idx, column, old, new in repairs:
+        logger.info(
+            "ETL identity-repair: %s row %d '%s': %s → %s",
+            csv_path.name,
+            row_idx,
+            column,
+            old,
+            new,
+        )
+    return repairs
+
+
 _KM_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _KM_TABLE_SEPARATOR = re.compile(r":?-{3,}:?")
 # Column-name cells: ASCII identifiers or CJK names, optionally carrying a
@@ -1279,10 +1320,12 @@ def extract_prose_file(
     full_text = prose_text
 
     def _finalize(phase: str) -> ETLResult | None:
-        """Validate the materialized CSV, unify value-split synonym columns, build result."""
+        """Validate the materialized CSV, unify value-split synonym columns,
+        repair approximate numerals from mined identities, build result."""
         result = validate_csv(csv_path)
         if not result:
             return None
+        changed = False
         if governance_columns:
             applied = _unify_csv_synonyms(
                 adapter,
@@ -1294,8 +1337,11 @@ def extract_prose_file(
                 task.question,
                 cache_dir / f"{path.stem}_units.json",
             )
-            if applied:
-                result = validate_csv(csv_path) or result
+            changed = bool(applied)
+        if _repair_csv_numeric_identities(csv_path):
+            changed = True
+        if changed:
+            result = validate_csv(csv_path) or result
         header, row_count = result
         logger.info(
             "ETL %s: %s → %s (%d cols, %d rows)",

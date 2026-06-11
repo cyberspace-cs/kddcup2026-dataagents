@@ -24,6 +24,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed from user-facing docs and submission defaults.
 
 ### Fixed
+- **Approximate numerals recomputed from mined table invariants.** Prose
+  documents state some numbers only coarsely ("持有约六百九十七万股");
+  these used to land in the CSV as the literal coarse value (6970000) or
+  vanish entirely, breaking exact-match grading. The ETL now mines
+  additive identities (`a = b + c`) from each table's exact rows and uses
+  them to recompute values that compression tagged approximate (`~`),
+  untagged coarse values that uniquely violate a validated identity at a
+  column-anomalous granularity, and single missing terms whose two
+  siblings are present. Repairs apply only when every candidate identity
+  agrees on one solution; rows missing 2+ terms (genuine source nulls)
+  stay null.
 - **Value-split synonym columns unified into governance names.** When a
   materialized prose CSV leaves a governance-defined column completely
   empty while an extraction-discovered column of identical meaning holds
