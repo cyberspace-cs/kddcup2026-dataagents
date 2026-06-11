@@ -29,6 +29,7 @@ from agents.llm import (
     ToolCallParseError,
     adapt_model_response,
 )
+from agents.prompts import build_task_prompt
 from agents.runtime import (
     AgentRunResult,
     AgentRuntimeState,
@@ -39,7 +40,6 @@ from agents.runtime import (
     StepCallback,
     ToolErrorEvent,
     build_budget_prompt,
-    build_initial_user_content,
     build_messages,
     build_system_message,
     compute_budget_status,
@@ -186,7 +186,7 @@ class ReActAgent:
         initial_content = (
             initial_user_content
             if initial_user_content is not None
-            else build_initial_user_content(task, preact=self.config.enable_preact)
+            else build_task_prompt(task, preact=self.config.enable_preact)
         )
         step_counter = 0
         effective_turns = 0

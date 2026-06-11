@@ -73,12 +73,12 @@ def create_explore_video_tool_definition(video_model: ModelAdapter) -> ToolDefin
         name="explore_video",
         description=(
             "Launch the video analysis sub-agent on one video file from context. Use "
-            "ONLY when the task context contains a video file (the task message lists "
-            "them). Write `instructions` as an analysis brief tied to the task "
-            "question: which charts, tables, values, or text to transcribe. Call once "
-            "per video. The findings return to you AND pass through to the main agent "
-            "verbatim — reference key facts in your report's knowledge/value_samples "
-            "but do not re-transcribe numbers."
+            "ONLY on video files listed by `inspect_files`. Write `instructions` as "
+            "an analysis brief tied to the task question: which charts, tables, "
+            "values, or text to transcribe. Call once per video. The findings return "
+            "to you AND pass through to the main agent verbatim — reference key facts "
+            "in your report's knowledge/value_samples but do not re-transcribe "
+            "numbers."
         ),
         json_schema=EXPLORE_VIDEO_SCHEMA,
         handler=handler,

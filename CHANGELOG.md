@@ -25,9 +25,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the byte-stable cached payload; overrides render fresh.
 
 ### Behavior changes (intentional tightening)
-- **Video is no longer inlined into main-agent/explorer conversations.** The
-  first user message now carries a one-line notice listing context videos; raw
-  frames reach only the video sub-agent.
+- **Video is no longer inlined into main-agent/explorer conversations.** Raw
+  frames reach only the video sub-agent; the explorer discovers videos via
+  `inspect_files`.
 - **Terminal tool calls mixed with non-terminal calls in one turn are rejected.**
   The terminal call's arguments were written before this turn's observations;
   the agent is told to re-issue it alone next turn. Pure-terminal turns keep the

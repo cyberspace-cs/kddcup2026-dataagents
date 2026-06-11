@@ -7,7 +7,6 @@ from agents.runtime.budget import (
     is_final_step_blocking_active,
     should_block_non_answer_final_turn,
 )
-from agents.runtime.media import build_initial_user_content
 from agents.runtime.messages import (
     build_messages,
     build_messages_native,
@@ -38,7 +37,6 @@ __all__ = [
     "StepRecord",
     "ToolErrorEvent",
     "build_budget_prompt",
-    "build_initial_user_content",
     "build_messages",
     "build_messages_native",
     "build_system_message",
