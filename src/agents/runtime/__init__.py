@@ -4,6 +4,7 @@ from agents.runtime.budget import (
     build_budget_prompt,
     compute_budget_status,
     final_step_block_error,
+    is_final_step_blocking_active,
     should_block_non_answer_final_turn,
 )
 from agents.runtime.media import build_initial_user_content
@@ -43,6 +44,7 @@ __all__ = [
     "build_system_message",
     "compute_budget_status",
     "final_step_block_error",
+    "is_final_step_blocking_active",
     "record_step_event",
     "serialize_message",
     "serialize_response",

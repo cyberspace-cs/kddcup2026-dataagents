@@ -44,6 +44,7 @@ from agents.runtime import (
     build_system_message,
     compute_budget_status,
     final_step_block_error,
+    is_final_step_blocking_active,
     record_step_event,
     serialize_message,
     serialize_response,
@@ -299,14 +300,23 @@ class ReActAgent:
 
             # ---- 3. 依次派发 tool_calls ----
 
+            reject_terminal_this_turn = _has_mixed_terminal_calls(turn.calls, self.tools)
+
             # Last-step guardrail: on the final step of a long-running task
             # (past the 90% CRITICAL threshold), block non-answer tools and
             # give the model one free retry to call `answer`. The blocked
             # turn does NOT consume effective_turns budget.
+            # 末步混合轮走免费重试而非逐调用拒绝，否则模型在预算最后一步
+            # "带工具的 answer" 会被拒掉并烧光预算。
             if should_block_non_answer_final_turn(
                 status=budget_status,
                 last_step_retries=last_step_retries,
                 calls=turn.calls,
+            ) or (
+                reject_terminal_this_turn
+                and is_final_step_blocking_active(
+                    status=budget_status, last_step_retries=last_step_retries
+                )
             ):
                 last_step_retries += 1
                 step_counter += 1
@@ -329,8 +339,6 @@ class ReActAgent:
                     callback=self.step_callback,
                 )
                 continue
-
-            reject_terminal_this_turn = _has_mixed_terminal_calls(turn.calls, self.tools)
 
             effective_turns += 1
             # recovered tool call（从 content/reasoning 解析）没有原始 raw_tool_calls，

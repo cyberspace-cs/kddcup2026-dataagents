@@ -1294,3 +1294,119 @@ def test_native_mixed_terminal_turn_rejects_answer_and_runs_tools(task: PublicTa
     assert rejected.ok is False
     assert "rejected" in rejected.observation["error"]  # recorder.py:224 形态
     assert rejected.tool_call_id == "c_blind"
+
+
+def test_final_step_mixed_turn_blocked_with_free_retry(task: PublicTask) -> None:
+    # 末步混合轮：整轮阻断、不执行、不耗预算（免费重试），下一轮 solo answer 正常提交。
+    # 守卫激活区间要求 remaining<=1 且 ratio>=0.90（budget.py），最小激活配置是
+    # max_steps=10 且已耗 9 个有效轮（max_steps=1 时首轮 ratio=0 不会激活），
+    # 故先用 9 个 filler 轮把预算烧到末步。
+    filler = [
+        _build_tool_call(call_id=f"m_fill_{i}", name="inspect_files", arguments={})
+        for i in range(9)
+    ]
+    inspect_call, inspect_raw = _build_tool_call(
+        call_id="m_inspect", name="inspect_files", arguments={}
+    )
+    blind_answer_call, blind_answer_raw = _build_tool_call(
+        call_id="m_blind", name="answer", arguments={"columns": ["c"], "rows": [["blind"]]}
+    )
+    solo_answer_call, solo_answer_raw = _build_tool_call(
+        call_id="m_solo", name="answer", arguments={"columns": ["c"], "rows": [["good"]]}
+    )
+    responses = [
+        ModelResponse(
+            content=f"explore {i}",
+            tool_calls=[call],
+            raw_response=f"explore {i}",
+            raw_tool_calls=[raw],
+        )
+        for i, (call, raw) in enumerate(filler)
+    ]
+    responses.append(
+        ModelResponse(
+            content="mixed on final step",
+            tool_calls=[inspect_call, blind_answer_call],
+            raw_response="mixed on final step",
+            raw_tool_calls=[inspect_raw, blind_answer_raw],
+        )
+    )
+    responses.append(
+        ModelResponse(
+            content="solo answer",
+            tool_calls=[solo_answer_call],
+            raw_response="solo answer",
+            raw_tool_calls=[solo_answer_raw],
+        )
+    )
+    adapter = ScriptedNativeModelAdapter(responses)
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=10),
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert result.answer is not None
+    assert result.answer.rows == [["good"]]
+    # 第 10 轮整轮被阻断：混合轮的 inspect_files（m_inspect）无执行记录，
+    # 执行过的 inspect_files 全部来自 filler；trace 形态 = 9 filler + 阻断错误步 + answer
+    actions = [s.action for s in result.steps]
+    assert actions == ["inspect_files"] * 9 + ["__error__", "answer"]
+    executed_inspect_ids = [s.tool_call_id for s in result.steps if s.action == "inspect_files"]
+    assert "m_inspect" not in executed_inspect_ids
+    block_step = result.steps[9]
+    assert block_step.ok is False
+    assert "BLOCKED" in block_step.observation["error"]
+    assert block_step.turn_index == 10
+    # 免费重试：阻断轮不耗 effective_turns，否则 max_steps=10 下第 11 轮无法再跑 answer
+    assert result.steps[-1].action == "answer"
+    assert result.steps[-1].turn_index == 11
+
+
+def test_mixed_turn_rejection_when_terminal_is_not_lead(task: PublicTask) -> None:
+    # 非末步混合轮，终止调用排第二：非终止先执行，终止被拒；lead 步承载 raw_tool_calls
+    inspect_call, inspect_raw = _build_tool_call(
+        call_id="n_inspect", name="inspect_files", arguments={}
+    )
+    blind_answer_call, blind_answer_raw = _build_tool_call(
+        call_id="n_blind", name="answer", arguments={"columns": ["c"], "rows": [["blind"]]}
+    )
+    solo_answer_call, solo_answer_raw = _build_tool_call(
+        call_id="n_solo", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="tools first",
+                tool_calls=[inspect_call, blind_answer_call],
+                raw_response="tools first",
+                raw_tool_calls=[inspect_raw, blind_answer_raw],
+            ),
+            ModelResponse(
+                content="solo",
+                tool_calls=[solo_answer_call],
+                raw_response="solo",
+                raw_tool_calls=[solo_answer_raw],
+            ),
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert [s.action for s in result.steps] == ["inspect_files", "__error__", "answer"]
+    lead, rejected, final = result.steps
+    assert lead.tool_call_id == "n_inspect"
+    assert lead.raw_tool_calls == [inspect_raw, blind_answer_raw]  # lead-only 承载
+    assert rejected.tool_call_id == "n_blind"
+    assert rejected.raw_tool_calls is None
+    assert "rejected" in rejected.observation["error"]
+    assert final.tool_call_id == "n_solo"

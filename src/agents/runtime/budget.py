@@ -58,6 +58,15 @@ def build_budget_prompt(
     return None, warning_fired
 
 
+def is_final_step_blocking_active(*, status: BudgetStatus, last_step_retries: int) -> bool:
+    """末步守卫是否处于激活区间（预算 ≥90%、剩余 ≤1、重试次数未耗尽）。
+
+    不检查 calls 内容——仅判断"是否处于需要守卫干预的时间窗口"。
+    供 agent.py 在末步混合轮场景下复用，无需重复阈值数字。
+    """
+    return status.remaining <= 1 and status.ratio >= 0.90 and last_step_retries < 2
+
+
 def should_block_non_answer_final_turn(
     *,
     status: BudgetStatus,
@@ -65,14 +74,11 @@ def should_block_non_answer_final_turn(
     calls: Sequence[Any],
 ) -> bool:
     """Return whether the final-step guard should force an immediate answer call."""
-    return (
-        status.remaining <= 1
-        and status.ratio >= 0.90
-        and last_step_retries < 2
-        and not any(
-            getattr(call, "name", None) == "answer" or getattr(call, "name", None) == "report"
-            for call in calls
-        )
+    return is_final_step_blocking_active(
+        status=status, last_step_retries=last_step_retries
+    ) and not any(
+        getattr(call, "name", None) == "answer" or getattr(call, "name", None) == "report"
+        for call in calls
     )
 
 

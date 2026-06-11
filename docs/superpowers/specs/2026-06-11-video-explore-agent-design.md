@@ -86,7 +86,7 @@
 
 **修法（通用，非子代理专属）**：`ReActAgent` dispatch 前对 `turn.calls` 分组——同轮同时含终止与非终止调用时，非终止调用照常执行，每个终止调用记一条 `ToolErrorEvent`（"terminal call rejected: re-issue after reviewing this turn's observations"），本轮不终止、正常消耗 `effective_turns`。纯终止轮与纯非终止轮行为完全不变。回放完整性：拒绝步沿用既有错误步模式携带 `tool_call_id`，保证 assistant.tool_calls 与 tool 消息一一对应。
 
-该规则同时修复主 agent 既有的 `[execute_python, answer]` 同轮竞速（answer 盲写）。属主链路行为变更，必须全量 benchmark 回归（见测试与验证）。
+该规则同时修复主 agent 既有的 `[execute_python, answer]` 同轮竞速（answer 盲写）。属主链路行为变更，必须全量 benchmark 回归（见测试与验证）。末步（last-step guardrail 生效区间）的混合轮不走逐调用拒绝，而是并入既有的"整轮阻断 + 免费重试"路径，避免模型在最后一步因混合提交被判零分。
 
 ## 定向重探（focus，方案 C）
 
