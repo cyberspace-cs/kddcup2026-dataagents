@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -58,3 +59,14 @@ def test_no_input_model_still_passes_raw_dict(tmp_path: Path) -> None:
     registry = ToolRegistry(definitions={"echo": _echo_tool(input_model=None)})
     result = registry.execute(_make_task(tmp_path), "echo", {"anything": 1})
     assert result.content["args_type"] == "dict"
+
+
+def test_local_input_model_overrides_global_table(tmp_path: Path) -> None:
+    # "answer" 在全局 _INPUT_MODELS 中注册为 AnswerInput；局部 input_model 必须优先生效。
+    # {"text": "hi"} 会被 AnswerInput 拒绝，被 _EchoInput 接受——通过即证明局部模型被使用。
+    base = _echo_tool(input_model=_EchoInput)
+    defn = replace(base, name="answer")
+    registry = ToolRegistry(definitions={"answer": defn})
+    result = registry.execute(_make_task(tmp_path), "answer", {"text": "hi"})
+    assert result.ok is True
+    assert result.content["args_type"] == "_EchoInput"
