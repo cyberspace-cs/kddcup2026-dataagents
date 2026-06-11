@@ -113,19 +113,34 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
 
 def create_explore_tool_definition(
     explorer_model: ModelAdapter,
+    *,
+    explorer_model_with_video: ModelAdapter | None = None,
+    video_tool: ToolDefinition | None = None,
 ) -> ToolDefinition:
     """Build a ToolDefinition that runs the Explorer sub-agent.
 
-    The returned handler closes over ``explorer_model``
-    so the main agent's ``ToolRegistry.execute`` can dispatch to it
-    without knowing about the Explorer internals.
+    双变体配对：含视频任务用 (explorer_model_with_video, video_tool)，其余任务用
+    (explorer_model, None)。adapter 的 tools schema 缓存与运行时 registry 在同一
+    分支点选择，保证广告与执行一致。两参数都缺省时与旧行为完全相同。
     """
     from agents.tools.registry import ToolDefinition as _ToolDefinition
 
-    def handler(task: PublicTask, _args: Any) -> ToolExecutionResult:
-        from agents.explorer.runner import run_explorer
+    def handler(task: PublicTask, args: Any) -> ToolExecutionResult:
+        import agents.explorer.runner as explorer_runner
+        from agents.runtime.media import find_videos
 
-        result = run_explorer(task, task.question, explorer_model)
+        focus = getattr(args, "focus", None)
+        question = focus if isinstance(focus, str) and focus.strip() else task.question
+
+        has_video = video_tool is not None and bool(find_videos(task.context_dir))
+        model = (
+            explorer_model_with_video
+            if has_video and explorer_model_with_video is not None
+            else explorer_model
+        )
+        result = explorer_runner.run_explorer(
+            task, question, model, video_tool=video_tool if has_video else None
+        )
         content: dict[str, Any]
         if result.success:
             try:
@@ -138,6 +153,9 @@ def create_explore_tool_definition(
             except (json.JSONDecodeError, TypeError):
                 content = {"findings": result.findings}
             content["explorer_steps_used"] = result.steps_used
+            if has_video and result.video_findings:
+                # 确定性透传：视频精确数值不经 explorer 二次转写直达主 agent
+                content["video_findings"] = list(result.video_findings)
             _ensure_column_conversions(task, content)
         else:
             content = result.to_tool_content()
@@ -150,7 +168,9 @@ def create_explore_tool_definition(
             "inspects every file under context (columns, dtypes, row counts, table "
             "schemas, unit_hint), reads knowledge.md, samples key values, and "
             "identifies join paths — all in one call. Returns a complete data map "
-            "so you can skip manual multi-step discovery."
+            "so you can skip manual multi-step discovery. Call again with `focus` "
+            "to fetch one specific missing detail (e.g. a value absent from "
+            "video_findings) instead of redoing the full map."
         ),
         json_schema=EXPLORE_SCHEMA,
         handler=handler,
