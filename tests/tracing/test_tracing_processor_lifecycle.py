@@ -50,6 +50,7 @@ def test_multi_processor_add_and_remove() -> None:
     assert p2.events == ["trace_start"]
 
     mp.remove_processor(p1)
+    mp.remove_processor(p1)  # removing an unregistered processor must be a no-op
     mp.on_trace_end(None)  # type: ignore[arg-type]
     assert "trace_end" not in p1.events
     assert p2.events == ["trace_start", "trace_end"]
