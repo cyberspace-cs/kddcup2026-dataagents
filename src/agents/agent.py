@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -23,6 +24,7 @@ from agents.benchmark.schema import PublicTask
 from agents.llm import (
     ModelAdapter,
     ModelMessage,
+    ModelToolCall,
     TokenUsage,
     ToolCallParseError,
     adapt_model_response,
@@ -50,6 +52,21 @@ from agents.runtime import (
 )
 from agents.tools import ToolRegistry, dispatch_tool_call
 from agents.verification import AnswerVerifier, TerminalAnswerPolicy
+
+
+def _has_mixed_terminal_calls(calls: Sequence[ModelToolCall], tools: ToolRegistry) -> bool:
+    """同一 turn 是否混合了终止与非终止调用。
+
+    混合轮里的终止调用（answer/report）参数是在看到本轮 observation 之前盲写的；
+    vLLM 不尊重 `parallel_tool_calls` 请求字段，无法在请求侧阻止，只能在派发层拒绝。
+    未知工具名按非终止处理（随后会走 KeyError → tool_error 路径）。
+    """
+    flags = [
+        (defn := tools.definitions.get(call.name)) is not None and defn.is_terminal
+        for call in calls
+    ]
+    return any(flags) and not all(flags)
+
 
 __all__ = [
     "ReActAgent",
@@ -165,7 +182,6 @@ class ReActAgent:
         None 走默认任务提示词路径。
         """
         state = AgentRuntimeState()
-        # 子代理（video / focused explorer）可注入自定义首条消息；None 走默认任务提示词路径
         initial_content = (
             initial_user_content
             if initial_user_content is not None
@@ -314,6 +330,8 @@ class ReActAgent:
                 )
                 continue
 
+            reject_terminal_this_turn = _has_mixed_terminal_calls(turn.calls, self.tools)
+
             effective_turns += 1
             # recovered tool call（从 content/reasoning 解析）没有原始 raw_tool_calls，
             # 需要合成以便 message 回放时 assistant.tool_calls 与 tool.tool_call_id 匹配
@@ -339,6 +357,34 @@ class ReActAgent:
 
                 # 终止工具预验证：在 handler 执行（会删 CSV artifact）之前跑 verifier
                 defn = self.tools.definitions.get(tool_call.name)
+
+                if reject_terminal_this_turn and defn is not None and defn.is_terminal:
+                    record_step_event(
+                        state,
+                        ToolErrorEvent(
+                            thought=turn.thought,
+                            arguments=tool_call.arguments,
+                            error=(
+                                f"{tool_call.name} rejected: it was issued in the same "
+                                "turn as non-terminal tool calls, so its arguments were "
+                                "written before seeing this turn's observations. Review "
+                                f"the observations, then call {tool_call.name} again in "
+                                "its own turn."
+                            ),
+                            raw_response=response.raw_response,
+                            tool_call_id=step_tool_call_id,
+                            raw_tool_calls=step_raw_tool_calls,
+                            reasoning=step_reasoning,
+                            usage=step_usage,
+                            prompt_messages=step_prompt_messages,
+                            response_message=step_response_message,
+                        ),
+                        step_index=step_counter,
+                        turn_index=turn_index,
+                        callback=self.step_callback,
+                    )
+                    continue
+
                 rejection = terminal_policy.maybe_reject(
                     task=task,
                     arguments=tool_call.arguments,

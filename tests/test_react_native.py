@@ -283,23 +283,25 @@ def test_native_parallel_tool_calls_share_turn_index(task: PublicTask) -> None:
     assert step_answer.step_index == 3
 
 
-def test_native_answer_short_circuits_same_turn(task: PublicTask) -> None:
-    # 并行：第一个就是 answer，第二个不应执行
+def test_native_answer_short_circuits_terminal_only_turn(task: PublicTask) -> None:
+    # 纯终止轮：两个 answer 并行，首个成功即终止，第二个被短路（不属于混合轮拒绝范围）
     answer_call, answer_raw = _build_tool_call(
         call_id="first_answer",
         name="answer",
         arguments={"columns": ["c"], "rows": [["v"]]},
     )
-    list_call, list_raw = _build_tool_call(
-        call_id="should_not_run", name="inspect_files", arguments={}
+    second_call, second_raw = _build_tool_call(
+        call_id="should_not_run",
+        name="answer",
+        arguments={"columns": ["c"], "rows": [["other"]]},
     )
     adapter = ScriptedNativeModelAdapter(
         [
             ModelResponse(
                 content="submitting early",
-                tool_calls=[answer_call, list_call],
+                tool_calls=[answer_call, second_call],
                 raw_response="submitting early",
-                raw_tool_calls=[answer_raw, list_raw],
+                raw_tool_calls=[answer_raw, second_raw],
             )
         ]
     )
@@ -312,7 +314,6 @@ def test_native_answer_short_circuits_same_turn(task: PublicTask) -> None:
     result = agent.run(task)
 
     assert result.succeeded is True
-    # 只有 answer 被记录；后续 inspect_files 被短路
     assert len(result.steps) == 1
     assert result.steps[0].action == "answer"
     assert result.steps[0].tool_call_id == "first_answer"
@@ -376,11 +377,6 @@ def test_native_answer_verifier_rejects_once_then_allows_resubmit(task: PublicTa
 def test_native_answer_verifier_rejection_stops_same_turn_tool_calls(
     task: PublicTask,
 ) -> None:
-    inspect_call, inspect_raw = _build_tool_call(
-        call_id="inspect_first",
-        name="inspect_files",
-        arguments={},
-    )
     rejected_call, rejected_raw = _build_tool_call(
         call_id="rejected_answer",
         name="answer",
@@ -400,9 +396,9 @@ def test_native_answer_verifier_rejection_stops_same_turn_tool_calls(
         [
             ModelResponse(
                 content="submit twice",
-                tool_calls=[inspect_call, rejected_call, same_turn_call],
+                tool_calls=[rejected_call, same_turn_call],
                 raw_response="submit twice",
-                raw_tool_calls=[inspect_raw, rejected_raw, same_turn_raw],
+                raw_tool_calls=[rejected_raw, same_turn_raw],
             ),
             ModelResponse(
                 content="submit after feedback",
@@ -429,11 +425,10 @@ def test_native_answer_verifier_rejection_stops_same_turn_tool_calls(
     assert result.answer is not None
     assert result.answer.rows == [["fresh_turn_submit"]]
     assert [step.tool_call_id for step in result.steps] == [
-        "inspect_first",
         "rejected_answer",
         "next_turn_answer",
     ]
-    assert result.steps[0].raw_tool_calls == [inspect_raw, rejected_raw]
+    assert result.steps[0].raw_tool_calls == [rejected_raw]
 
 
 def test_native_answer_verifier_fallback_uses_latest_valid_rejection(
@@ -1254,3 +1249,48 @@ def test_run_initial_user_content_override(task: PublicTask) -> None:
     first_user = adapter.seen[0][1]
     assert first_user.role == "user"
     assert first_user.content == "CUSTOM OVERRIDE"
+
+
+def test_native_mixed_terminal_turn_rejects_answer_and_runs_tools(task: PublicTask) -> None:
+    # 混合轮：answer 与非终止调用同轮 → answer 被拒（参数是盲写的），inspect 照常执行
+    blind_answer_call, blind_answer_raw = _build_tool_call(
+        call_id="c_blind", name="answer", arguments={"columns": ["c"], "rows": [["blind"]]}
+    )
+    inspect_call, inspect_raw = _build_tool_call(
+        call_id="c_inspect", name="inspect_files", arguments={}
+    )
+    final_answer_call, final_answer_raw = _build_tool_call(
+        call_id="c_final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="mixed turn",
+                tool_calls=[blind_answer_call, inspect_call],
+                raw_response="mixed turn",
+                raw_tool_calls=[blind_answer_raw, inspect_raw],
+            ),
+            ModelResponse(
+                content="solo answer",
+                tool_calls=[final_answer_call],
+                raw_response="solo answer",
+                raw_tool_calls=[final_answer_raw],
+            ),
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert result.answer is not None
+    assert result.answer.rows == [["v"]]
+    assert [s.action for s in result.steps] == ["__error__", "inspect_files", "answer"]
+    rejected = result.steps[0]
+    assert rejected.ok is False
+    assert "rejected" in rejected.observation["error"]  # recorder.py:224 形态
+    assert rejected.tool_call_id == "c_blind"
