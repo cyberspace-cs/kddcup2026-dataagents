@@ -107,12 +107,6 @@ def test_get_trace(store_and_client: tuple) -> None:
     assert len(data["spans"]) == 1
 
 
-def test_get_trace_not_found(store_and_client: tuple) -> None:
-    _, client = store_and_client
-    resp = client.get("/api/traces/nonexistent")
-    assert resp.status_code == 404
-
-
 def test_get_span(store_and_client: tuple) -> None:
     _, client = store_and_client
     resp = client.get("/api/spans/sp1")
@@ -120,10 +114,10 @@ def test_get_span(store_and_client: tuple) -> None:
     assert resp.json()["span_id"] == "sp1"
 
 
-def test_get_span_not_found(store_and_client: tuple) -> None:
+@pytest.mark.parametrize("path", ["/api/traces/nonexistent", "/api/spans/nonexistent"])
+def test_get_missing_resource_returns_404(store_and_client: tuple, path: str) -> None:
     _, client = store_and_client
-    resp = client.get("/api/spans/nonexistent")
-    assert resp.status_code == 404
+    assert client.get(path).status_code == 404
 
 
 def test_dashboard_root_returns_404_when_static_index_is_missing(tmp_path: Path) -> None:

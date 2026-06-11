@@ -29,16 +29,11 @@ def test_defaults_when_both_absent(tmp_path: Path) -> None:
     assert cfg.agent.rate_limit is None
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    # `state_dir: /tmp/ratelimit-test` resolves to drive-relative `E:/tmp/...`
-    # on Windows; the assertion compares against `Path('/tmp/ratelimit-test')`
-    # which becomes a different WindowsPath. Behaviour is correct on the Linux
-    # production target.
-    reason="POSIX-only path semantics; verified on Linux",
-)
-def test_full_block_round_trip(tmp_path: Path) -> None:
-    body = """
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param(
+            """
   api_keys:
     - key-A
     - key-B
@@ -51,34 +46,50 @@ def test_full_block_round_trip(tmp_path: Path) -> None:
     backoff_initial_seconds: 0.5
     backoff_max_seconds: 15.0
     state_dir: /tmp/ratelimit-test
-"""
-    cfg_path = _write_config(tmp_path / "cfg.yaml", body)
-    cfg = load_app_config(cfg_path)
-    assert cfg.agent.api_keys == ("key-A", "key-B")
-    assert cfg.agent.rate_limit is not None
-    rl = cfg.agent.rate_limit
-    assert rl.rpm_per_key == 600
-    assert rl.tpm_per_key == 1_000_000
-    assert rl.safety_factor == 0.8
-    assert rl.reserve_output_tokens == 8192
-    assert rl.max_retries == 4
-    assert rl.backoff_initial_seconds == 0.5
-    assert rl.backoff_max_seconds == 15.0
-    assert rl.state_dir == Path("/tmp/ratelimit-test")
-
-
-def test_rate_limit_state_dir_none_when_absent(tmp_path: Path) -> None:
-    body = """
+""",
+            {
+                "rpm_per_key": 600,
+                "tpm_per_key": 1_000_000,
+                "safety_factor": 0.8,
+                "reserve_output_tokens": 8192,
+                "max_retries": 4,
+                "backoff_initial_seconds": 0.5,
+                "backoff_max_seconds": 15.0,
+                "state_dir": Path("/tmp/ratelimit-test"),
+            },
+            id="full-block",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                # `state_dir: /tmp/ratelimit-test` resolves to drive-relative
+                # `E:/tmp/...` on Windows; the assertion compares against
+                # `Path('/tmp/ratelimit-test')` which becomes a different
+                # WindowsPath. Behaviour is correct on the Linux production target.
+                reason="POSIX-only path semantics; verified on Linux",
+            ),
+        ),
+        # 部分块：未给字段走 schema 默认；state_dir 缺省时交给 runner 在 pin 时填充
+        pytest.param(
+            """
   api_keys: [key-A, key-B]
   rate_limit:
     rpm_per_key: 600
     tpm_per_key: 1000000
-"""
+""",
+            {"rpm_per_key": 600, "tpm_per_key": 1_000_000, "state_dir": None},
+            id="partial-block-state-dir-none",
+        ),
+    ],
+)
+def test_rate_limit_block_round_trip(
+    tmp_path: Path, body: str, expected: dict[str, object]
+) -> None:
     cfg_path = _write_config(tmp_path / "cfg.yaml", body)
     cfg = load_app_config(cfg_path)
-    assert cfg.agent.rate_limit is not None
-    # state_dir 缺省时交给 runner 在 pin 时填充；此处保留 None
-    assert cfg.agent.rate_limit.state_dir is None
+    assert cfg.agent.api_keys == ("key-A", "key-B")
+    rl = cfg.agent.rate_limit
+    assert rl is not None
+    for field_name, value in expected.items():
+        assert getattr(rl, field_name) == value
 
 
 def _rate_limited_body(**overrides: object) -> str:

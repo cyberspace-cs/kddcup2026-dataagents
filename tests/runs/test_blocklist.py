@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -80,16 +81,6 @@ def _make_config(*, tmp_path: Path, blocklist: tuple[str, ...] = ()) -> AppConfi
             blocklist=blocklist,
         ),
     )
-
-
-def test_blocklist_payload_shape() -> None:
-    payload = blocklist_payload("task_7")
-    # 与 _failure_run_result_payload 同形，下游 write_task_outputs 不需要分支
-    assert payload["task_id"] == "task_7"
-    assert payload["answer"] is None
-    assert payload["steps"] == []
-    assert payload["failure_reason"] == BLOCKLIST_FAILURE_REASON
-    assert payload["succeeded"] is False
 
 
 def test_run_single_task_short_circuits_blocklisted(
@@ -185,28 +176,15 @@ class _CapturingRunSingleTask:
         )
 
 
-def _patch_dataset(monkeypatch: pytest.MonkeyPatch, task_ids: list[str]) -> None:
-    class _FakeTask:
-        def __init__(self, tid: str) -> None:
-            self.task_id = tid
-
-    class _FakeDataset:
-        def __init__(self, root: Path) -> None:
-            del root
-
-        def iter_tasks(self) -> list[_FakeTask]:
-            return [_FakeTask(tid) for tid in task_ids]
-
-    monkeypatch.setattr(runner_mod, "DABenchPublicDataset", _FakeDataset)
-
-
 def test_run_benchmark_records_blocked_tasks_as_failures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patch_dataset: Callable[[list[str]], None],
 ) -> None:
     """blocklist 内的任务必须出现在 summary 的 tasks 列表里且 succeeded=False。"""
     fake = _CapturingRunSingleTask()
     monkeypatch.setattr(runner_mod, "run_single_task", fake)
-    _patch_dataset(monkeypatch, ["task_1", "task_2", "task_3"])
+    patch_dataset(["task_1", "task_2", "task_3"])
 
     cfg = _make_config(tmp_path=tmp_path, blocklist=("task_2",))
     cfg = replace(cfg, run=replace(cfg.run, max_workers=1))

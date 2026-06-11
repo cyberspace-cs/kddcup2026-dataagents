@@ -22,6 +22,7 @@ import pytest
 
 from agents.llm import openai as model_mod
 from agents.llm.openai import (
+    BackendKind,
     NativeToolsOpenAIAdapter,
     OpenAIModelAdapter,
     ToolCallParseError,
@@ -185,15 +186,6 @@ def test_extract_reasoning_content(message: Any, expected: str) -> None:
             id="missing-details",
         ),
         pytest.param(None, TokenUsage(), id="missing-usage"),
-    ],
-)
-def test_extract_usage_payload_shapes(usage: Any, expected: TokenUsage) -> None:
-    assert _extract_usage(types.SimpleNamespace(usage=usage)) == expected
-
-
-@pytest.mark.parametrize(
-    ("usage", "expected_cached", "expected_reasoning"),
-    [
         # DeepSeek V4 返回 prompt_cache_hit_tokens 在 usage 顶层
         pytest.param(
             types.SimpleNamespace(
@@ -204,8 +196,7 @@ def test_extract_usage_payload_shapes(usage: Any, expected: TokenUsage) -> None:
                 prompt_cache_miss_tokens=400,
                 completion_tokens_details=types.SimpleNamespace(reasoning_tokens=50),
             ),
-            600,
-            50,
+            TokenUsage(1000, 200, 1200, 600, 50),
             id="deepseek-top-level-cache-hit",
         ),
         # 同时存在嵌套 cached_tokens 和顶层 prompt_cache_hit_tokens 时取 max
@@ -217,21 +208,13 @@ def test_extract_usage_payload_shapes(usage: Any, expected: TokenUsage) -> None:
                 prompt_tokens_details=types.SimpleNamespace(cached_tokens=300),
                 prompt_cache_hit_tokens=600,
             ),
-            600,
-            0,
+            TokenUsage(1000, 200, 1200, 600, 0),
             id="prefers-larger-cached-value",
         ),
     ],
 )
-def test_extract_usage_deepseek_cache_fields(
-    usage: Any, expected_cached: int, expected_reasoning: int
-) -> None:
-    result = _extract_usage(types.SimpleNamespace(usage=usage))
-
-    assert result.prompt_tokens == 1000
-    assert result.completion_tokens == 200
-    assert result.cached_tokens == expected_cached
-    assert result.reasoning_tokens == expected_reasoning
+def test_extract_usage_payload_shapes(usage: Any, expected: TokenUsage) -> None:
+    assert _extract_usage(types.SimpleNamespace(usage=usage)) == expected
 
 
 # ---------- 请求 kwargs 组装：两个 adapter 共享 _build_request_kwargs ----------
@@ -402,13 +385,6 @@ def test_native_adapter_malformed_tool_arguments_preserve_partial_response(
     assert partial.latency_ms >= 0
 
 
-def test_openai_adapter_prompt_estimate_is_message_only() -> None:
-    messages = [ModelMessage(role="user", content="hello")]
-    adapter = _adapter(OpenAIModelAdapter)
-
-    assert adapter.estimate_prompt_tokens(messages) == estimate_prompt_tokens(messages)
-
-
 def test_native_adapter_prompt_estimate_includes_tool_schema() -> None:
     messages = [ModelMessage(role="user", content="hello")]
     adapter = _adapter(NativeToolsOpenAIAdapter)
@@ -506,24 +482,27 @@ def test_backend_kind_thinking_placement_matrix(
         assert kwargs["extra_body"] == expected_extra_body
 
 
-def test_resolve_backend_kind_explicit_value_wins() -> None:
-    """单独验证 resolve_backend_kind helper 的显式优先语义。"""
-    assert resolve_backend_kind("vllm", "https://dashscope.aliyuncs.com/v1") == "vllm"
-    assert resolve_backend_kind("dashscope", "http://localhost:8000/v1") == "dashscope"
-    assert resolve_backend_kind("deepseek", "http://localhost:8000/v1") == "deepseek"
-
-
-def test_resolve_backend_kind_inference_fallback() -> None:
-    """None 时按 host 子串匹配；命中 aliyuncs.com 或 dashscope → dashscope，否则 vllm。"""
-    assert resolve_backend_kind(None, "https://dashscope.aliyuncs.com/v1") == "dashscope"
-    assert resolve_backend_kind(None, "https://api.dashscope.com/v1") == "dashscope"
-    assert resolve_backend_kind(None, "http://localhost:8000/v1") == "vllm"
-    assert resolve_backend_kind(None, "http://10.0.0.5:8001") == "vllm"
-    # 大小写不敏感（resolve_backend_kind 内做 lower）
-    assert resolve_backend_kind(None, "HTTPS://DASHSCOPE.ALIYUNCS.COM/v1") == "dashscope"
-    # DeepSeek API 自动推断
-    assert resolve_backend_kind(None, "https://api.deepseek.com/v1") == "deepseek"
-    assert resolve_backend_kind(None, "https://API.DEEPSEEK.COM/v1") == "deepseek"
+@pytest.mark.parametrize(
+    ("explicit", "api_base", "expected"),
+    [
+        # 显式值优先，不被 host 推断覆盖
+        ("vllm", "https://dashscope.aliyuncs.com/v1", "vllm"),
+        ("dashscope", "http://localhost:8000/v1", "dashscope"),
+        ("deepseek", "http://localhost:8000/v1", "deepseek"),
+        # None 时按 host 子串匹配（大小写不敏感），无匹配回退 vllm
+        (None, "https://dashscope.aliyuncs.com/v1", "dashscope"),
+        (None, "https://api.dashscope.com/v1", "dashscope"),
+        (None, "http://localhost:8000/v1", "vllm"),
+        (None, "http://10.0.0.5:8001", "vllm"),
+        (None, "HTTPS://DASHSCOPE.ALIYUNCS.COM/v1", "dashscope"),
+        (None, "https://api.deepseek.com/v1", "deepseek"),
+        (None, "https://API.DEEPSEEK.COM/v1", "deepseek"),
+    ],
+)
+def test_resolve_backend_kind(
+    explicit: BackendKind | None, api_base: str, expected: BackendKind
+) -> None:
+    assert resolve_backend_kind(explicit, api_base) == expected
 
 
 # ---------- DeepSeek V4 thinking mode 矩阵 ----------

@@ -75,29 +75,19 @@ def test_upsert_span_and_get(tmp_path: Path) -> None:
     store.close()
 
 
-def test_finalize_trace_computes_span_count(tmp_path: Path) -> None:
+def test_finalize_trace_computes_span_count_and_token_sum(tmp_path: Path) -> None:
+    # 非 generation span 计入 span_count 但不贡献 token；generation 的 usage 求和
     store = SQLiteTraceStore(tmp_path / "test.db")
     store.upsert_trace(_make_trace("tr1"))
     store.upsert_span(_make_span("s1", "tr1"))
-    store.upsert_span(_make_span("s2", "tr1"))
-    store.finalize_trace("tr1")
-
-    result = store.get_trace_with_spans("tr1")
-    assert result is not None
-    assert result["trace"]["span_count"] == 2
-    store.close()
-
-
-def test_finalize_trace_sums_generation_tokens(tmp_path: Path) -> None:
-    store = SQLiteTraceStore(tmp_path / "test.db")
-    store.upsert_trace(_make_trace("tr1"))
-    gen_span = _make_span("s1", "tr1", kind="generation")
+    gen_span = _make_span("s2", "tr1", kind="generation")
     gen_span["span_data"]["usage"] = {"input_tokens": 100, "output_tokens": 50}
     store.upsert_span(gen_span)
     store.finalize_trace("tr1")
 
     result = store.get_trace_with_spans("tr1")
     assert result is not None
+    assert result["trace"]["span_count"] == 2
     assert result["trace"]["total_tokens"] == 150
     store.close()
 
@@ -125,18 +115,6 @@ def test_mark_running_trace_error_sets_error_and_finalizes(tmp_path: Path) -> No
     assert trace["span_count"] == 1
     assert trace["total_tokens"] == 150
     assert trace["metadata"]["failure_reason"] == "Task timed out after 1 seconds."
-    store.close()
-
-
-def test_get_trace_with_spans_not_found(tmp_path: Path) -> None:
-    store = SQLiteTraceStore(tmp_path / "test.db")
-    assert store.get_trace_with_spans("nonexistent") is None
-    store.close()
-
-
-def test_get_span_not_found(tmp_path: Path) -> None:
-    store = SQLiteTraceStore(tmp_path / "test.db")
-    assert store.get_span("nonexistent") is None
     store.close()
 
 

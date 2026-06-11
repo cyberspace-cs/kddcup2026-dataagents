@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -110,46 +111,46 @@ class _CapturingSingleTask:
         )
 
 
-def _patch_dataset(monkeypatch: pytest.MonkeyPatch, task_ids: list[str]) -> None:
-    """把 DABenchPublicDataset 换成 fake 以避免依赖磁盘数据。"""
-
-    class _FakeTask:
-        def __init__(self, tid: str) -> None:
-            self.task_id = tid
-
-    class _FakeDataset:
-        def __init__(self, root: Path) -> None:
-            del root
-
-        def iter_tasks(self) -> list[_FakeTask]:
-            return [_FakeTask(tid) for tid in task_ids]
-
-    monkeypatch.setattr(runner_mod, "DABenchPublicDataset", _FakeDataset)
-
-
+@pytest.mark.parametrize(
+    ("task_ids", "task_range", "expected_calls"),
+    [
+        # 包含 3 / 5 / 8，不含 1 / 2 / 10（注意数据集可以非连续）
+        pytest.param(
+            ["task_1", "task_2", "task_3", "task_5", "task_8", "task_10"],
+            (3, 8),
+            ["task_3", "task_5", "task_8"],
+            id="filters-non-contiguous-dataset",
+        ),
+        # range 落在数据集之外：runner 不抛错，只是不跑任何任务（CLI 那层会拦截）
+        pytest.param(["task_1", "task_2"], (50, 60), [], id="empty-range-runs-zero-tasks"),
+    ],
+)
 def test_run_benchmark_filters_by_task_range(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patch_dataset: Callable[[list[str]], None],
+    task_ids: list[str],
+    task_range: tuple[int, int],
+    expected_calls: list[str],
 ) -> None:
     fake = _CapturingSingleTask()
     monkeypatch.setattr(runner_mod, "run_single_task", fake)
-    _patch_dataset(
-        monkeypatch,
-        ["task_1", "task_2", "task_3", "task_5", "task_8", "task_10"],
-    )
+    patch_dataset(task_ids)
 
     cfg = _make_config(tmp_path=tmp_path)
-    runner_mod.run_benchmark(config=cfg, task_range=(3, 8))
-    # 包含 3 / 5 / 8，不含 1 / 2 / 10（注意数据集可以非连续）
-    assert fake.calls == ["task_3", "task_5", "task_8"]
+    _, artifacts = runner_mod.run_benchmark(config=cfg, task_range=task_range)
+    assert fake.calls == expected_calls
+    assert [a.task_id for a in artifacts] == expected_calls
 
 
-def test_run_benchmark_range_then_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_benchmark_range_then_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patch_dataset: Callable[[list[str]], None],
+) -> None:
     fake = _CapturingSingleTask()
     monkeypatch.setattr(runner_mod, "run_single_task", fake)
-    _patch_dataset(
-        monkeypatch,
-        ["task_1", "task_2", "task_3", "task_4", "task_5", "task_6"],
-    )
+    patch_dataset(["task_1", "task_2", "task_3", "task_4", "task_5", "task_6"])
 
     cfg = _make_config(tmp_path=tmp_path)
     # range 选出 [2..5]，limit=2 再截前两个
@@ -157,27 +158,15 @@ def test_run_benchmark_range_then_limit(tmp_path: Path, monkeypatch: pytest.Monk
     assert fake.calls == ["task_2", "task_3"]
 
 
-def test_run_benchmark_empty_range_runs_zero_tasks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    fake = _CapturingSingleTask()
-    monkeypatch.setattr(runner_mod, "run_single_task", fake)
-    _patch_dataset(monkeypatch, ["task_1", "task_2"])
-
-    cfg = _make_config(tmp_path=tmp_path)
-    # range 落在数据集之外：runner 不抛错，只是不跑任何任务（CLI 那层会拦截）
-    _, artifacts = runner_mod.run_benchmark(config=cfg, task_range=(50, 60))
-    assert fake.calls == []
-    assert artifacts == []
-
-
 def test_run_benchmark_rejects_inverted_range(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patch_dataset: Callable[[list[str]], None],
 ) -> None:
     """绕过 CLI 直接调 runner 也要兜底校验，防止上游传错 tuple。"""
     fake = _CapturingSingleTask()
     monkeypatch.setattr(runner_mod, "run_single_task", fake)
-    _patch_dataset(monkeypatch, ["task_1", "task_2", "task_3"])
+    patch_dataset(["task_1", "task_2", "task_3"])
 
     cfg = _make_config(tmp_path=tmp_path)
     with pytest.raises(ValueError, match="task_range start"):
@@ -186,11 +175,15 @@ def test_run_benchmark_rejects_inverted_range(
     assert fake.calls == []
 
 
-def test_run_benchmark_no_range_runs_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_benchmark_no_range_runs_all(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patch_dataset: Callable[[list[str]], None],
+) -> None:
     """task_range=None 时退化回 PR 之前的全量行为。"""
     fake = _CapturingSingleTask()
     monkeypatch.setattr(runner_mod, "run_single_task", fake)
-    _patch_dataset(monkeypatch, ["task_1", "task_2", "task_3"])
+    patch_dataset(["task_1", "task_2", "task_3"])
 
     cfg = _make_config(tmp_path=tmp_path)
     runner_mod.run_benchmark(config=cfg)
