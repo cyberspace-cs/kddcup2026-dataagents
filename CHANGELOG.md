@@ -36,14 +36,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   agrees on one solution; rows missing 2+ terms (genuine source nulls)
   stay null.
 - **Value-split synonym columns unified into governance names.** When a
-  materialized prose CSV leaves a governance-defined column completely
-  empty while an extraction-discovered column of identical meaning holds
-  the values (e.g. `transferor_shares_before` vs `sumbeforetran`), the
-  ETL now merges the values under the canonical name and re-points unit
-  conversion metadata at it. The merge is gated deterministically:
-  identity columns are protected, any row-level disagreement vetoes the
-  pair, ambiguous multi-claims and unit-family mismatches are skipped;
-  an LLM call adjudicates semantic equivalence only.
+  materialized prose CSV leaves a governance-defined column empty — or
+  partially filled, with the remaining values routed under an
+  extraction-discovered column of identical meaning (e.g.
+  `transferor_shares_before` vs `sumbeforetran`) — the ETL now merges
+  the values under the canonical name and re-points unit conversion
+  metadata at it. The merge is gated deterministically: identity columns
+  are protected, any row-level disagreement vetoes the pair, ambiguous
+  multi-claims and unit-family mismatches are skipped, and an
+  adjudication LLM call (semantic equivalence only) is spent only when a
+  structurally mergeable pair exists.
 - **Fabricated sequential primary keys repaired before entity merge.**
   When compression renumbers paragraphs (1, 2, 3, ...) instead of copying
   the stated record label, the pre-merge step now rewrites the primary

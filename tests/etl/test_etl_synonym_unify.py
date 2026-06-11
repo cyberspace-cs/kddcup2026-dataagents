@@ -308,7 +308,7 @@ def test_unify_repairs_value_split_and_moves_unit_metadata(tmp_path: Path) -> No
     assert "transferor_pct_before" not in meta
 
 
-def test_unify_without_empty_canonical_makes_no_llm_call(tmp_path: Path) -> None:
+def test_unify_with_complete_canonicals_makes_no_llm_call(tmp_path: Path) -> None:
     adapter = _StubAdapter("transferor_shares_before=sumbeforetran")
     filled_rows = [
         ["29", "300707", "2441732", "1.55", "2441732", "1.55", ""],
@@ -316,6 +316,48 @@ def test_unify_without_empty_canonical_makes_no_llm_call(tmp_path: Path) -> None
     ]
 
     csv_path, _units_path, applied = _run_unify(tmp_path, adapter, rows=filled_rows)
+
+    assert applied == []
+    assert adapter.calls == 0
+    header, _ = _read_csv(csv_path)
+    assert header == _HEADER
+
+
+def test_unify_repairs_partial_split(tmp_path: Path) -> None:
+    # values routed under two names across rows: canonical holds row 29,
+    # the discovered synonym holds rows 30/48 — union must complete the column
+    rows = [
+        ["29", "300707", "2441732", "1.55", "", "", ""],
+        ["30", "300707", "", "", "5469268", "3.48", ""],
+        ["48", "300707", "", "", "3487568", "2.2186", ""],
+    ]
+    adapter = _StubAdapter(
+        "transferor_shares_before=sumbeforetran\n"
+        "transferor_pct_before=pctbeforetran\n"
+        "transferee_shares_before=DISTINCT"
+    )
+
+    csv_path, _units_path, applied = _run_unify(tmp_path, adapter, rows=rows)
+
+    assert sorted(applied) == [
+        ("transferor_pct_before", "pctbeforetran"),
+        ("transferor_shares_before", "sumbeforetran"),
+    ]
+    header, out_rows = _read_csv(csv_path)
+    sum_idx = header.index("sumbeforetran")
+    assert [r[sum_idx] for r in out_rows] == ["2441732", "5469268", "3487568"]
+
+
+def test_unify_conflicting_overlap_blocks_pair_before_llm(tmp_path: Path) -> None:
+    # the only gapped canonical's only candidate DISAGREES on the overlapping
+    # row — no structurally viable pair anywhere, so no LLM call is spent
+    rows = [
+        ["29", "300707", "2441732", "1.55", "9999999", "", ""],
+        ["30", "300707", "", "3.48", "", "", ""],
+    ]
+    adapter = _StubAdapter("transferor_shares_before=sumbeforetran")
+
+    csv_path, _units_path, applied = _run_unify(tmp_path, adapter, rows=rows)
 
     assert applied == []
     assert adapter.calls == 0

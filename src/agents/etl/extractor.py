@@ -44,6 +44,7 @@ from agents.etl._detect import (
 )
 from agents.etl._merge import (
     apply_synonym_merges,
+    cells_agree,
     column_fill_counts,
     deterministic_kv_to_csv,
     normalize_entity_lines,
@@ -487,34 +488,37 @@ def _parse_alias_response(
 def _adjudicate_synonym_columns(
     adapter: ModelAdapter,
     prose_stem: str,
-    empty_canonicals: dict[str, str],
-    discovered: list[tuple[str, str, list[str]]],
+    canonicals: list[tuple[str, str, str]],
+    discovered: list[tuple[str, str, str, list[str]]],
     question: str,
 ) -> dict[str, str]:
     """Ask the LLM which populated discovered columns are exact synonyms of
-    empty canonical columns.
+    incompletely-filled canonical columns.
 
-    The LLM is trusted only for the semantic judgment; whether a merge
-    actually happens is re-gated deterministically against the data
+    Both lists carry ``(name, definition, fill_note)`` — fill notes like
+    "7/50 rows filled" let the adjudicator see the split signature. The LLM
+    is trusted only for the semantic judgment; whether a merge actually
+    happens is re-gated deterministically against the data
     (`apply_synonym_merges`).  Returns {discovered: canonical}.
     """
     canon_block = "\n".join(
-        f"- {name}: {defn or '(no definition available)'}"
-        for name, defn in empty_canonicals.items()
+        f"- {name} [{fill_note}]: {defn or '(no definition available)'}"
+        for name, defn, fill_note in canonicals
     )
     disc_block = "\n".join(
-        f"- {name}: {defn or '(no definition available)'} | samples: "
+        f"- {name} [{fill_note}]: {defn or '(no definition available)'} | samples: "
         f"{', '.join(samples) if samples else '(none)'}"
-        for name, defn, samples in discovered
+        for name, defn, fill_note, samples in discovered
     )
     prompt = textwrap.dedent(f"""\
         A table extracted from the prose file "{prose_stem}" shows a value-split
         signature: the CANONICAL columns below (defined by the data governance
-        document) contain NO values at all, while the DISCOVERED columns below
-        (added during extraction) are populated.
+        document) are missing values on rows where the DISCOVERED columns below
+        (added during extraction) hold them — typically because extraction
+        routed one concept's values under two names.
 
         For each DISCOVERED column, decide whether it denotes EXACTLY the same
-        quantity as ONE of the empty canonical columns — same concept AND every
+        quantity as ONE of the canonical columns — same concept AND every
         binding qualifier: entity scope (whose quantity it is), before/after
         state, time window, numerator/denominator, unit family, aggregation
         level.
@@ -526,7 +530,7 @@ def _adjudicate_synonym_columns(
         several discovered columns seem close, pick the single best match and
         mark the rest DISTINCT.
 
-        EMPTY CANONICAL COLUMNS:
+        CANONICAL COLUMNS WITH MISSING VALUES:
         {canon_block}
 
         POPULATED DISCOVERED COLUMNS (with sample values):
@@ -556,8 +560,8 @@ def _adjudicate_synonym_columns(
         return {}
     return _parse_alias_response(
         response.content,
-        [name for name, _defn, _samples in discovered],
-        list(empty_canonicals),
+        [name for name, _defn, _note, _samples in discovered],
+        [name for name, _defn, _note in canonicals],
     )
 
 
@@ -574,15 +578,18 @@ def _unify_csv_synonyms(
     """Detect and repair value-split columns in a freshly materialized CSV.
 
     Value split: the schema keeps a governance-canonical column AND an
-    extraction-discovered column for the same concept; values land in the
-    discovered one, leaving the canonical column 100% empty (and any unit
-    conversion bound to the canonical name pointing at dead cells).
+    extraction-discovered column for the same concept; values land partly or
+    wholly under the discovered name, leaving the canonical column gapped
+    (and any unit conversion bound to the canonical name pointing at dead
+    cells).
 
-    Trigger is deliberately narrow — only canonical columns with ZERO fill
-    are offered for adjudication; partially-filled canonicals are left alone.
-    The merge itself is deterministic (`apply_synonym_merges`): identity
-    columns are protected and any row-level disagreement vetoes the pair.
-    On merge, unit-sidecar metadata follows the values to the canonical name.
+    Trigger: a canonical column with missing cells PLUS at least one
+    structurally mergeable discovered column — zero row-level disagreements
+    AND either new cells to contribute or full overlap-agreement (a
+    redundant duplicate). Only then is one adjudication LLM call spent; the
+    merge itself is deterministic (`apply_synonym_merges`): identity columns
+    are protected and any row-level disagreement vetoes the pair. On merge,
+    unit-sidecar metadata follows the values to the canonical name.
 
     Returns the applied (source, canonical) pairs; [] when nothing changed.
     """
@@ -599,36 +606,69 @@ def _unify_csv_synonyms(
     rows = [row + [""] * (width - len(row)) if len(row) < width else row[:width] for row in rows]
 
     fill = column_fill_counts(header, rows)
+    n_rows = len(rows)
     gov_lower = {g.lower() for g in governance_columns}
     anchor_lower = {a.lower() for a in anchor_keys}
-    empty_canonicals = {
-        col: field_defs.get(col, "")
+    gapped_canonicals = [
+        col
         for col in header
-        if col.lower() in gov_lower and col.lower() not in anchor_lower and fill[col] == 0
-    }
-    if not empty_canonicals:
-        return []
+        if col.lower() in gov_lower and col.lower() not in anchor_lower and fill[col] < n_rows
+    ]
     discovered_cols = [
         col
         for col in header
         if col.lower() not in gov_lower and col.lower() not in anchor_lower and fill[col] > 0
     ]
-    if not discovered_cols:
+    if not gapped_canonicals or not discovered_cols:
         return []
 
-    sample_idx = {col: header.index(col) for col in discovered_cols}
+    col_idx = {col: header.index(col) for col in header}
+
+    def _pair_viable(canon: str, disc: str) -> bool:
+        """Zero conflicts AND (contributes new cells OR fully redundant duplicate)."""
+        ci, di = col_idx[canon], col_idx[disc]
+        contributes = 0
+        overlap = 0
+        disc_nonempty = 0
+        for row in rows:
+            src, dst = row[di].strip(), row[ci].strip()
+            if not src:
+                continue
+            disc_nonempty += 1
+            if not dst:
+                contributes += 1
+            elif cells_agree(src, dst):
+                overlap += 1
+            else:
+                return False
+        return disc_nonempty > 0 and (contributes > 0 or overlap == disc_nonempty)
+
+    viable_canonicals = [
+        canon
+        for canon in gapped_canonicals
+        if any(_pair_viable(canon, disc) for disc in discovered_cols)
+    ]
+    if not viable_canonicals:
+        return []
+
     samples: dict[str, list[str]] = {col: [] for col in discovered_cols}
     for row in rows:
         for col in discovered_cols:
-            val = row[sample_idx[col]].strip()
+            val = row[col_idx[col]].strip()
             if val and val not in samples[col] and len(samples[col]) < 3:
                 samples[col].append(val)
 
     mapping = _adjudicate_synonym_columns(
         adapter,
         prose_stem,
-        empty_canonicals,
-        [(col, field_defs.get(col, ""), samples[col]) for col in discovered_cols],
+        [
+            (col, field_defs.get(col, ""), f"{fill[col]}/{n_rows} rows filled")
+            for col in viable_canonicals
+        ],
+        [
+            (col, field_defs.get(col, ""), f"{fill[col]}/{n_rows} rows filled", samples[col])
+            for col in discovered_cols
+        ],
         question,
     )
     if not mapping:

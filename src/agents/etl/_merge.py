@@ -466,7 +466,7 @@ def deterministic_kv_to_csv(
     return buf.getvalue()
 
 
-def _cells_agree(a: str, b: str) -> bool:
+def cells_agree(a: str, b: str) -> bool:
     """Two non-empty cells agree when equal as strings or as parsed numbers."""
     if a == b:
         return True
@@ -532,7 +532,7 @@ def apply_synonym_merges(
             for row in rows
             if row[si].strip()
             and row[di].strip()
-            and not _cells_agree(row[si].strip(), row[di].strip())
+            and not cells_agree(row[si].strip(), row[di].strip())
         )
         if conflicts:
             logger.warning(
