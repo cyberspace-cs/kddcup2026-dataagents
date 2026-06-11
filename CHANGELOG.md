@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Ungrouped aggregate answers are pinned to the SQL result shape.**
+  Questions asking for aggregates without grouping (e.g., max and min of
+  two quantities) now submit one row with one column per aggregate;
+  metric-label columns and label+value transposes are forbidden, and a
+  matching `knowledge.md` use-case SQL pins the shape. Previously the
+  layout was a per-run coin flip — the same task produced wide, pivoted,
+  and transposed layouts across three runs — and any non-wide layout
+  scores 0 against the whole-column grader.
 - **Grouping prompts render paragraph heads as leading sentences.** The
   paragraph-grouping prompt used to show each paragraph's first 300
   characters; it now shows the first sentence, extended to the second
