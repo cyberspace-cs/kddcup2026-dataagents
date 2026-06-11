@@ -45,7 +45,7 @@ def test_verifier_allows_grouped_superlative_multiple_rows() -> None:
 class _CapturingVerifier:
     def __init__(self, response: str = '{"verdict": "ok"}') -> None:
         self.response = response
-        self.seen_content: str | None = None
+        self.seen_content: object = None
 
     def complete(self, messages: list[ModelMessage]) -> ModelResponse:
         self.seen_content = messages[-1].content
@@ -59,11 +59,13 @@ def test_verifier_sees_producing_code_when_provided() -> None:
     verify_answer(adapter, "查一下总资产", ["TotalAssets"], [[1.0]], producing_code=code)
 
     assert adapter.seen_content is not None
+    assert isinstance(adapter.seen_content, str)
     assert code in adapter.seen_content
 
     adapter2 = _CapturingVerifier()
     verify_answer(adapter2, "查一下总资产", ["TotalAssets"], [[1.0]])
     assert adapter2.seen_content is not None
+    assert isinstance(adapter2.seen_content, str)
     assert "PRODUCING CODE" not in adapter2.seen_content
 
 
