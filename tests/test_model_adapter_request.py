@@ -525,6 +525,26 @@ def test_native_adapter_prompt_estimate_includes_tool_schema() -> None:
     assert estimated - message_only > 1_000
 
 
+# ---------- tool_choice 可配置（video 子代理强制 report 调用的前置）---------- #
+
+
+def test_native_adapter_default_tool_choice_is_auto() -> None:
+    adapter = _native_adapter()
+
+    kwargs = adapter._build_request_kwargs([ModelMessage(role="user", content="hi")])
+
+    assert kwargs["tool_choice"] == "auto"
+
+
+def test_native_adapter_forced_tool_choice_passthrough() -> None:
+    forced = {"type": "function", "function": {"name": "report"}}
+    adapter = _native_adapter(tool_choice=forced)
+
+    kwargs = adapter._build_request_kwargs([ModelMessage(role="user", content="hi")])
+
+    assert kwargs["tool_choice"] == forced
+
+
 # ---------- backend_kind 矩阵：vllm vs dashscope，自动推断 vs 显式覆盖 ----------
 
 

@@ -398,7 +398,8 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
     """对 OpenAI 兼容接口的包装（原生 function calling 协议）。
 
     与 `OpenAIModelAdapter` 的核心差异：
-    - 请求端：传 `tools=[...]` + `tool_choice="auto"` + `parallel_tool_calls=True`，
+    - 请求端：传 `tools=[...]` + `tool_choice`（默认 "auto"，可传 named-function dict
+      强制调用指定工具）+ `parallel_tool_calls=True`，
       把工具定义下推给模型，让其原生以 tool_calls 形式回应
     - 响应端：解析 `choices[0].message.tool_calls`，映射为 `ModelToolCall` 列表，
       `content` 保留为 assistant 的自由文本（可能为空字符串）
@@ -415,6 +416,7 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
         temperature: float | None = None,
         tools: ToolRegistry,
         allow_parallel_tool_calls: bool = True,
+        tool_choice: str | dict[str, Any] | None = None,
         max_tokens: int = 0,
         enable_thinking: bool | None = None,
         backend_kind: BackendKind | None = None,
@@ -448,6 +450,8 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
         )
         self.tools = tools
         self.allow_parallel_tool_calls = allow_parallel_tool_calls
+        # None → "auto"（现行为）；video 子代理传 named-function dict 强制指向 report
+        self.tool_choice: str | dict[str, Any] = tool_choice if tool_choice is not None else "auto"
         # 预先把不可变 ToolRegistry 的 definitions 转成 OpenAI tools 数组并缓存：
         # registry 在构造后无法增删工具，因此该缓存在适配器生命周期内永远有效，
         # 也保证了重复请求的 tools 字段字节稳定（prompt cache 命中）。
@@ -470,7 +474,7 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
     def _build_request_kwargs(self, messages: list[ModelMessage]) -> dict[str, Any]:
         request_kwargs = super()._build_request_kwargs(messages)
         request_kwargs["tools"] = self._openai_tools
-        request_kwargs["tool_choice"] = "auto"
+        request_kwargs["tool_choice"] = self.tool_choice
         if self.allow_parallel_tool_calls:
             request_kwargs["parallel_tool_calls"] = True
         return request_kwargs
