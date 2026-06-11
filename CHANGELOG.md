@@ -61,6 +61,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed from user-facing docs and submission defaults.
 
 ### Fixed
+- **Grouping batches are balanced; no more weak tail batch.** Paragraph
+  grouping used fixed 40-paragraph strides, so a document's remainder
+  became a sub-handful final batch whose numbered-list format anchor was
+  too weak — the model drifted to prose or rejected the batch wholesale,
+  and its paragraphs silently fell to the unverified leftover path
+  (task_53 ed_otherdepositorycorpbs: 606 paragraphs → a 6-paragraph tail
+  batch lost the last five entities' totalliabilities, flipping the
+  reported maximum). Batches now split into ceil(n/40) contiguous slices
+  whose sizes differ by at most one, so every multi-batch slice keeps at
+  least 20 lines.
 - **Fabricated primary keys with no source anchor are dropped.** A digit
   pk that never appears as a standalone token in the source document is a
   hallucinated line (typically mixing values from several entities); the

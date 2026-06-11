@@ -22,14 +22,35 @@ from typing import Any, cast
 import pytest
 
 from agents.etl._compress import (
+    GROUPING_BATCH_SIZE,
     _group_paragraphs_by_entity,
     _group_paragraphs_by_llm,
     _is_embedded_digit_run,
+    _make_grouping_batches,
     _parse_grouping_response,
     _verify_paragraph_groups,
     compress_prose,
 )
 from agents.llm.types import ModelResponse
+
+
+@pytest.mark.parametrize("n", [1, 39, 40, 41, 46, 79, 80, 81, 606])
+def test_grouping_batches_cover_all_paragraphs_without_weak_tail(n: int) -> None:
+    """Regression: 606 paragraphs under fixed-stride slicing left a tail batch
+    of 6 whose numbered-list anchor was too weak — the model answered in prose
+    and the batch's paragraphs (the document's last five entities' Section XI
+    data) all fell to the leftover path (task_53)."""
+    paras = [f"Record {i} carries the figures for cycle {i}." for i in range(1, n + 1)]
+    batches = _make_grouping_batches(paras)
+
+    flat = [i for indices, _ in batches for i in indices]
+    assert flat == list(range(1, n + 1))
+
+    sizes = [len(indices) for indices, _ in batches]
+    assert max(sizes) <= GROUPING_BATCH_SIZE
+    if len(sizes) > 1:
+        assert min(sizes) >= GROUPING_BATCH_SIZE // 2
+        assert max(sizes) - min(sizes) <= 1
 
 
 def test_embedded_digit_fragments_detected() -> None:
@@ -242,18 +263,23 @@ class _PromptDispatchAdapter:
         raise AssertionError(f"no scripted response for prompt: {prompt[:200]}")
 
 
+_LAST_PARA_INDEX = GROUPING_BATCH_SIZE + 1
+
+
 def _multi_batch_paras(last_para: str) -> list[str]:
-    """41 paragraphs: 3 anchored entities, filler, then ``last_para`` in batch 2."""
+    """GROUPING_BATCH_SIZE+1 paragraphs: 3 anchored entities, filler, then
+    ``last_para`` as the final paragraph — balanced batching puts it in batch 2."""
     paras = [
         "Record 16 opens the document with initial figures for the cycle.",
         "Record 20 carries the middle figures for the reporting cycle here.",
         "Record 25 carries further figures for the reporting cycle here.",
     ]
     paras += [
-        "Purely narrative filler text about methodology and survey design." for _ in range(37)
+        "Purely narrative filler text about methodology and survey design."
+        for _ in range(_LAST_PARA_INDEX - 4)
     ]
     paras.append(last_para)
-    assert len(paras) == 41  # batch 1 = paras 1-40, batch 2 = para 41
+    assert len(paras) == _LAST_PARA_INDEX
     return paras
 
 
@@ -265,7 +291,7 @@ def test_llm_grouping_merges_same_id_across_batches() -> None:
 
     adapter = _PromptDispatchAdapter(
         [
-            ("41) Record 16 returns", "16: 41\n99: 5"),
+            (f"{_LAST_PARA_INDEX}) Record 16 returns", f"16: {_LAST_PARA_INDEX}\n99: 5"),
             ("1) Record 16 opens", "16: 1\n20: 2\n25: 3"),
         ]
     )
@@ -274,7 +300,7 @@ def test_llm_grouping_merges_same_id_across_batches() -> None:
     assert llm_responded is True
     assert verified is not None
     # Same rid claimed in two batches merges into one document-ordered group.
-    assert verified["16"] == [1, 41]
+    assert verified["16"] == [1, _LAST_PARA_INDEX]
     assert verified["20"] == [2]
     assert verified["25"] == [3]
     # Batch 2's claim on a paragraph outside its own range is filtered out.
@@ -287,7 +313,7 @@ def test_llm_grouping_groups_none_batch_contributes_nothing() -> None:
 
     adapter = _PromptDispatchAdapter(
         [
-            ("41) Record 30 closes", "GROUPS: NONE"),
+            (f"{_LAST_PARA_INDEX}) Record 30 closes", "GROUPS: NONE"),
             ("1) Record 16 opens", "16: 1\n20: 2\n25: 3"),
         ]
     )
@@ -302,7 +328,10 @@ def test_llm_grouping_failed_batch_routes_paras_to_leftover() -> None:
 
     adapter = _PromptDispatchAdapter(
         [
-            ("41) Record 30 closes", RuntimeError("batch 2 infrastructure failure")),
+            (
+                f"{_LAST_PARA_INDEX}) Record 30 closes",
+                RuntimeError("batch 2 infrastructure failure"),
+            ),
             ("1) Record 16 opens", "16: 1\n20: 2\n25: 3"),
         ]
     )
@@ -314,7 +343,7 @@ def test_llm_grouping_failed_batch_routes_paras_to_leftover() -> None:
     assert sorted(groups) == ["16", "20", "25"]
     # ...and the failed batch's digit-bearing paragraph routes to leftover
     # instead of being silently dropped.
-    assert paras[40] in leftover
+    assert paras[-1] in leftover
 
 
 def test_grouping_multi_membership_routes_group_para_to_each_entity() -> None:

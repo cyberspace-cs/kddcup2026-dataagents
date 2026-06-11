@@ -449,16 +449,33 @@ def _make_grouping_batches(
     batch_size: int = GROUPING_BATCH_SIZE,
     truncate: int = GROUPING_TRUNCATE_CHARS,
 ) -> list[tuple[list[int], str]]:
-    """Contiguous batches of (global 1-based indices, rendered numbered block)."""
+    """Contiguous balanced batches of (global 1-based indices, rendered numbered block).
+
+    Batch count is ceil(n / batch_size) but sizes are balanced (they differ by
+    at most one) instead of fixed-stride: a stride remainder produces a
+    sub-handful tail batch whose numbered-list format anchor is too weak — the
+    model drifts to prose, every claim falls to unparsed, and the batch's
+    paragraphs all drop to the leftover path (task_53 ed_otherdepositorycorpbs:
+    606 paras → tail batch of 6 → the document's last five entities lost their
+    Section XI fields). Balancing keeps every multi-batch slice at
+    >= batch_size // 2 lines with no extra parameter.
+    """
+    if not paras:
+        return []
+    n_batches = -(-len(paras) // batch_size)
+    base, extra = divmod(len(paras), n_batches)
     batches: list[tuple[list[int], str]] = []
-    for start in range(0, len(paras), batch_size):
-        chunk = paras[start : start + batch_size]
-        indices = list(range(start + 1, start + 1 + len(chunk)))
+    start = 0
+    for i in range(n_batches):
+        size = base + (1 if i < extra else 0)
+        chunk = paras[start : start + size]
+        indices = list(range(start + 1, start + 1 + size))
         lines: list[str] = []
         for idx, para in zip(indices, chunk, strict=True):
             head = " ".join(para[:truncate].split())
             lines.append(f"{idx}) {head}")
         batches.append((indices, "\n".join(lines)))
+        start += size
     return batches
 
 
