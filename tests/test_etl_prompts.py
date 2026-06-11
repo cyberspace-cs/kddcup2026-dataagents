@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from agents.etl._compress import _clean_compressed_entity_lines
 from agents.etl.extractor import (
     _deterministic_factor,
@@ -139,10 +141,16 @@ def test_parse_schema_response_extra_commentary_ignored() -> None:
     assert cols == ["record_id", "province_name", "gdp"]
 
 
-def test_parse_schema_response_returns_none_on_garbage() -> None:
-    assert _parse_schema_response("NONE") is None
-    assert _parse_schema_response("I cannot determine the schema.") is None
-    assert _parse_schema_response("PK: x\nonly_one_column") is None
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "NONE",
+        "I cannot determine the schema.",
+        "PK: x\nonly_one_column",
+    ],
+)
+def test_parse_schema_response_returns_none_on_garbage(raw: str) -> None:
+    assert _parse_schema_response(raw) is None
 
 
 def test_parse_schema_response_anchor_added_to_columns() -> None:
@@ -152,58 +160,66 @@ def test_parse_schema_response_anchor_added_to_columns() -> None:
     assert "name" in cols
 
 
-def test_deterministic_factor_cny_magnitudes() -> None:
-    """Within the CNY family the factor is scale(source)/scale(target)."""
-    assert _deterministic_factor("亿元", "万元") == 10000.0
-    assert _deterministic_factor("元", "万元") == 0.0001
-    assert _deterministic_factor("万元", "元") == 10000.0
-    assert _deterministic_factor("万元", "亿元") == 0.0001
-    assert _deterministic_factor("元", "亿元") == 1e-8
+@pytest.mark.parametrize(
+    ("source", "target", "expected"),
+    [
+        # Within the CNY family the factor is scale(source)/scale(target).
+        ("亿元", "万元", 10000.0),
+        ("元", "万元", 0.0001),
+        ("万元", "元", 10000.0),
+        ("万元", "亿元", 0.0001),
+        ("元", "亿元", 1e-8),
+        ("%", "ratio", 0.01),
+        ("ratio", "%", 100.0),
+        # Different families or unknown units are not computable.
+        ("元", "%", None),
+        ("万吨", "吨", None),
+        ("万元", "USD", None),
+    ],
+)
+def test_deterministic_factor(source: str, target: str, expected: float | None) -> None:
+    assert _deterministic_factor(source, target) == expected
 
 
-def test_deterministic_factor_percent_and_unknown() -> None:
-    assert _deterministic_factor("%", "ratio") == 0.01
-    assert _deterministic_factor("ratio", "%") == 100.0
-    # Different families or unknown units are not computable.
-    assert _deterministic_factor("元", "%") is None
-    assert _deterministic_factor("万吨", "吨") is None
-    assert _deterministic_factor("万元", "USD") is None
-
-
-def test_unit_factor_response_corrects_inverted_direction() -> None:
-    """元→万元 must divide by 10000 even when the LLM echoes the *10000 example.
-
-    Regression: ed_chinafibalancesheetrmb (task_47) — the LLM pattern-matched
-    the 亿元→万元 example and emitted *10000 for every 元-sourced field.
-    """
-    source = {"corporatesavings": "元", "totalloans": "元"}
-    parsed = _parse_unit_factor_response(
-        "corporatesavings=万元*10000, totalloans=万元*10000",
-        source,
-    )
-    assert parsed == {
-        "corporatesavings": ("万元", 0.0001),
-        "totalloans": ("万元", 0.0001),
-    }
-
-
-def test_unit_factor_response_fills_missing_factor_for_known_pair() -> None:
-    """A known unit pair no longer depends on the LLM emitting *factor."""
-    parsed = _parse_unit_factor_response("gdp=万元", {"gdp": "亿元"})
-    assert parsed == {"gdp": ("万元", 10000.0)}
-
-
-def test_unit_factor_response_keeps_llm_factor_for_unknown_pair() -> None:
-    parsed = _parse_unit_factor_response("weight=吨*10000", {"weight": "万吨"})
-    assert parsed == {"weight": ("吨", 10000.0)}
-
-
-def test_unit_factor_response_drops_equal_scale_spellings() -> None:
-    """Same-scale units (factor 1) must not produce a conversion entry."""
-    parsed = _parse_unit_factor_response("rate=ratio*0.01", {"rate": "%"})
-    assert parsed == {"rate": ("ratio", 0.01)}
-    parsed = _parse_unit_factor_response("gdp=万元*1", {"gdp": "万元"})
-    assert parsed == {}
+@pytest.mark.parametrize(
+    ("raw", "source_units", "expected"),
+    [
+        # 元→万元 must divide by 10000 even when the LLM echoes the *10000 example.
+        # Regression: ed_chinafibalancesheetrmb (task_47) — the LLM pattern-matched
+        # the 亿元→万元 example and emitted *10000 for every 元-sourced field.
+        pytest.param(
+            "corporatesavings=万元*10000, totalloans=万元*10000",
+            {"corporatesavings": "元", "totalloans": "元"},
+            {"corporatesavings": ("万元", 0.0001), "totalloans": ("万元", 0.0001)},
+            id="corrects-inverted-direction",
+        ),
+        # A known unit pair no longer depends on the LLM emitting *factor.
+        pytest.param(
+            "gdp=万元",
+            {"gdp": "亿元"},
+            {"gdp": ("万元", 10000.0)},
+            id="fills-missing-factor-for-known-pair",
+        ),
+        pytest.param(
+            "weight=吨*10000",
+            {"weight": "万吨"},
+            {"weight": ("吨", 10000.0)},
+            id="keeps-llm-factor-for-unknown-pair",
+        ),
+        pytest.param(
+            "rate=ratio*0.01",
+            {"rate": "%"},
+            {"rate": ("ratio", 0.01)},
+            id="percent-spelling-converts",
+        ),
+        # Same-scale units (factor 1) must not produce a conversion entry.
+        pytest.param("gdp=万元*1", {"gdp": "万元"}, {}, id="equal-scale-spelling-dropped"),
+    ],
+)
+def test_parse_unit_factor_response(
+    raw: str, source_units: dict[str, str], expected: dict[str, tuple[str, float]]
+) -> None:
+    assert _parse_unit_factor_response(raw, source_units) == expected
 
 
 _KM_FIXTURE = """\

@@ -10,6 +10,7 @@ XOR 校验、空 columns 报错由 `tests/test_dispatcher.py` 端到端校验；
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,12 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
+def _write_bytes(path: Path, payload: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
 # ----- #1 happy path：mixed dtypes -----
 
 
@@ -75,121 +82,133 @@ def test_from_csv_happy_path_returns_typed_answer(task: PublicTask, tmp_path: Pa
     assert isinstance(result.answer.rows[0][2], float)
 
 
-# ----- #2 int IDs preservation -----
+# ----- #2-#5 column dtype inference -----
 
 
-def test_from_csv_preserves_integer_ids(task: PublicTask, tmp_path: Path) -> None:
-    """整数主键 ID 必须以 int 落地（与 inline 路径一致），不被 float 抢占。
+def _assert_rows_strict(actual: list[list[object]], expected: list[list[object]]) -> None:
+    """值相等且 cell 类型精确一致（`type is`，天然防 bool 冒充 int / int 落地成 float）。"""
+    assert actual == expected
+    for actual_row, expected_row in zip(actual, expected, strict=True):
+        for actual_cell, expected_cell in zip(actual_row, expected_row, strict=True):
+            assert type(actual_cell) is type(expected_cell), (actual_cell, expected_cell)
 
-    回归参照 `test_dispatch_answer_preserves_integer_cells`：
-    avoid `163109.0` 写进 prediction.csv。
-    """
-    csv_path = _write(
-        tmp_path / "_answer" / "ids.csv",
-        "ID\n163109\n2803470\n",
-    )
+
+@pytest.mark.parametrize(
+    ("csv_text", "expected_rows"),
+    [
+        # 整数主键 ID 必须以 int 落地（与 inline 路径一致），不被 float 抢占。
+        # 回归参照 `test_dispatch_answer_preserves_integer_cells`：
+        # avoid `163109.0` 写进 prediction.csv。
+        pytest.param("ID\n163109\n2803470\n", [[163109], [2803470]], id="integer-ids"),
+        pytest.param("ratio\n1.5\n0.25\n", [[1.5], [0.25]], id="float-values"),
+        # 空字符串单元格落地为 None（而不是 `""`），保持与 inline `null` 语义对齐：
+        # 第一列因为含空值 -> _classify_dtype 看 non_empty=[2] 返回 'int'，
+        # cell "" 被强转为 None；非空 cell 被强转为 int
+        pytest.param(
+            "id,sex,diag\n,F,SLE\n2,M,RA\n",
+            [[None, "F", "SLE"], [2, "M", "RA"]],
+            id="empty-cell-becomes-none",
+        ),
+        pytest.param("flag\nTrue\nFalse\nTrue\n", [[True], [False], [True]], id="bool-column"),
+    ],
+)
+def test_from_csv_dtype_inference(
+    task: PublicTask, tmp_path: Path, csv_text: str, expected_rows: list[list[object]]
+) -> None:
+    csv_path = _write(tmp_path / "_answer" / "data.csv", csv_text)
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
     result = handle_answer(task, args)
 
     assert result.answer is not None
-    cell0 = result.answer.rows[0][0]
-    cell1 = result.answer.rows[1][0]
-    assert cell0 == 163109 and isinstance(cell0, int)
-    assert cell1 == 2803470 and isinstance(cell1, int)
-    # bool 是 int 子类，单独防御
-    assert not isinstance(cell0, bool)
+    _assert_rows_strict(result.answer.rows, expected_rows)
 
 
-# ----- #3 float preservation -----
+# ----- #6-#8, #10, #11, #14 error scenarios -----
 
 
-def test_from_csv_preserves_float_values(task: PublicTask, tmp_path: Path) -> None:
-    csv_path = _write(
-        tmp_path / "_answer" / "ratios.csv",
-        "ratio\n1.5\n0.25\n",
-    )
-    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+@pytest.mark.parametrize(
+    ("make_from_csv", "size_limit", "match", "path_in_message"),
+    [
+        # error message 包含具体路径：模型才能 retry execute_python 重写文件
+        pytest.param(
+            lambda tmp_path: str(tmp_path / "_answer" / "ghost.csv"),
+            None,
+            r"from_csv file not found",
+            True,
+            id="missing-file",
+        ),
+        pytest.param(
+            lambda tmp_path: "_answer/answer.csv",
+            None,
+            r"from_csv must be an absolute path",
+            False,
+            id="relative-path",
+        ),
+        pytest.param(
+            lambda tmp_path: str(_write(tmp_path / "_answer" / "empty.csv", "")),
+            None,
+            r"from_csv is empty",
+            False,
+            id="zero-byte",
+        ),
+        pytest.param(
+            lambda tmp_path: str(
+                _write(tmp_path / "_answer" / "ragged.csv", "id,name,extra\n1,alpha\n")
+            ),
+            None,
+            r"from_csv row 0 has 2 cells but header has 3",
+            False,
+            id="row-width-mismatch",
+        ),
+        # 5MB 上限：不真造 5MB 文件，把阈值临时调小到 64 字节再触发
+        pytest.param(
+            lambda tmp_path: str(
+                _write(
+                    tmp_path / "_answer" / "big.csv",
+                    "id\n" + "\n".join(str(n) for n in range(200)) + "\n",
+                )
+            ),
+            64,
+            r"from_csv exceeds 5MB",
+            False,
+            id="exceeds-size-limit",
+        ),
+        # \xff\xfe 是 UTF-16 BOM；以 UTF-8 解码必然失败。
+        # 错误消息要可让模型自己决定要不要换 encoding。
+        pytest.param(
+            lambda tmp_path: str(
+                _write_bytes(tmp_path / "_answer" / "broken.csv", b"\xff\xfeID\n1\n")
+            ),
+            None,
+            r"from_csv is not valid UTF-8",
+            False,
+            id="invalid-utf8",
+        ),
+    ],
+)
+def test_from_csv_error_scenarios(
+    task: PublicTask,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_from_csv: Callable[[Path], str],
+    size_limit: int | None,
+    match: str,
+    path_in_message: bool,
+) -> None:
+    """失败一律以 ValueError 上抛（dispatcher 翻译成 ToolErrorEvent），让 ReAct 循环 retry。"""
+    if size_limit is not None:
+        monkeypatch.setattr("agents.tools.handlers._FROM_CSV_SIZE_LIMIT_BYTES", size_limit)
+    from_csv = make_from_csv(tmp_path)
+    if size_limit is not None:
+        assert Path(from_csv).stat().st_size > size_limit  # sanity
+    args = AnswerInput.model_validate({"from_csv": from_csv})
 
-    result = handle_answer(task, args)
-
-    assert result.answer is not None
-    assert result.answer.rows == [[1.5], [0.25]]
-    assert isinstance(result.answer.rows[0][0], float)
-    assert isinstance(result.answer.rows[1][0], float)
-
-
-# ----- #4 empty cell -> None -----
-
-
-def test_from_csv_empty_cell_becomes_none(task: PublicTask, tmp_path: Path) -> None:
-    """空字符串单元格落地为 None（而不是 `""`），保持与 inline `null` 语义对齐。"""
-    csv_path = _write(
-        tmp_path / "_answer" / "mix.csv",
-        "id,sex,diag\n,F,SLE\n2,M,RA\n",
-    )
-    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
-
-    result = handle_answer(task, args)
-
-    assert result.answer is not None
-    # 第一列因为含空值 -> _classify_dtype 看 non_empty=[2] 返回 'int'，
-    # cell "" 被强转为 None；非空 cell 被强转为 int
-    assert result.answer.rows[0] == [None, "F", "SLE"]
-    assert result.answer.rows[1] == [2, "M", "RA"]
-
-
-# ----- #5 bool column -----
-
-
-def test_from_csv_bool_column(task: PublicTask, tmp_path: Path) -> None:
-    csv_path = _write(
-        tmp_path / "_answer" / "flags.csv",
-        "flag\nTrue\nFalse\nTrue\n",
-    )
-    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
-
-    result = handle_answer(task, args)
-
-    assert result.answer is not None
-    assert result.answer.rows == [[True], [False], [True]]
-    for row in result.answer.rows:
-        assert isinstance(row[0], bool)
-
-
-# ----- #6 file not found -----
-
-
-def test_from_csv_missing_file_raises(task: PublicTask, tmp_path: Path) -> None:
-    """error message 包含具体路径：模型才能 retry execute_python 重写文件。"""
-    missing = tmp_path / "_answer" / "ghost.csv"
-    args = AnswerInput.model_validate({"from_csv": str(missing)})
-
-    with pytest.raises(ValueError, match=r"from_csv file not found") as exc_info:
+    with pytest.raises(ValueError, match=match) as exc_info:
         handle_answer(task, args)
 
-    assert str(missing) in str(exc_info.value)
-
-
-# ----- #7 relative path -----
-
-
-def test_from_csv_relative_path_raises(task: PublicTask) -> None:
-    args = AnswerInput.model_validate({"from_csv": "_answer/answer.csv"})
-
-    with pytest.raises(ValueError, match=r"from_csv must be an absolute path"):
-        handle_answer(task, args)
-
-
-# ----- #8 zero-byte file -----
-
-
-def test_from_csv_zero_byte_raises(task: PublicTask, tmp_path: Path) -> None:
-    csv_path = _write(tmp_path / "_answer" / "empty.csv", "")
-    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
-
-    with pytest.raises(ValueError, match=r"from_csv is empty"):
-        handle_answer(task, args)
+    if path_in_message:
+        assert from_csv in str(exc_info.value)
 
 
 # ----- #9 header only, no data -----
@@ -211,57 +230,6 @@ def test_from_csv_header_only_returns_empty_answer(task: PublicTask, tmp_path: P
     assert result.answer is not None
     assert result.answer.columns == ["id", "name"]
     assert result.answer.rows == []
-
-
-# ----- #10 row width mismatch -----
-
-
-def test_from_csv_row_width_mismatch_raises(task: PublicTask, tmp_path: Path) -> None:
-    csv_path = _write(
-        tmp_path / "_answer" / "ragged.csv",
-        "id,name,extra\n1,alpha\n",
-    )
-    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
-
-    with pytest.raises(ValueError, match=r"from_csv row 0 has 2 cells but header has 3"):
-        handle_answer(task, args)
-
-
-# ----- #11 size cap -----
-
-
-def test_from_csv_exceeds_size_limit_raises(
-    task: PublicTask, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """5MB 上限：不真造 5MB 文件，把阈值临时调小到 64 字节再触发。"""
-    monkeypatch.setattr(
-        "agents.tools.handlers._FROM_CSV_SIZE_LIMIT_BYTES",
-        64,
-    )
-    csv_path = _write(
-        tmp_path / "_answer" / "big.csv",
-        "id\n" + "\n".join(str(n) for n in range(200)) + "\n",
-    )
-    assert csv_path.stat().st_size > 64  # sanity
-    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
-
-    with pytest.raises(ValueError, match=r"from_csv exceeds 5MB"):
-        handle_answer(task, args)
-
-
-# ----- #14 UTF-8 corruption -----
-
-
-def test_from_csv_invalid_utf8_raises(task: PublicTask, tmp_path: Path) -> None:
-    """UTF-8 失败：错误消息要可让模型自己决定要不要换 encoding。"""
-    csv_path = tmp_path / "_answer" / "broken.csv"
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    # \xff\xfe 是 UTF-16 BOM；以 UTF-8 解码必然失败
-    csv_path.write_bytes(b"\xff\xfeID\n1\n")
-    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
-
-    with pytest.raises(ValueError, match=r"from_csv is not valid UTF-8"):
-        handle_answer(task, args)
 
 
 # ----- #16 ack content shape -----

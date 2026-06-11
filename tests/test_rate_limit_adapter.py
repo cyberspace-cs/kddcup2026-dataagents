@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import types
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -227,25 +228,24 @@ def test_estimate_video_block_constant() -> None:
 # ------- _is_retriable / _parse_retry_after --------------------------------------
 
 
-def test_is_retriable_for_429() -> None:
-    wrapped = _wrap_as_runtime(_fake_api_error(429))
-    assert _is_retriable(wrapped)
-
-
-def test_is_retriable_for_5xx() -> None:
-    wrapped = _wrap_as_runtime(_fake_api_error(503))
-    assert _is_retriable(wrapped)
-
-
-def test_not_retriable_for_400() -> None:
-    wrapped = _wrap_as_runtime(_fake_api_error(400))
-    assert not _is_retriable(wrapped)
-
-
-def test_message_fallback_for_rate_limit() -> None:
-    # 没挂 APIError，但消息里有 "rate limit"
-    exc = RuntimeError("Model request failed: 429 Too Many Requests / rate limit exceeded")
-    assert _is_retriable(exc)
+@pytest.mark.parametrize(
+    ("make_error", "expected"),
+    [
+        pytest.param(lambda: _wrap_as_runtime(_fake_api_error(429)), True, id="429"),
+        pytest.param(lambda: _wrap_as_runtime(_fake_api_error(503)), True, id="5xx"),
+        pytest.param(lambda: _wrap_as_runtime(_fake_api_error(400)), False, id="400"),
+        # 没挂 APIError，但消息里有 "rate limit"
+        pytest.param(
+            lambda: RuntimeError(
+                "Model request failed: 429 Too Many Requests / rate limit exceeded"
+            ),
+            True,
+            id="message-fallback",
+        ),
+    ],
+)
+def test_is_retriable(make_error: Callable[[], BaseException], expected: bool) -> None:
+    assert _is_retriable(make_error()) is expected
 
 
 def test_parse_retry_after_reads_header() -> None:

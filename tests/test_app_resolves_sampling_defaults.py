@@ -21,44 +21,53 @@ def _agent(**overrides: object) -> AgentConfig:
     return AgentConfig(api_key="k", **overrides)  # type: ignore[arg-type]
 
 
-def test_thinking_mode_fills_official_recommendation() -> None:
-    cfg = _agent(enable_thinking=True)
-    resolved = _resolve_sampling_defaults(cfg)
-    assert resolved == {
-        "temperature": 0.6,
-        "top_p": 0.95,
-        "top_k": 20,
-        "min_p": 0.0,
-        "presence_penalty": 0.0,
-        "seed": None,
-    }
-
-
-def test_non_thinking_mode_fills_official_recommendation() -> None:
-    cfg = _agent(enable_thinking=False)
-    resolved = _resolve_sampling_defaults(cfg)
-    assert resolved == {
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "top_k": 20,
-        "min_p": 0.0,
-        "presence_penalty": 1.5,
-        "seed": None,
-    }
-
-
-def test_enable_thinking_none_keeps_all_fields_none() -> None:
-    # mode 未确定时不能瞎填——保持与 enable_thinking=None → 不下发的语义对偶
-    cfg = _agent(enable_thinking=None)
-    resolved = _resolve_sampling_defaults(cfg)
-    assert resolved == {
-        "temperature": None,
-        "top_p": None,
-        "top_k": None,
-        "min_p": None,
-        "presence_penalty": None,
-        "seed": None,
-    }
+@pytest.mark.parametrize(
+    ("enable_thinking", "expected"),
+    [
+        pytest.param(
+            True,
+            {
+                "temperature": 0.6,
+                "top_p": 0.95,
+                "top_k": 20,
+                "min_p": 0.0,
+                "presence_penalty": 0.0,
+                "seed": None,
+            },
+            id="thinking",
+        ),
+        pytest.param(
+            False,
+            {
+                "temperature": 0.7,
+                "top_p": 0.8,
+                "top_k": 20,
+                "min_p": 0.0,
+                "presence_penalty": 1.5,
+                "seed": None,
+            },
+            id="non-thinking",
+        ),
+        # mode 未确定时不能瞎填——保持与 enable_thinking=None → 不下发的语义对偶
+        pytest.param(
+            None,
+            {
+                "temperature": None,
+                "top_p": None,
+                "top_k": None,
+                "min_p": None,
+                "presence_penalty": None,
+                "seed": None,
+            },
+            id="mode-unset",
+        ),
+    ],
+)
+def test_mode_fills_official_recommendation(
+    enable_thinking: bool | None, expected: dict[str, object]
+) -> None:
+    resolved = _resolve_sampling_defaults(_agent(enable_thinking=enable_thinking))
+    assert resolved == expected
 
 
 @pytest.mark.parametrize(

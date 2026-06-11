@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import pytest
+
 from agents.etl._compress import (
     _group_paragraphs_by_entity,
     _group_paragraphs_by_llm,
@@ -47,154 +49,175 @@ def test_embedded_digit_fragments_detected() -> None:
         assert got is expected, (text, token)
 
 
-def test_parse_grouping_response_tolerates_fences_and_prose() -> None:
-    raw = (
-        "Here are the entity groupings you asked for:\n"
-        "```\n"
-        "16: 1, 2,3\n"
-        "20: 4\n"
-        "NONE: 5, 6\n"
-        "```\n"
-        "Let me know if you need anything else."
-    )
+@pytest.mark.parametrize(
+    (
+        "raw",
+        "expected_groups",
+        "expected_none_indices",
+        "expected_groups_none",
+        "expected_unparsed",
+    ),
+    [
+        # Prose and fences around the group lines are tolerated; the two prose
+        # lines are counted as unparsed, never fatal.
+        pytest.param(
+            "Here are the entity groupings you asked for:\n"
+            "```\n"
+            "16: 1, 2,3\n"
+            "20: 4\n"
+            "NONE: 5, 6\n"
+            "```\n"
+            "Let me know if you need anything else.",
+            {"16": [1, 2, 3], "20": [4]},
+            [5, 6],
+            False,
+            2,
+            id="tolerates-fences-and-prose",
+        ),
+        # Lines echoing the input's paragraph numbering parse to the real rid.
+        # Regression: task_13 mf_fcretscalerank batch 1 — the model prefixed every
+        # line with the paragraph number ("1) 9: 1" = paragraph 1 → record 9), all
+        # 40 lines fell to unparsed, and the whole batch dropped to the leftover
+        # path.  The prefix needs ")"/"."/"）" after the digits, so unprefixed
+        # "<rid>: ..." lines keep their rid.
+        pytest.param(
+            "1) 9: 1\n2. 10: 2\n3） 53: 3\n4) NONE: 4\n16: 5",
+            {"9": [1], "10": [2], "53": [3], "16": [5]},
+            [4],
+            False,
+            0,
+            id="strips-enumeration-prefix",
+        ),
+        pytest.param("GROUPS: NONE", {}, [], True, 0, id="groups-none-bare"),
+        pytest.param("groups: none", {}, [], True, 0, id="groups-none-lowercase"),
+        pytest.param(
+            "The paragraphs form a time series.\nGROUPS: NONE",
+            {},
+            [],
+            True,
+            0,
+            id="groups-none-after-prose",
+        ),
+    ],
+)
+def test_parse_grouping_response(
+    raw: str,
+    expected_groups: dict[str, list[int]],
+    expected_none_indices: list[int],
+    expected_groups_none: bool,
+    expected_unparsed: int,
+) -> None:
     groups, none_indices, groups_none, unparsed = _parse_grouping_response(raw)
 
-    assert groups == {"16": [1, 2, 3], "20": [4]}
-    assert none_indices == [5, 6]
-    assert groups_none is False
-    assert unparsed == 2  # the two prose lines are counted, never fatal
+    assert groups == expected_groups
+    assert none_indices == expected_none_indices
+    assert groups_none is expected_groups_none
+    assert unparsed == expected_unparsed
 
 
-def test_parse_grouping_response_strips_enumeration_prefix() -> None:
-    """Lines echoing the input's paragraph numbering parse to the real rid.
-
-    Regression: task_13 mf_fcretscalerank batch 1 — the model prefixed every
-    line with the paragraph number ("1) 9: 1" = paragraph 1 → record 9), all
-    40 lines fell to unparsed, and the whole batch dropped to the leftover
-    path.  The prefix needs ")"/"."/"）" after the digits, so unprefixed
-    "<rid>: ..." lines keep their rid.
-    """
-    raw = "1) 9: 1\n2. 10: 2\n3） 53: 3\n4) NONE: 4\n16: 5"
-    groups, none_indices, groups_none, unparsed = _parse_grouping_response(raw)
-
-    assert groups == {"9": [1], "10": [2], "53": [3], "16": [5]}
-    assert none_indices == [4]
-    assert groups_none is False
-    assert unparsed == 0
-
-
-def test_parse_grouping_response_detects_groups_none() -> None:
-    for raw in (
-        "GROUPS: NONE",
-        "groups: none",
-        "The paragraphs form a time series.\nGROUPS: NONE",
-    ):
-        groups, none_indices, groups_none, unparsed = _parse_grouping_response(raw)
-        assert groups == {}
-        assert none_indices == []
-        assert groups_none is True
-        assert unparsed == 0
-
-
-def test_verify_drops_hallucinated_group_without_anchor() -> None:
-    paras = [
-        "Record 16 reports assets of 8,693,705 for the period in question.",
-        "Record 20 reports liabilities of 1,413,113 in the same filing.",
-        "Record 25 closed its books with 53,413,270 in total claims there.",
-        "A general narrative paragraph with no identifiers inside it at all.",
-    ]
-    groups = {"16": [1], "20": [2], "25": [3], "99": [4]}  # 99 appears nowhere
-
-    assert _verify_paragraph_groups(groups, paras) == {"16": [1], "20": [2], "25": [3]}
-
-
-def test_verify_hijack_guard_rejects_cross_entity_member() -> None:
-    paras = [
-        "Record 16 opens the filing cycle with the usual disclosures noted.",
-        "Record 20 continues the cycle with separate balances reported here.",
-        "Record 25 concludes the cycle with closing remarks and totals given.",
-        "Additional figures for Record 20 appear in this trailing paragraph.",
-    ]
-    groups = {"16": [1, 4], "20": [2], "25": [3]}
-
-    verified = _verify_paragraph_groups(groups, paras)
-
-    # Paragraph 4 states Record 20's ID, so it cannot ride along with 16.
-    assert verified == {"16": [1], "20": [2], "25": [3]}
-
-
-def test_verify_resolves_contested_index_to_anchoring_claimant() -> None:
-    paras = [
-        "Record 16 holds the opening figures for this reporting period here.",
-        "Record 20 holds the middle figures for this reporting period here.",
-        "Record 25 holds the closing figures for this reporting period here.",
-        "Record 30 holds the appendix figures for this reporting period here.",
-    ]
-    groups = {"16": [1, 2], "20": [2], "25": [3], "30": [4]}
-
-    verified = _verify_paragraph_groups(groups, paras)
-
-    # Paragraph 2 states only Record 20's ID, so the contested claim is
-    # resolved to 20 and dropped from 16.
-    assert verified == {"16": [1], "20": [2], "25": [3], "30": [4]}
-
-
-def test_verify_invalidates_contested_index_without_anchor() -> None:
-    paras = [
-        "Record 16 holds the opening figures for this reporting period here.",
-        "Record 20 holds the middle figures for this reporting period here.",
-        "Record 25 holds the closing figures for this reporting period here.",
-        "A continuation paragraph with no identifier restated anywhere at all.",
-    ]
-    groups = {"16": [1, 4], "20": [2, 4], "25": [3]}
-
-    verified = _verify_paragraph_groups(groups, paras)
-
-    # Paragraph 4 anchors neither claimant: ambiguous continuation, so it
-    # is invalidated everywhere and routes to the leftover/positional path.
-    assert verified == {"16": [1], "20": [2], "25": [3]}
-
-
-def test_verify_allows_multi_membership_for_group_paragraph() -> None:
-    paras = [
-        "Record 16 opens the cycle with its own dedicated figures here.",
-        "Record 20 continues the cycle with its own dedicated figures here.",
-        "Record 25 concludes the cycle with its own dedicated figures here.",
-        "For records 16, 20 and 25 the shared composite index stood at 111.5.",
-    ]
-    groups = {"16": [1, 4], "20": [2, 4], "25": [3, 4]}
-
-    verified = _verify_paragraph_groups(groups, paras)
-
-    # The group paragraph states every claimant's ID standalone, so it is
-    # granted membership in EACH claiming entity.
-    assert verified == {"16": [1, 4], "20": [2, 4], "25": [3, 4]}
-
-
-def test_verify_rejects_tiny_dense_id_run() -> None:
-    quarter_paras = [
-        f"Quarter {i} GDP grew by 4.{i} percent across the seasonal periods." for i in (1, 2, 3, 4)
-    ]
-    quarter_groups = {str(i): [i] for i in (1, 2, 3, 4)}
-    assert _verify_paragraph_groups(quarter_groups, quarter_paras) is None
-
-    sparse_paras = [
-        f"Record {rid} reports the balance for the filing period in question."
-        for rid in (16, 20, 21, 25)
-    ]
-    sparse_groups = {"16": [1], "20": [2], "21": [3], "25": [4]}
-    assert _verify_paragraph_groups(sparse_groups, sparse_paras) == sparse_groups
-
-
-def test_verify_drops_out_of_range_indices() -> None:
-    paras = [
-        "Record 16 covers the first reporting block of the cycle in question.",
-        "Record 20 covers the second reporting block of the cycle in question.",
-        "Record 25 covers the third reporting block of the cycle in question.",
-    ]
-    groups = {"16": [1, 99], "20": [2, 0], "25": [3]}
-
-    assert _verify_paragraph_groups(groups, paras) == {"16": [1], "20": [2], "25": [3]}
+@pytest.mark.parametrize(
+    ("paras", "groups", "expected"),
+    [
+        # Record 99 appears nowhere: the hallucinated group is dropped.
+        pytest.param(
+            [
+                "Record 16 reports assets of 8,693,705 for the period in question.",
+                "Record 20 reports liabilities of 1,413,113 in the same filing.",
+                "Record 25 closed its books with 53,413,270 in total claims there.",
+                "A general narrative paragraph with no identifiers inside it at all.",
+            ],
+            {"16": [1], "20": [2], "25": [3], "99": [4]},
+            {"16": [1], "20": [2], "25": [3]},
+            id="drops-hallucinated-group-without-anchor",
+        ),
+        # Paragraph 4 states Record 20's ID, so it cannot ride along with 16.
+        pytest.param(
+            [
+                "Record 16 opens the filing cycle with the usual disclosures noted.",
+                "Record 20 continues the cycle with separate balances reported here.",
+                "Record 25 concludes the cycle with closing remarks and totals given.",
+                "Additional figures for Record 20 appear in this trailing paragraph.",
+            ],
+            {"16": [1, 4], "20": [2], "25": [3]},
+            {"16": [1], "20": [2], "25": [3]},
+            id="hijack-guard-rejects-cross-entity-member",
+        ),
+        # Paragraph 2 states only Record 20's ID, so the contested claim is
+        # resolved to 20 and dropped from 16.
+        pytest.param(
+            [
+                "Record 16 holds the opening figures for this reporting period here.",
+                "Record 20 holds the middle figures for this reporting period here.",
+                "Record 25 holds the closing figures for this reporting period here.",
+                "Record 30 holds the appendix figures for this reporting period here.",
+            ],
+            {"16": [1, 2], "20": [2], "25": [3], "30": [4]},
+            {"16": [1], "20": [2], "25": [3], "30": [4]},
+            id="resolves-contested-index-to-anchoring-claimant",
+        ),
+        # Paragraph 4 anchors neither claimant: ambiguous continuation, so it
+        # is invalidated everywhere and routes to the leftover/positional path.
+        pytest.param(
+            [
+                "Record 16 holds the opening figures for this reporting period here.",
+                "Record 20 holds the middle figures for this reporting period here.",
+                "Record 25 holds the closing figures for this reporting period here.",
+                "A continuation paragraph with no identifier restated anywhere at all.",
+            ],
+            {"16": [1, 4], "20": [2, 4], "25": [3]},
+            {"16": [1], "20": [2], "25": [3]},
+            id="invalidates-contested-index-without-anchor",
+        ),
+        # The group paragraph states every claimant's ID standalone, so it is
+        # granted membership in EACH claiming entity.
+        pytest.param(
+            [
+                "Record 16 opens the cycle with its own dedicated figures here.",
+                "Record 20 continues the cycle with its own dedicated figures here.",
+                "Record 25 concludes the cycle with its own dedicated figures here.",
+                "For records 16, 20 and 25 the shared composite index stood at 111.5.",
+            ],
+            {"16": [1, 4], "20": [2, 4], "25": [3, 4]},
+            {"16": [1, 4], "20": [2, 4], "25": [3, 4]},
+            id="allows-multi-membership-for-group-paragraph",
+        ),
+        # The distinctness gate rejects a dense quarter-style {1..4} run.
+        pytest.param(
+            [
+                f"Quarter {i} GDP grew by 4.{i} percent across the seasonal periods."
+                for i in (1, 2, 3, 4)
+            ],
+            {str(i): [i] for i in (1, 2, 3, 4)},
+            None,
+            id="gate-rejects-tiny-dense-id-run",
+        ),
+        # Sparse non-consecutive IDs pass the same gate untouched.
+        pytest.param(
+            [
+                f"Record {rid} reports the balance for the filing period in question."
+                for rid in (16, 20, 21, 25)
+            ],
+            {"16": [1], "20": [2], "21": [3], "25": [4]},
+            {"16": [1], "20": [2], "21": [3], "25": [4]},
+            id="gate-passes-sparse-id-run",
+        ),
+        # Index 99 (beyond the paragraph range) and 0 (below it) are dropped.
+        pytest.param(
+            [
+                "Record 16 covers the first reporting block of the cycle in question.",
+                "Record 20 covers the second reporting block of the cycle in question.",
+                "Record 25 covers the third reporting block of the cycle in question.",
+            ],
+            {"16": [1, 99], "20": [2, 0], "25": [3]},
+            {"16": [1], "20": [2], "25": [3]},
+            id="drops-out-of-range-indices",
+        ),
+    ],
+)
+def test_verify_paragraph_groups(
+    paras: list[str], groups: dict[str, list[int]], expected: dict[str, list[int]] | None
+) -> None:
+    assert _verify_paragraph_groups(groups, paras) == expected
 
 
 class _PromptDispatchAdapter:

@@ -12,6 +12,7 @@ execute_context_sql，原始观察只有"file is not a database"，下一步往�
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -23,33 +24,19 @@ from agents.tools.sqlite import (
 
 
 @pytest.mark.parametrize(
-    ("ext", "redirect_keyword"),
+    "invoke",
     [
-        (".csv", "read_csv"),
-        (".json", "read_json"),
-        (".md", "read_doc"),
-        (".txt", "read_doc"),
+        pytest.param(inspect_sqlite_schema, id="inspect_sqlite_schema"),
+        # `SELECT 1` is a constant query and never reads the file, so sqlite never
+        # validates the file header → no "file is not a database" → translation
+        # path doesn't fire. Use a query that touches the file to mirror what real
+        # model-issued SQL would do.
+        pytest.param(
+            lambda path: execute_read_only_sql(path, "SELECT * FROM sqlite_master"),
+            id="execute_read_only_sql",
+        ),
     ],
 )
-def test_inspect_sqlite_schema_translates_non_db_path(
-    tmp_path: Path, ext: str, redirect_keyword: str
-) -> None:
-    """非 sqlite 路径调 inspect_sqlite_schema → ValueError 含路径名/扩展名/路由提示。"""
-    target = tmp_path / f"trans{ext}"
-    target.write_text("dummy content\n", encoding="utf-8")
-
-    with pytest.raises(ValueError) as exc_info:
-        inspect_sqlite_schema(target)
-
-    msg = str(exc_info.value)
-    assert target.name in msg
-    assert ext in msg
-    assert "not a sqlite database" in msg
-    assert redirect_keyword in msg
-    # 仍要透出"应放弃 sqlite 工具"的元信号
-    assert "inspect_sqlite_schema" in msg or "execute_context_sql" in msg
-
-
 @pytest.mark.parametrize(
     ("ext", "redirect_keyword"),
     [
@@ -59,25 +46,23 @@ def test_inspect_sqlite_schema_translates_non_db_path(
         (".txt", "read_doc"),
     ],
 )
-def test_execute_read_only_sql_translates_non_db_path(
-    tmp_path: Path, ext: str, redirect_keyword: str
+def test_sqlite_tools_translate_non_db_path(
+    tmp_path: Path, invoke: Callable[[Path], object], ext: str, redirect_keyword: str
 ) -> None:
-    """非 sqlite 路径调 execute_read_only_sql → ValueError 含路径名/扩展名/路由提示。"""
+    """非 sqlite 路径 → ValueError 含路径名/扩展名/路由提示。"""
     target = tmp_path / f"trans{ext}"
     target.write_text("dummy content\n", encoding="utf-8")
 
-    # `SELECT 1` is a constant query and never reads the file, so sqlite never
-    # validates the file header → no "file is not a database" → translation
-    # path doesn't fire. Use a query that touches the file to mirror what real
-    # model-issued SQL would do.
     with pytest.raises(ValueError) as exc_info:
-        execute_read_only_sql(target, "SELECT * FROM sqlite_master")
+        invoke(target)
 
     msg = str(exc_info.value)
     assert target.name in msg
     assert ext in msg
     assert "not a sqlite database" in msg
     assert redirect_keyword in msg
+    # 仍要透出"应放弃 sqlite 工具"的元信号
+    assert "inspect_sqlite_schema" in msg or "execute_context_sql" in msg
 
 
 def test_unknown_extension_falls_back_to_execute_python_hint(tmp_path: Path) -> None:

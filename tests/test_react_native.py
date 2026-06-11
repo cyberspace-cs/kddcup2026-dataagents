@@ -80,8 +80,11 @@ class _ScriptedVerifierAdapter:
         return ModelResponse(content=text, raw_response=text)
 
 
-def test_reasoning_tool_call_draft_parser_handles_multiline_python() -> None:
-    reasoning = """
+@pytest.mark.parametrize(
+    ("reasoning", "expected_draft"),
+    [
+        pytest.param(
+            """
 I should run Python.
 <tool_call>
 <function=execute_python>
@@ -91,20 +94,17 @@ print(sorted(os.listdir(".")))
 </parameter>
 </function>
 </tool_call>
-"""
-
-    draft = extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
-
-    assert draft == {
-        "function": "execute_python",
-        "arguments": {"code": 'import os\nprint(sorted(os.listdir(".")))'},
-        "source": "reasoning_content",
-        "executed": False,
-    }
-
-
-def test_reasoning_tool_call_draft_parser_handles_sql_parameters() -> None:
-    reasoning = """
+""",
+            {
+                "function": "execute_python",
+                "arguments": {"code": 'import os\nprint(sorted(os.listdir(".")))'},
+                "source": "reasoning_content",
+                "executed": False,
+            },
+            id="multiline-python",
+        ),
+        pytest.param(
+            """
 <tool_call>
 <function=execute_context_sql>
 <parameter=path>"db/main.sqlite"</parameter>
@@ -116,43 +116,45 @@ GROUP BY city
 <parameter=limit>5</parameter>
 </function>
 </tool_call>
-"""
-
-    draft = extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
-
-    assert draft == {
-        "function": "execute_context_sql",
-        "arguments": {
-            "path": "db/main.sqlite",
-            "sql": "SELECT city, COUNT(*) AS n\nFROM people\nGROUP BY city",
-            "limit": 5,
-        },
-        "source": "reasoning_content",
-        "executed": False,
-    }
-
-
-def test_reasoning_tool_call_draft_parser_handles_answer_json_arguments() -> None:
-    reasoning = """
+""",
+            {
+                "function": "execute_context_sql",
+                "arguments": {
+                    "path": "db/main.sqlite",
+                    "sql": "SELECT city, COUNT(*) AS n\nFROM people\nGROUP BY city",
+                    "limit": 5,
+                },
+                "source": "reasoning_content",
+                "executed": False,
+            },
+            id="sql-parameters",
+        ),
+        pytest.param(
+            """
 <tool_call>
 <function=answer>
 <parameter=columns>["city", "count"]</parameter>
 <parameter=rows>[["Paris", 2], ["Tokyo", 3]]</parameter>
 </function>
 </tool_call>
-"""
-
-    draft = extract_reasoning_tool_call_draft(reasoning, _default_tool_names())
-
-    assert draft == {
-        "function": "answer",
-        "arguments": {
-            "columns": ["city", "count"],
-            "rows": [["Paris", 2], ["Tokyo", 3]],
-        },
-        "source": "reasoning_content",
-        "executed": False,
-    }
+""",
+            {
+                "function": "answer",
+                "arguments": {
+                    "columns": ["city", "count"],
+                    "rows": [["Paris", 2], ["Tokyo", 3]],
+                },
+                "source": "reasoning_content",
+                "executed": False,
+            },
+            id="answer-json-arguments",
+        ),
+    ],
+)
+def test_reasoning_tool_call_draft_parser_extracts_valid_drafts(
+    reasoning: str, expected_draft: dict
+) -> None:
+    assert extract_reasoning_tool_call_draft(reasoning, _default_tool_names()) == expected_draft
 
 
 @pytest.mark.parametrize(
@@ -737,14 +739,14 @@ def test_native_empty_tool_calls_records_error(task: PublicTask) -> None:
     assert answer_step.action == "answer"
 
 
-def test_native_reasoning_tool_call_recovered_and_executed(
-    task: PublicTask,
-) -> None:
-    """reasoning 中的 tool call 草稿被恢复为可执行调用并直接运行。"""
+@pytest.mark.parametrize("draft_field", ["reasoning_content", "content"])
+def test_native_tool_call_draft_recovered_and_executed(task: PublicTask, draft_field: str) -> None:
+    """reasoning/content 中的 tool call 草稿被恢复为可执行调用并直接运行，
+    并合成 raw_tool_calls 以保证 native 消息回放正确。"""
     answer_call, answer_raw = _build_tool_call(
         call_id="final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
     )
-    reasoning_draft = """
+    draft = """
 I know the Python I want to run.
 <tool_call>
 <function=execute_python>
@@ -756,15 +758,24 @@ print('recovered ran')
 </function>
 </tool_call>
 """
+    if draft_field == "reasoning_content":
+        first_response = ModelResponse(
+            content="",
+            tool_calls=[],
+            raw_response="",
+            raw_tool_calls=[],
+            reasoning_content=draft,
+        )
+    else:
+        first_response = ModelResponse(
+            content=draft,
+            tool_calls=[],
+            raw_response=draft,
+            raw_tool_calls=[],
+        )
     adapter = ScriptedNativeModelAdapter(
         [
-            ModelResponse(
-                content="",
-                tool_calls=[],
-                raw_response="",
-                raw_tool_calls=[],
-                reasoning_content=reasoning_draft,
-            ),
+            first_response,
             ModelResponse(
                 content="",
                 tool_calls=[answer_call],
@@ -783,91 +794,13 @@ print('recovered ran')
 
     assert result.succeeded is True
     assert [step.action for step in result.steps] == ["execute_python", "answer"]
-    assert result.steps[0].tool_call_id == "recovered:1"
-    assert (task.context_dir / "recovered_executed.txt").read_text() == "yes"
-
-
-def test_native_content_tool_call_recovered_and_executed(
-    task: PublicTask,
-) -> None:
-    """content 中的 tool call 标签被恢复为可执行调用并直接运行。"""
-    answer_call, answer_raw = _build_tool_call(
-        call_id="final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
-    )
-    content_with_tool_call = (
-        "<tool_call><function=execute_python>"
-        "<parameter=code>print('from content')</parameter>"
-        "</function></tool_call>"
-    )
-    adapter = ScriptedNativeModelAdapter(
-        [
-            ModelResponse(
-                content=content_with_tool_call,
-                tool_calls=[],
-                raw_response=content_with_tool_call,
-                raw_tool_calls=[],
-            ),
-            ModelResponse(
-                content="",
-                tool_calls=[answer_call],
-                raw_response="",
-                raw_tool_calls=[answer_raw],
-            ),
-        ]
-    )
-    agent = ReActAgent(
-        model=adapter,
-        tools=create_default_tool_registry(),
-        config=ReActAgentConfig(max_steps=4),
-    )
-
-    result = agent.run(task)
-
-    assert result.succeeded is True
-    assert [step.action for step in result.steps] == ["execute_python", "answer"]
-    assert result.steps[0].tool_call_id == "recovered:1"
-
-
-def test_native_recovered_call_synthesizes_raw_tool_calls(
-    task: PublicTask,
-) -> None:
-    """recovered tool call 合成 raw_tool_calls 以保证 native 消息回放正确。"""
-    answer_call, answer_raw = _build_tool_call(
-        call_id="final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
-    )
-    reasoning = "<tool_call><function=inspect_files></function></tool_call>"
-    adapter = ScriptedNativeModelAdapter(
-        [
-            ModelResponse(
-                content="",
-                tool_calls=[],
-                raw_response="",
-                raw_tool_calls=[],
-                reasoning_content=reasoning,
-            ),
-            ModelResponse(
-                content="",
-                tool_calls=[answer_call],
-                raw_response="",
-                raw_tool_calls=[answer_raw],
-            ),
-        ]
-    )
-    agent = ReActAgent(
-        model=adapter,
-        tools=create_default_tool_registry(),
-        config=ReActAgentConfig(max_steps=4),
-    )
-
-    result = agent.run(task)
-
-    assert result.succeeded is True
     recovered_step = result.steps[0]
-    assert recovered_step.action == "inspect_files"
+    assert recovered_step.tool_call_id == "recovered:1"
     assert recovered_step.raw_tool_calls is not None
     assert len(recovered_step.raw_tool_calls) == 1
     assert recovered_step.raw_tool_calls[0]["id"] == "recovered:1"
-    assert recovered_step.raw_tool_calls[0]["function"]["name"] == "inspect_files"
+    assert recovered_step.raw_tool_calls[0]["function"]["name"] == "execute_python"
+    assert (task.context_dir / "recovered_executed.txt").read_text() == "yes"
 
 
 def test_native_empty_tool_calls_do_not_consume_max_steps(task: PublicTask) -> None:
@@ -1125,8 +1058,11 @@ def test_budget_warning_injected_at_75_percent(task: PublicTask) -> None:
     assert len(budget_msgs) == 1
 
 
-def test_preact_planning_message_on_first_turn(task: PublicTask) -> None:
-    """enable_preact=True injects planning instruction on first turn only."""
+@pytest.mark.parametrize(("enable_preact", "expected_count"), [(True, 1), (False, 0)])
+def test_preact_planning_message_injection(
+    task: PublicTask, enable_preact: bool, expected_count: int
+) -> None:
+    """enable_preact=True 在首轮注入 planning 指令；False（默认）不注入。"""
     answer_call, answer_raw = _build_tool_call(
         call_id="a", name="answer", arguments={"columns": ["x"], "rows": [["y"]]}
     )
@@ -1151,47 +1087,7 @@ def test_preact_planning_message_on_first_turn(task: PublicTask) -> None:
     agent = ReActAgent(
         model=adapter,
         tools=create_default_tool_registry(),
-        config=ReActAgentConfig(max_steps=4, enable_preact=True),
-    )
-
-    result = agent.run(task)
-    assert result.succeeded is True
-
-    # First (and only) call should have the preact planning message
-    first_messages = captured_messages[0]
-    planning_msgs = [
-        m for m in first_messages if "Before acting, outline a brief plan" in (m.content or "")
-    ]
-    assert len(planning_msgs) == 1
-
-
-def test_preact_disabled_no_planning_message(task: PublicTask) -> None:
-    """enable_preact=False (default) does not inject planning instruction."""
-    answer_call, answer_raw = _build_tool_call(
-        call_id="a", name="answer", arguments={"columns": ["x"], "rows": [["y"]]}
-    )
-
-    captured_messages: list[list] = []
-
-    class CapturingAdapter(ScriptedNativeModelAdapter):
-        def complete(self, messages):
-            captured_messages.append(messages)
-            return super().complete(messages)
-
-    adapter = CapturingAdapter(
-        [
-            ModelResponse(
-                content="",
-                tool_calls=[answer_call],
-                raw_response="",
-                raw_tool_calls=[answer_raw],
-            )
-        ]
-    )
-    agent = ReActAgent(
-        model=adapter,
-        tools=create_default_tool_registry(),
-        config=ReActAgentConfig(max_steps=4, enable_preact=False),
+        config=ReActAgentConfig(max_steps=4, enable_preact=enable_preact),
     )
 
     result = agent.run(task)
@@ -1201,4 +1097,4 @@ def test_preact_disabled_no_planning_message(task: PublicTask) -> None:
     planning_msgs = [
         m for m in first_messages if "Before acting, outline a brief plan" in (m.content or "")
     ]
-    assert len(planning_msgs) == 0
+    assert len(planning_msgs) == expected_count
