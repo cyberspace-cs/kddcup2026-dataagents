@@ -2,10 +2,11 @@
 
 覆盖点：
 - ScriptedNativeModelAdapter + 默认工具 registry：多步 ReAct 直至 answer
-- 单轮并行 tool_calls：同 turn_index、step_index 连续递增
+- 单轮并行 tool_calls：同 turn_index、step_index 连续递增；消息回放
+  assistant 带 tool_calls、tool 消息带 tool_call_id
 - answer 短路：并行 tool_calls 中若首个就是 answer，后续 tool_calls 不执行
-- native 模式消息构建：assistant 带 tool_calls、tool 消息带 tool_call_id
-- 默认协议：`ReActAgent()` 不传 protocol 时走 native 路径
+
+全文件构造 `ReActAgent` 均不传 protocol——native 作为默认协议由此隐式覆盖。
 """
 
 from __future__ import annotations
@@ -24,8 +25,6 @@ from agents.llm.types import (
     ModelToolCall,
     TokenUsage,
 )
-from agents.prompts import build_task_prompt
-from agents.runtime.state import AgentRuntimeState, StepRecord
 from agents.tools import handlers as _handlers
 from agents.tools.registry import create_default_tool_registry
 from agents.verification.answer import AnswerVerifier
@@ -231,7 +230,15 @@ def test_native_parallel_tool_calls_share_turn_index(task: PublicTask) -> None:
         name="answer",
         arguments={"columns": ["ok"], "rows": [["yes"]]},
     )
-    adapter = ScriptedNativeModelAdapter(
+
+    captured_messages: list[list] = []
+
+    class CapturingAdapter(ScriptedNativeModelAdapter):
+        def complete(self, messages):
+            captured_messages.append(messages)
+            return super().complete(messages)
+
+    adapter = CapturingAdapter(
         [
             ModelResponse(
                 content="parallel explore",
@@ -271,6 +278,17 @@ def test_native_parallel_tool_calls_share_turn_index(task: PublicTask) -> None:
     # answer 是下一个 turn
     assert step_answer.turn_index == 2
     assert step_answer.step_index == 3
+
+    # 第二轮的消息回放：system, user(task), assistant(tool_calls=...), tool(c_a), tool(c_b)
+    second_round = captured_messages[1]
+    assert second_round[0].role == "system"
+    assert second_round[1].role == "user"
+    assert second_round[2].role == "assistant"
+    assert second_round[2].tool_calls == [list_raw, list_raw_2]
+    assert second_round[3].role == "tool"
+    assert second_round[3].tool_call_id == "c_a"
+    assert second_round[4].role == "tool"
+    assert second_round[4].tool_call_id == "c_b"
 
 
 def test_native_answer_short_circuits_same_turn(task: PublicTask) -> None:
@@ -610,99 +628,12 @@ def test_native_answer_verifier_invalid_from_csv_type_falls_through_to_tool_erro
     assert result.answer.rows == [["ok"]]
 
 
-def test_native_build_messages_uses_tool_role(task: PublicTask) -> None:
-    # 通过手动构造 state 检查消息构建：不跑完整循环
-    registry = create_default_tool_registry()
-    adapter = ScriptedNativeModelAdapter([])  # 不会被调用到
-    agent = ReActAgent(
-        model=adapter,
-        tools=registry,
-        config=ReActAgentConfig(max_steps=2),
-    )
-
-    # 模拟一个已完成步骤的 state：assistant 曾并行调用 2 个 inspect_files
-    raw_tool_calls = [
-        {
-            "id": "tc1",
-            "type": "function",
-            "function": {"name": "inspect_files", "arguments": "{}"},
-        },
-        {
-            "id": "tc2",
-            "type": "function",
-            "function": {"name": "inspect_files", "arguments": "{}"},
-        },
-    ]
-    state = AgentRuntimeState()
-    state.steps.append(
-        StepRecord(
-            step_index=1,
-            turn_index=1,
-            thought="exploring",
-            action="inspect_files",
-            action_input={},
-            raw_response="exploring",
-            observation={"ok": True, "tool": "inspect_files", "content": {}},
-            ok=True,
-            tool_call_id="tc1",
-            raw_tool_calls=raw_tool_calls,
-        )
-    )
-    state.steps.append(
-        StepRecord(
-            step_index=2,
-            turn_index=1,
-            thought="exploring",
-            action="inspect_files",
-            action_input={},
-            raw_response="exploring",
-            observation={"ok": True, "tool": "inspect_files", "content": {}},
-            ok=True,
-            tool_call_id="tc2",
-            raw_tool_calls=None,
-        )
-    )
-
-    messages = agent._build_messages(state, build_task_prompt(task))
-
-    # 期望顺序：system, user(task), assistant(tool_calls=...), tool(tc1), tool(tc2)
-    assert messages[0].role == "system"
-    assert messages[1].role == "user"
-    assert messages[2].role == "assistant"
-    assert messages[2].tool_calls == raw_tool_calls
-    assert messages[3].role == "tool"
-    assert messages[3].tool_call_id == "tc1"
-    assert messages[4].role == "tool"
-    assert messages[4].tool_call_id == "tc2"
-
-
-def test_native_is_default_protocol(task: PublicTask) -> None:
-    # 不显式传 protocol → 默认 native
-    answer_call, answer_raw = _build_tool_call(
-        call_id="a", name="answer", arguments={"columns": ["x"], "rows": [["y"]]}
-    )
-    adapter = ScriptedNativeModelAdapter(
-        [
-            ModelResponse(
-                content="",
-                tool_calls=[answer_call],
-                raw_response="",
-                raw_tool_calls=[answer_raw],
-            )
-        ]
-    )
-    agent = ReActAgent(
-        model=adapter,
-        tools=create_default_tool_registry(),
-    )
-
-    result = agent.run(task)
-    assert result.succeeded is True
-    assert result.steps[0].tool_call_id == "a"
-
-
-def test_native_empty_tool_calls_records_error(task: PublicTask) -> None:
-    # 模拟 native 模式下模型只回纯文本（无 tool_calls）：应记一条 __error__ 并继续
+def test_native_empty_tool_calls_record_error_without_consuming_max_steps(
+    task: PublicTask,
+) -> None:
+    # 模拟 native 模式下模型只回纯文本（无 tool_calls）：应记一条 __error__ 并继续。
+    # max_steps=1 验证 "空 tool_calls 不消耗 max_steps"——第二轮的 answer 仍然能跑；
+    # max_empty=2 给第一次空轮留 budget（>= 触发，所以 N=1 会立刻终止）
     answer_call, answer_raw = _build_tool_call(
         call_id="final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
     )
@@ -725,7 +656,7 @@ def test_native_empty_tool_calls_records_error(task: PublicTask) -> None:
     agent = ReActAgent(
         model=adapter,
         tools=create_default_tool_registry(),
-        config=ReActAgentConfig(max_steps=4),
+        config=ReActAgentConfig(max_steps=1, max_empty_tool_call_retries=2),
     )
 
     result = agent.run(task)
@@ -737,6 +668,7 @@ def test_native_empty_tool_calls_records_error(task: PublicTask) -> None:
     assert error_step.ok is False
     assert "drafted_tool_call" not in error_step.observation
     assert answer_step.action == "answer"
+    assert answer_step.turn_index == 2
 
 
 @pytest.mark.parametrize("draft_field", ["reasoning_content", "content"])
@@ -801,44 +733,6 @@ print('recovered ran')
     assert recovered_step.raw_tool_calls[0]["id"] == "recovered:1"
     assert recovered_step.raw_tool_calls[0]["function"]["name"] == "execute_python"
     assert (task.context_dir / "recovered_executed.txt").read_text() == "yes"
-
-
-def test_native_empty_tool_calls_do_not_consume_max_steps(task: PublicTask) -> None:
-    answer_call, answer_raw = _build_tool_call(
-        call_id="final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
-    )
-    adapter = ScriptedNativeModelAdapter(
-        [
-            ModelResponse(
-                content="",
-                tool_calls=[],
-                raw_response="",
-                raw_tool_calls=[],
-            ),
-            ModelResponse(
-                content="",
-                tool_calls=[answer_call],
-                raw_response="",
-                raw_tool_calls=[answer_raw],
-            ),
-        ]
-    )
-    agent = ReActAgent(
-        model=adapter,
-        tools=create_default_tool_registry(),
-        # max_steps=1 验证 "空 tool_calls 不消耗 max_steps"——第二轮的 answer 仍然能跑；
-        # max_empty=2 给第一次空轮留 budget（>= 触发，所以 N=1 会立刻终止）
-        config=ReActAgentConfig(max_steps=1, max_empty_tool_call_retries=2),
-    )
-
-    result = agent.run(task)
-
-    assert result.succeeded is True
-    assert len(result.steps) == 2
-    error_step, answer_step = result.steps
-    assert error_step.action == "__error__"
-    assert answer_step.action == "answer"
-    assert answer_step.turn_index == 2
 
 
 def test_native_tool_call_parse_error_preserves_partial_trace_and_recovers(

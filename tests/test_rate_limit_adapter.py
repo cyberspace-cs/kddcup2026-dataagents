@@ -13,6 +13,7 @@
 - 非可重试错误（400） → 原样上抛 RuntimeError，并退回预扣的 TPM
 - 重试耗尽 → 抛 RateLimitExhausted，退回预扣的 TPM
 - estimate_prompt_tokens 覆盖 role/content/tool_call_id/tool_calls
+- rate_limit_metrics 在各行为测试内一并断言（成功挂 response，异常挂 _last_metrics）
 """
 
 from __future__ import annotations
@@ -276,6 +277,15 @@ def test_happy_path_reconciles_unused_tpm(
     assert bucket.acquire_calls[0][0] == 1
     # 预扣 TPM 远大于 actual（300），应触发退款
     assert any(call[0] == 0 and call[1] > 0 for call in bucket.refund_calls)
+    # 同一场景的 response 附带 metrics：无重试、无等待，tpm_delta = actual - reserved
+    m = response.rate_limit_metrics
+    assert m is not None
+    assert m["retry_count"] == 0
+    assert m["actual_tpm"] == 300
+    assert m["tpm_delta"] == 300 - m["reserved_tpm"]
+    assert m["acquire_wait_ms"] == 0.0
+    assert "exhausted" not in m
+    assert "error" not in m
 
 
 def test_over_reserved_triggers_extra_debit(
@@ -310,6 +320,8 @@ def test_429_with_retry_after_honored(
     # 第一次 sleep 应为 Retry-After 指定的 3s（+ jitter=0）
     assert 3.0 in fast_sleep_and_jitter
     assert inner.calls == 2
+    assert response.rate_limit_metrics is not None
+    assert response.rate_limit_metrics["retry_count"] == 1
 
 
 def test_429_without_header_uses_exponential_backoff(
@@ -362,6 +374,10 @@ def test_non_retriable_error_raises_immediately_and_refunds(
     assert bucket.refund_calls
     assert bucket.refund_calls[-1][0] == 0
     assert bucket.refund_calls[-1][1] > 0
+    m = adapter._last_metrics
+    assert m is not None
+    assert m["error"] == "RuntimeError"
+    assert m["actual_tpm"] == 0
 
 
 def test_retries_exhausted_raises_rate_limit_exhausted(
@@ -382,6 +398,11 @@ def test_retries_exhausted_raises_rate_limit_exhausted(
     assert inner.calls == 4
     # 退款 TPM：exhausted 路径应退预扣
     assert any(call[0] == 0 and call[1] > 0 for call in bucket.refund_calls)
+    # 异常路径没有 response 可挂，metrics 落在 adapter._last_metrics
+    m = adapter._last_metrics
+    assert m is not None
+    assert m["exhausted"] is True
+    assert m["retry_count"] == 4
 
 
 def test_acquire_waits_when_bucket_says_to(
@@ -394,9 +415,11 @@ def test_acquire_waits_when_bucket_says_to(
     inner = _ScriptedInnerAdapter([_make_response(total_tokens=100)])
     adapter = _make_adapter(inner, bucket, rate_limit_cfg)
 
-    adapter.complete(_messages())
-    # 应看到一次 2.0s 的 sleep（+ jitter=0）
+    response = adapter.complete(_messages())
+    # 应看到一次 2.0s 的 sleep（+ jitter=0），且等待时长记入 metrics
     assert 2.0 in fast_sleep_and_jitter
+    assert response.rate_limit_metrics is not None
+    assert response.rate_limit_metrics["acquire_wait_ms"] == 2000.0
 
 
 def test_complete_uses_inner_prompt_token_estimator(
@@ -426,96 +449,3 @@ def test_constructor_rejects_empty_api_key(tmp_path: Path) -> None:
     cfg = RateLimitConfig(state_dir=tmp_path)
     with pytest.raises(ValueError, match="api_key"):
         RateLimitedAdapter(inner=inner, api_key="", rate_limit=cfg)
-
-
-# ------- Response-attached metrics --------------------------------------------
-
-
-def test_metrics_happy_path(
-    rate_limit_cfg: RateLimitConfig,
-    fast_sleep_and_jitter: list[float],
-) -> None:
-    del fast_sleep_and_jitter
-    bucket = _FakeBucket()
-    inner = _ScriptedInnerAdapter([_make_response(total_tokens=300)])
-    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
-
-    resp = adapter.complete(_messages())
-    m = resp.rate_limit_metrics
-    assert m is not None
-    assert m["retry_count"] == 0
-    assert m["actual_tpm"] == 300
-    assert m["tpm_delta"] == 300 - m["reserved_tpm"]
-    assert m["acquire_wait_ms"] == 0.0
-    assert "exhausted" not in m
-    assert "error" not in m
-
-
-def test_metrics_with_retries(
-    rate_limit_cfg: RateLimitConfig,
-    fast_sleep_and_jitter: list[float],
-) -> None:
-    del fast_sleep_and_jitter
-    err = _wrap_as_runtime(_fake_api_error(429, headers={"Retry-After": "1"}))
-    bucket = _FakeBucket()
-    inner = _ScriptedInnerAdapter([err, _make_response(total_tokens=100)])
-    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
-
-    resp = adapter.complete(_messages())
-    m = resp.rate_limit_metrics
-    assert m is not None
-    assert m["retry_count"] == 1
-
-
-def test_metrics_with_acquire_wait(
-    rate_limit_cfg: RateLimitConfig,
-    fast_sleep_and_jitter: list[float],
-) -> None:
-    del fast_sleep_and_jitter
-    bucket = _FakeBucket()
-    bucket.set_acquire_returns([2.0, 0.0])
-    inner = _ScriptedInnerAdapter([_make_response(total_tokens=100)])
-    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
-
-    resp = adapter.complete(_messages())
-    m = resp.rate_limit_metrics
-    assert m is not None
-    assert m["acquire_wait_ms"] == 2000.0
-
-
-def test_metrics_exhausted(
-    rate_limit_cfg: RateLimitConfig,
-    fast_sleep_and_jitter: list[float],
-) -> None:
-    del fast_sleep_and_jitter
-    script: list[ModelResponse | BaseException] = [
-        _wrap_as_runtime(_fake_api_error(429)) for _ in range(4)
-    ]
-    bucket = _FakeBucket()
-    inner = _ScriptedInnerAdapter(script)
-    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
-
-    with pytest.raises(RateLimitExhausted):
-        adapter.complete(_messages())
-    m = adapter._last_metrics
-    assert m is not None
-    assert m["exhausted"] is True
-    assert m["retry_count"] == 4
-
-
-def test_metrics_non_retriable_error(
-    rate_limit_cfg: RateLimitConfig,
-    fast_sleep_and_jitter: list[float],
-) -> None:
-    del fast_sleep_and_jitter
-    err = _wrap_as_runtime(_fake_api_error(400))
-    bucket = _FakeBucket()
-    inner = _ScriptedInnerAdapter([err])
-    adapter = _make_adapter(inner, bucket, rate_limit_cfg)
-
-    with pytest.raises(RuntimeError):
-        adapter.complete(_messages())
-    m = adapter._last_metrics
-    assert m is not None
-    assert m["error"] == "RuntimeError"
-    assert m["actual_tpm"] == 0

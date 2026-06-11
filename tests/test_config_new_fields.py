@@ -6,6 +6,7 @@
 - 非法值拒收（数值边界 / 枚举 / 互斥组合）的参数化表
 - 非平凡归一化（大小写、0 语义、explicit null、组合字段、嵌套 retrieval_index）
 - thinking + greedy decoding 的 UserWarning 触发矩阵
+- tracing 块解析（缺省 None / enabled 默认 db_path / 显式 db_path）
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ def test_defaults_when_fields_absent(tmp_path: Path) -> None:
     assert cfg.run.retrieval_index.max_chunk_chars == 1600
     assert cfg.run.retrieval_index.chunk_overlap_lines == 2
     assert cfg.run.retrieval_index.max_results == 8
+    assert cfg.tracing is None
 
 
 def test_load_app_config_rejects_unknown_agent_field(tmp_path: Path) -> None:
@@ -174,6 +176,26 @@ def test_load_app_config_normalizes_nontrivial_values(
     cfg = load_app_config(cfg_path)
     for path, value in expected.items():
         assert _dotted(cfg, path) == value, path
+
+
+def test_tracing_block_parsing(tmp_path: Path) -> None:
+    """tracing 块：enabled → 默认 db_path；显式 db_path → 透传。缺省 → None
+    已并入 `test_defaults_when_fields_absent`。"""
+    enabled = load_app_config(
+        _write_config(tmp_path / "enabled.yaml", "tracing:\n  enabled: true\n")
+    ).tracing
+    assert enabled is not None
+    assert enabled.enabled is True
+    assert isinstance(enabled.db_path, Path)
+
+    custom_path = str(tmp_path / "custom.db")
+    custom = load_app_config(
+        _write_config(
+            tmp_path / "custom.yaml", f"tracing:\n  enabled: true\n  db_path: {custom_path}\n"
+        )
+    ).tracing
+    assert custom is not None
+    assert str(custom.db_path) == custom_path
 
 
 # ---------- thinking + greedy decoding 的 UserWarning ----------
