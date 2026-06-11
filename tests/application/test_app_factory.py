@@ -159,9 +159,7 @@ def test_build_video_adapter_forced_tool_choice(
     assert adapter.allow_parallel_tool_calls is False
 
 
-def test_build_video_adapter_auto_fallback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_build_video_adapter_auto_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from agents.application import _build_video_adapter
 
     adapter = _build_video_adapter(_video_cfg(monkeypatch, tmp_path, video_tool_choice="auto"))
