@@ -62,12 +62,6 @@ def test_system_prompts_use_runtime_clock_for_current_year() -> None:
     assert "do not infer the current year from the latest date in the dataset" in lower
 
 
-def test_native_system_prompt_mentions_focus_reexploration() -> None:
-    prompt = build_native_system_prompt()
-    assert "focus" in prompt
-    assert "video_findings" in prompt
-
-
 # ---------- build_observation_prompt: ok parameter & recovery hints ----------
 
 

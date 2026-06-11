@@ -1,4 +1,4 @@
-"""explore 工具：explore_video 按任务动态注入、focus 穿透、video_findings 注入。"""
+"""explore 工具：explore_video 按任务动态注入、video_findings 注入。"""
 
 from __future__ import annotations
 
@@ -79,17 +79,3 @@ def test_video_tool_injected_only_when_task_has_video(
     else:
         assert recorded["video_tool"] is None
         assert "video_findings" not in result.content
-
-
-def test_focus_overrides_question(tmp_path: Path, recorded: dict) -> None:
-    tool = create_explore_tool_definition(_Adapter(), video_tool=_video_tool())
-    task = _make_task(tmp_path, with_video=False)
-    tool.handler(task, ExploreInput(focus="re-check orders.status"))
-    assert recorded["question"] == "re-check orders.status"
-
-
-def test_without_focus_uses_task_question(tmp_path: Path, recorded: dict) -> None:
-    tool = create_explore_tool_definition(_Adapter(), video_tool=_video_tool())
-    task = _make_task(tmp_path, with_video=False)
-    tool.handler(task, ExploreInput())
-    assert recorded["question"] == "What is X?"

@@ -1,4 +1,4 @@
-"""ExploreInput.focus 与 ExploreVideoInput 的契约。"""
+"""ExploreInput 与 ExploreVideoInput 的契约。"""
 
 from __future__ import annotations
 
@@ -8,9 +8,8 @@ from pydantic import ValidationError
 from agents.tools.inputs import EXPLORE_VIDEO_SCHEMA, ExploreInput, ExploreVideoInput
 
 
-def test_explore_input_focus_optional() -> None:
-    assert ExploreInput.model_validate({}).focus is None
-    assert ExploreInput.model_validate({"focus": "re-watch video"}).focus == "re-watch video"
+def test_explore_input_takes_no_params() -> None:
+    ExploreInput.model_validate({})
     with pytest.raises(ValidationError):
         ExploreInput.model_validate({"unknown": 1})
 

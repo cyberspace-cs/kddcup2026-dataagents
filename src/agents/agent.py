@@ -179,7 +179,7 @@ class ReActAgent:
         - native 空 tool_calls 只消耗 empty retry budget，不消耗业务 max_steps
         - 达到 max_steps 未 answer 时，写入 failure_reason 并正常返回
 
-        `initial_user_content`: 子代理（video / focused explorer）可注入自定义首条消息；
+        `initial_user_content`: 子代理（video）可注入自定义首条消息；
         None 走默认任务提示词路径。
         """
         state = AgentRuntimeState()

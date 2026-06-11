@@ -1,4 +1,4 @@
-"""run_explorer：video_findings 提取、focused 模式首条消息、video_tool 穿透。"""
+"""run_explorer：video_findings 提取、video_tool 穿透。"""
 
 from __future__ import annotations
 
@@ -123,25 +123,3 @@ def test_each_turn_omits_video_tool_when_not_injected(tmp_path: Path) -> None:
     per_turn = _advertised_names_per_turn(adapter)
     assert per_turn
     assert all("explore_video" not in names for names in per_turn)
-
-
-def test_focus_question_appends_directive_to_first_message(tmp_path: Path) -> None:
-    task = _make_task(tmp_path)
-    adapter = _RecordingAdapter(
-        ScriptedNativeModelAdapter([_call("r1", "report", {"knowledge": {"x": 1}})])
-    )
-    result = run_explorer(task, "check the orders.status values", adapter)
-    assert result.success is True
-    first_user = adapter.seen[0][1]
-    assert first_user.role == "user"
-    assert "## Focused re-exploration directive" in str(first_user.content)
-    assert "check the orders.status values" in str(first_user.content)
-
-
-def test_plain_question_keeps_default_first_message(tmp_path: Path) -> None:
-    task = _make_task(tmp_path)
-    adapter = _RecordingAdapter(
-        ScriptedNativeModelAdapter([_call("r1", "report", {"knowledge": {}})])
-    )
-    run_explorer(task, task.question, adapter)
-    assert "Focused re-exploration" not in str(adapter.seen[0][1].content)

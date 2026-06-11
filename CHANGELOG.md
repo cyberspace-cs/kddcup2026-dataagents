@@ -13,8 +13,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reports also pass through to the main agent verbatim as `video_findings`.
   A single explorer adapter serves all tasks: the tool is injected per task
   into the run's registry, which the ReAct loop pushes per call.
-- **`explore(focus=...)` targeted re-exploration.** The main agent can re-run
-  the explorer with a specific directive instead of redoing a full exploration.
 - **`agent.video_tool_choice` config field.** `"auto"` (default) coexists with
   thinking on every backend — DashScope compatible-mode rejects named
   `tool_choice` in thinking mode. `"forced"` is an opt-in optimization that

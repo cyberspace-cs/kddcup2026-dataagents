@@ -64,7 +64,7 @@ def _maybe_trace(model: ModelAdapter, registry: Any) -> tuple[ModelAdapter, Any]
 
 def run_explorer(
     task: PublicTask,
-    question: str,
+    question: str,  # reserved for future prompt override
     model: ModelAdapter,
     *,
     max_steps: int = EXPLORER_MAX_STEPS,
@@ -75,8 +75,6 @@ def run_explorer(
 
     The Explorer uses a read-only tool subset (no execute_python, no answer)
     and terminates via a `report` tool. It aims to complete in 3-6 steps.
-    When `question` differs from `task.question`, it is a focused
-    re-exploration directive appended to the initial task message.
     """
     registry = create_explorer_tool_registry(video_tool=video_tool)
     traced_model, traced_registry = _maybe_trace(model, registry)
@@ -92,18 +90,7 @@ def run_explorer(
         step_callback=step_callback,
     )
 
-    # focus 模式：question 与任务原始问题不同 → 这是主 agent 发来的定向重探指令
-    initial_content: str | None = None
-    if question and question != task.question:
-        from agents.runtime import build_initial_user_content
-
-        initial_content = (
-            build_initial_user_content(task)
-            + "\n\n## Focused re-exploration directive\n"
-            + question
-        )
-
-    result = agent.run(task, initial_user_content=initial_content)
+    result = agent.run(task)
     video_findings = _extract_video_findings(result.steps) or None
 
     # Extract findings from steps: find the report tool call

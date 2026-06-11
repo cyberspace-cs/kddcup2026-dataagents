@@ -124,16 +124,13 @@ def create_explore_tool_definition(
     """
     from agents.tools.registry import ToolDefinition as _ToolDefinition
 
-    def handler(task: PublicTask, args: Any) -> ToolExecutionResult:
+    def handler(task: PublicTask, _args: Any) -> ToolExecutionResult:
         import agents.explorer.runner as explorer_runner
         from agents.runtime.media import find_videos
 
-        focus = getattr(args, "focus", None)
-        question = focus if isinstance(focus, str) and focus.strip() else task.question
-
         has_video = video_tool is not None and bool(find_videos(task.context_dir))
         result = explorer_runner.run_explorer(
-            task, question, explorer_model, video_tool=video_tool if has_video else None
+            task, task.question, explorer_model, video_tool=video_tool if has_video else None
         )
         content: dict[str, Any]
         if result.success:
@@ -162,9 +159,7 @@ def create_explore_tool_definition(
             "inspects every file under context (columns, dtypes, row counts, table "
             "schemas, unit_hint), reads knowledge.md, samples key values, and "
             "identifies join paths — all in one call. Returns a complete data map "
-            "so you can skip manual multi-step discovery. Call again with `focus` "
-            "to fetch one specific missing detail (e.g. a value absent from "
-            "video_findings) instead of redoing the full map."
+            "so you can skip manual multi-step discovery."
         ),
         json_schema=EXPLORE_SCHEMA,
         handler=handler,
