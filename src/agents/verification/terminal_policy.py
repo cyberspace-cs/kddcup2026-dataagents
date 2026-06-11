@@ -13,6 +13,35 @@ from agents.tools import (
 )
 from agents.verification.answer import AnswerVerifier
 
+_EXECUTE_ACTIONS = ("execute_python", "execute_context_sql")
+_PRODUCING_CODE_STEPS = 2
+_PRODUCING_CODE_CHARS = 2000
+
+
+def recent_execute_code(state: AgentRuntimeState | None) -> str | None:
+    """Inputs of the most recent execute steps, for the answer verifier.
+
+    The verifier's NULL-filter check needs to see the SQL/python that built
+    the submitted table; the last couple of execute steps before the answer
+    call are that code in practice. Returns None when no execute step exists.
+    """
+    if state is None:
+        return None
+    snippets: list[str] = []
+    for step in reversed(state.steps):
+        if step.action not in _EXECUTE_ACTIONS:
+            continue
+        payload = step.action_input or {}
+        code = payload.get("code") or payload.get("sql") or ""
+        if not str(code).strip():
+            continue
+        snippets.append(f"[{step.action}]\n{str(code)[:_PRODUCING_CODE_CHARS]}")
+        if len(snippets) >= _PRODUCING_CODE_STEPS:
+            break
+    if not snippets:
+        return None
+    return "\n\n".join(reversed(snippets))
+
 
 @dataclass(frozen=True, slots=True)
 class TerminalAnswerRejection:
@@ -35,6 +64,7 @@ class TerminalAnswerPolicy:
         arguments: dict[str, Any],
         is_terminal: bool,
         remaining_steps: int,
+        state: AgentRuntimeState | None = None,
     ) -> TerminalAnswerRejection | None:
         """Return a rejection observation when the terminal answer verifier rejects."""
         if (
@@ -44,7 +74,11 @@ class TerminalAnswerPolicy:
             or remaining_steps <= 1
         ):
             return None
-        rejection = self.verifier.verify(task.question, arguments)
+        rejection = self.verifier.verify(
+            task.question,
+            arguments,
+            producing_code=recent_execute_code(state),
+        )
         if rejection is None:
             return None
 

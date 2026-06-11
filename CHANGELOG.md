@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Answer verifier sees the producing code and rejects NULL-filtered
+  listings.** The pre-submit verifier now receives the last execute
+  steps that built the answer table and rejects listing answers whose
+  final SQL/python drops NULL rows of a submitted column
+  (`WHERE col IS NOT NULL` / `dropna()` / `notna()`), instructing a
+  rebuild that keeps NULL rows. The agent rules also state explicitly
+  that exploration-time `IS NOT NULL` sampling filters must not be
+  copied into the final answer query.
 - **%→ratio conversion decisions are grounded in sibling sources.** Whether
   a doc-extracted percentage field converts to a decimal fraction used to
   depend on question wording alone; the ETL now scans the task's sibling
