@@ -451,6 +451,92 @@ def deterministic_kv_to_csv(
     return buf.getvalue()
 
 
+def _cells_agree(a: str, b: str) -> bool:
+    """Two non-empty cells agree when equal as strings or as parsed numbers."""
+    if a == b:
+        return True
+    try:
+        return float(a) == float(b)
+    except ValueError:
+        return False
+
+
+def column_fill_counts(header: list[str], rows: list[list[str]]) -> dict[str, int]:
+    """Count non-empty cells per column."""
+    counts = dict.fromkeys(header, 0)
+    for row in rows:
+        for col, val in zip(header, row, strict=False):
+            if val.strip():
+                counts[col] += 1
+    return counts
+
+
+def apply_synonym_merges(
+    header: list[str],
+    rows: list[list[str]],
+    merges: list[tuple[str, str]],
+    protected: set[str] | None = None,
+) -> tuple[list[str], list[list[str]], list[tuple[str, str]]]:
+    """Fold synonym source columns into their canonical target columns.
+
+    ``merges`` holds adjudicated ``(source, target)`` pairs — typically a
+    populated extraction-discovered column folding into an empty
+    governance-canonical column (the value-split failure mode).  The
+    adjudication says the two columns *mean* the same thing; this function
+    re-checks, per pair and against the CURRENT table state, that the data
+    *agrees* with that claim:
+
+    - identity columns named in ``protected`` are never touched;
+    - a pair with any row-level conflict (both cells non-empty and not equal
+      as strings or numbers) is skipped — semantically-approved but
+      data-contradicted merges must not corrupt either column;
+    - an all-empty source is a no-op and is skipped.
+
+    Pairs are processed in deterministic order (descending source fill, then
+    name), so when two sources target one canonical column the second is
+    conflict-checked against the already-merged result.
+
+    Returns ``(header, rows, applied)`` — new copies; inputs are not mutated.
+    """
+    protected_lower = {p.lower() for p in (protected or set())}
+    header = list(header)
+    rows = [list(row) for row in rows]
+    fill = column_fill_counts(header, rows)
+
+    applied: list[tuple[str, str]] = []
+    for src, dst in sorted(merges, key=lambda m: (-fill.get(m[0], 0), m[0])):
+        if src == dst or src.lower() in protected_lower or dst.lower() in protected_lower:
+            continue
+        if src not in header or dst not in header:
+            continue
+        si, di = header.index(src), header.index(dst)
+        if not any(row[si].strip() for row in rows):
+            continue
+        conflicts = sum(
+            1
+            for row in rows
+            if row[si].strip()
+            and row[di].strip()
+            and not _cells_agree(row[si].strip(), row[di].strip())
+        )
+        if conflicts:
+            logger.warning(
+                "ETL synonym-unify: %d row conflicts between '%s' and '%s' — not merged",
+                conflicts,
+                src,
+                dst,
+            )
+            continue
+        for row in rows:
+            if row[si].strip() and not row[di].strip():
+                row[di] = row[si]
+        header.pop(si)
+        for row in rows:
+            row.pop(si)
+        applied.append((src, dst))
+    return header, rows, applied
+
+
 def validate_csv(csv_path: Path) -> tuple[list[str], int] | None:
     """Read a CSV and return (header, row_count), or None if invalid."""
     if not csv_path.is_file():

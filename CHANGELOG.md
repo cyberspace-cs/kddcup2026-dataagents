@@ -24,6 +24,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed from user-facing docs and submission defaults.
 
 ### Fixed
+- **Value-split synonym columns unified into governance names.** When a
+  materialized prose CSV leaves a governance-defined column completely
+  empty while an extraction-discovered column of identical meaning holds
+  the values (e.g. `transferor_shares_before` vs `sumbeforetran`), the
+  ETL now merges the values under the canonical name and re-points unit
+  conversion metadata at it. The merge is gated deterministically:
+  identity columns are protected, any row-level disagreement vetoes the
+  pair, ambiguous multi-claims and unit-family mismatches are skipped;
+  an LLM call adjudicates semantic equivalence only.
 - **Fabricated sequential primary keys repaired before entity merge.**
   When compression renumbers paragraphs (1, 2, 3, ...) instead of copying
   the stated record label, the pre-merge step now rewrites the primary

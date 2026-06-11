@@ -15,6 +15,7 @@ Fallback (no schema): LLM direct extraction → code-generation.
 from __future__ import annotations
 
 import contextlib
+import csv
 import json
 import logging
 import re
@@ -42,6 +43,8 @@ from agents.etl._detect import (
     detect_prose_files,
 )
 from agents.etl._merge import (
+    apply_synonym_merges,
+    column_fill_counts,
     deterministic_kv_to_csv,
     normalize_entity_lines,
     pre_merge_entity_lines,
@@ -445,6 +448,267 @@ def _write_units_sidecar(
     cache_dir.mkdir(parents=True, exist_ok=True)
     units_path = cache_dir / f"{prose_stem}_units.json"
     units_path.write_text(json.dumps(field_units, ensure_ascii=False), encoding="utf-8")
+
+
+def _parse_alias_response(
+    text: str,
+    discovered: list[str],
+    canonicals: list[str],
+) -> dict[str, str]:
+    """Parse ``discovered=canonical`` / ``discovered=DISTINCT`` adjudication lines.
+
+    Only entries naming a known discovered column on the left and a known
+    canonical column (or DISTINCT) on the right are kept; everything else is
+    ignored, so an unlisted discovered column defaults to DISTINCT.
+    """
+    canon_by_lower = {c.lower(): c for c in canonicals}
+    disc_by_lower = {d.lower(): d for d in discovered}
+    mapping: dict[str, str] = {}
+    raw = text.strip().strip("`")
+    for item in re.split(r"[,;\n]", raw):
+        item = item.strip()
+        if not item or "=" not in item:
+            continue
+        left, _, right = item.partition("=")
+        left = left.split(":")[-1].strip()  # tolerate an echoed "ALIASES:" prefix
+        disc = disc_by_lower.get(left.lower())
+        if not disc:
+            continue
+        target = right.strip().strip(".").lower()
+        if target == "distinct":
+            continue
+        canon = canon_by_lower.get(target)
+        if canon:
+            mapping[disc] = canon
+    return mapping
+
+
+def _adjudicate_synonym_columns(
+    adapter: ModelAdapter,
+    prose_stem: str,
+    empty_canonicals: dict[str, str],
+    discovered: list[tuple[str, str, list[str]]],
+    question: str,
+) -> dict[str, str]:
+    """Ask the LLM which populated discovered columns are exact synonyms of
+    empty canonical columns.
+
+    The LLM is trusted only for the semantic judgment; whether a merge
+    actually happens is re-gated deterministically against the data
+    (`apply_synonym_merges`).  Returns {discovered: canonical}.
+    """
+    canon_block = "\n".join(
+        f"- {name}: {defn or '(no definition available)'}"
+        for name, defn in empty_canonicals.items()
+    )
+    disc_block = "\n".join(
+        f"- {name}: {defn or '(no definition available)'} | samples: "
+        f"{', '.join(samples) if samples else '(none)'}"
+        for name, defn, samples in discovered
+    )
+    prompt = textwrap.dedent(f"""\
+        A table extracted from the prose file "{prose_stem}" shows a value-split
+        signature: the CANONICAL columns below (defined by the data governance
+        document) contain NO values at all, while the DISCOVERED columns below
+        (added during extraction) are populated.
+
+        For each DISCOVERED column, decide whether it denotes EXACTLY the same
+        quantity as ONE of the empty canonical columns — same concept AND every
+        binding qualifier: entity scope (whose quantity it is), before/after
+        state, time window, numerator/denominator, unit family, aggregation
+        level.
+        - Full match → the values belong under the canonical name (the
+          extraction accidentally split one concept into two columns).
+        - Any qualifier differs, no canonical fits, or you are unsure →
+          DISTINCT.
+        Each canonical column can absorb at most ONE discovered column; when
+        several discovered columns seem close, pick the single best match and
+        mark the rest DISTINCT.
+
+        EMPTY CANONICAL COLUMNS:
+        {canon_block}
+
+        POPULATED DISCOVERED COLUMNS (with sample values):
+        {disc_block}
+
+        Task question (context for how the table is used):
+        {question}
+
+        Output one line per discovered column, nothing else:
+          <discovered_column>=<canonical_column>
+          <discovered_column>=DISTINCT""")
+    messages = [
+        ModelMessage(
+            role="system",
+            content=(
+                "You adjudicate whether extracted table columns are exact "
+                "synonyms of governance schema columns. Output only the "
+                "mapping lines."
+            ),
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception as exc:
+        logger.warning("ETL synonym adjudication failed for '%s': %s", prose_stem, exc)
+        return {}
+    return _parse_alias_response(
+        response.content,
+        [name for name, _defn, _samples in discovered],
+        list(empty_canonicals),
+    )
+
+
+def _unify_csv_synonyms(
+    adapter: ModelAdapter,
+    csv_path: Path,
+    prose_stem: str,
+    governance_columns: list[str],
+    anchor_keys: list[str],
+    field_defs: dict[str, str],
+    question: str,
+    units_path: Path | None,
+) -> list[tuple[str, str]]:
+    """Detect and repair value-split columns in a freshly materialized CSV.
+
+    Value split: the schema keeps a governance-canonical column AND an
+    extraction-discovered column for the same concept; values land in the
+    discovered one, leaving the canonical column 100% empty (and any unit
+    conversion bound to the canonical name pointing at dead cells).
+
+    Trigger is deliberately narrow — only canonical columns with ZERO fill
+    are offered for adjudication; partially-filled canonicals are left alone.
+    The merge itself is deterministic (`apply_synonym_merges`): identity
+    columns are protected and any row-level disagreement vetoes the pair.
+    On merge, unit-sidecar metadata follows the values to the canonical name.
+
+    Returns the applied (source, canonical) pairs; [] when nothing changed.
+    """
+    try:
+        with csv_path.open(encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            rows = list(reader)
+    except (OSError, csv.Error):
+        return []
+    if not header or not rows:
+        return []
+    width = len(header)
+    rows = [row + [""] * (width - len(row)) if len(row) < width else row[:width] for row in rows]
+
+    fill = column_fill_counts(header, rows)
+    gov_lower = {g.lower() for g in governance_columns}
+    anchor_lower = {a.lower() for a in anchor_keys}
+    empty_canonicals = {
+        col: field_defs.get(col, "")
+        for col in header
+        if col.lower() in gov_lower and col.lower() not in anchor_lower and fill[col] == 0
+    }
+    if not empty_canonicals:
+        return []
+    discovered_cols = [
+        col
+        for col in header
+        if col.lower() not in gov_lower and col.lower() not in anchor_lower and fill[col] > 0
+    ]
+    if not discovered_cols:
+        return []
+
+    sample_idx = {col: header.index(col) for col in discovered_cols}
+    samples: dict[str, list[str]] = {col: [] for col in discovered_cols}
+    for row in rows:
+        for col in discovered_cols:
+            val = row[sample_idx[col]].strip()
+            if val and val not in samples[col] and len(samples[col]) < 3:
+                samples[col].append(val)
+
+    mapping = _adjudicate_synonym_columns(
+        adapter,
+        prose_stem,
+        empty_canonicals,
+        [(col, field_defs.get(col, ""), samples[col]) for col in discovered_cols],
+        question,
+    )
+    if not mapping:
+        return []
+
+    # Collision guard: two discovered columns claiming one canonical column is
+    # either a misjudgment or naming drift — trust neither, corrupt nothing.
+    by_canon: dict[str, list[str]] = {}
+    for disc, canon in mapping.items():
+        by_canon.setdefault(canon, []).append(disc)
+    merges: list[tuple[str, str]] = []
+    for canon, discs in sorted(by_canon.items()):
+        if len(discs) > 1:
+            logger.warning(
+                "ETL synonym-unify: columns %s all claim canonical '%s' — skipped as ambiguous",
+                sorted(discs),
+                canon,
+            )
+            continue
+        merges.append((discs[0], canon))
+
+    # Unit-family guard: never merge values recorded under a different source
+    # unit than the canonical column's — that would mix magnitudes in one column.
+    units_meta: dict[str, Any] = {}
+    if units_path is not None and units_path.is_file():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            units_meta = json.loads(units_path.read_text(encoding="utf-8"))
+    guarded: list[tuple[str, str]] = []
+    for src, dst in merges:
+        src_unit, dst_unit = units_meta.get(src), units_meta.get(dst)
+        if src_unit and dst_unit and str(src_unit) != str(dst_unit):
+            logger.warning(
+                "ETL synonym-unify: unit mismatch '%s'(%s) vs '%s'(%s) — not merged",
+                src,
+                src_unit,
+                dst,
+                dst_unit,
+            )
+            continue
+        guarded.append((src, dst))
+    if not guarded:
+        return []
+
+    new_header, new_rows, applied = apply_synonym_merges(
+        header,
+        rows,
+        guarded,
+        protected=set(anchor_keys),
+    )
+    if not applied:
+        return []
+
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(new_header)
+        writer.writerows(new_rows)
+
+    if units_meta:
+        changed = False
+        for src, dst in applied:
+            for prefix in ("", "_target_", "_factor_"):
+                src_key, dst_key = f"{prefix}{src}", f"{prefix}{dst}"
+                if src_key in units_meta:
+                    units_meta.setdefault(dst_key, units_meta[src_key])
+                    del units_meta[src_key]
+                    changed = True
+        if changed and units_path is not None:
+            with contextlib.suppress(OSError):
+                units_path.write_text(
+                    json.dumps(units_meta, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+
+    for src, dst in applied:
+        logger.info(
+            "ETL synonym-unify: merged column '%s' → '%s' in %s",
+            src,
+            dst,
+            csv_path.name,
+        )
+    return applied
 
 
 _KM_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
@@ -998,6 +1262,7 @@ def extract_prose_file(
     schema_field_types: dict[str, str] | None = None,
     field_units: dict[str, str] | None = None,
     schema_field_defs: dict[str, str] | None = None,
+    governance_columns: list[str] | None = None,
 ) -> ETLResult | None:
     """Extract structured data from a prose file.
 
@@ -1012,6 +1277,40 @@ def extract_prose_file(
     cache_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
     full_text = prose_text
+
+    def _finalize(phase: str) -> ETLResult | None:
+        """Validate the materialized CSV, unify value-split synonym columns, build result."""
+        result = validate_csv(csv_path)
+        if not result:
+            return None
+        if governance_columns:
+            applied = _unify_csv_synonyms(
+                adapter,
+                csv_path,
+                path.stem,
+                governance_columns,
+                anchor_keys or [],
+                schema_field_defs or {},
+                task.question,
+                cache_dir / f"{path.stem}_units.json",
+            )
+            if applied:
+                result = validate_csv(csv_path) or result
+        header, row_count = result
+        logger.info(
+            "ETL %s: %s → %s (%d cols, %d rows)",
+            phase,
+            path.name,
+            csv_path,
+            len(header),
+            row_count,
+        )
+        return ETLResult(
+            source_file=path.name,
+            csv_path=str(csv_path),
+            columns=header,
+            row_count=row_count,
+        )
 
     if path.suffix.lower() == ".pdf":
         md_path = cache_dir / f"{path.stem}.md"
@@ -1087,22 +1386,9 @@ def extract_prose_file(
         )
         if csv_text:
             csv_path.write_text(csv_text, encoding="utf-8")
-            result = validate_csv(csv_path)
+            result = _finalize("deterministic")
             if result:
-                header, row_count = result
-                logger.info(
-                    "ETL deterministic: %s → %s (%d cols, %d rows)",
-                    path.name,
-                    csv_path,
-                    len(header),
-                    row_count,
-                )
-                return ETLResult(
-                    source_file=path.name,
-                    csv_path=str(csv_path),
-                    columns=header,
-                    row_count=row_count,
-                )
+                return result
             logger.warning("ETL deterministic extraction produced invalid CSV, falling back")
 
     # ---- Phase 2b: LLM extraction (if compressed text is small enough) ----
@@ -1118,22 +1404,9 @@ def extract_prose_file(
         )
         if csv_text:
             csv_path.write_text(csv_text, encoding="utf-8")
-            result = validate_csv(csv_path)
+            result = _finalize("direct")
             if result:
-                header, row_count = result
-                logger.info(
-                    "ETL direct: %s → %s (%d cols, %d rows)",
-                    path.name,
-                    csv_path,
-                    len(header),
-                    row_count,
-                )
-                return ETLResult(
-                    source_file=path.name,
-                    csv_path=str(csv_path),
-                    columns=header,
-                    row_count=row_count,
-                )
+                return result
         logger.warning("ETL direct extraction failed, falling back to code-gen")
 
     # ---- Phase 2c: code-generation fallback (on compressed file) ----
@@ -1166,25 +1439,11 @@ def extract_prose_file(
         logger.error("ETL code generation failed after %d attempts", MAX_RETRIES + 1)
         return None
 
-    result = validate_csv(csv_path)
+    result = _finalize("codegen")
     if not result:
         logger.error("ETL code ran but CSV is empty or missing: %s", csv_path)
         return None
-
-    header, row_count = result
-    logger.info(
-        "ETL codegen: %s → %s (%d cols, %d rows)",
-        path.name,
-        csv_path,
-        len(header),
-        row_count,
-    )
-    return ETLResult(
-        source_file=path.name,
-        csv_path=str(csv_path),
-        columns=header,
-        row_count=row_count,
-    )
+    return result
 
 
 def run_etl_for_task(
@@ -1243,6 +1502,7 @@ def run_etl_for_task(
                         units[f"_target_{field}"] = target_unit
                         units[f"_factor_{field}"] = str(factor)
                     logger.info("ETL: voted target units for %s: %s", pf.stem, targets)
+            governance_cols = sorted(_km_table_fields(km_text, pf.stem)) if km_text else []
             return extract_prose_file(
                 adapter,
                 pf,
@@ -1253,6 +1513,7 @@ def run_etl_for_task(
                 schema_field_types=field_types,
                 field_units=units,
                 schema_field_defs=defs,
+                governance_columns=governance_cols or None,
             )
         logger.info("ETL: no knowledge.md schema for %s, will infer from sample", pf.name)
         return extract_prose_file(adapter, pf, task, text)
