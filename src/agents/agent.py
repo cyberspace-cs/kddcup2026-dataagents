@@ -147,7 +147,12 @@ class ReActAgent:
 
     # ----------------------------- 主循环 -----------------------------
 
-    def run(self, task: PublicTask) -> AgentRunResult:
+    def run(
+        self,
+        task: PublicTask,
+        *,
+        initial_user_content: str | list[dict[str, Any]] | None = None,
+    ) -> AgentRunResult:
         """驱动 ReAct 循环解决单个任务。
 
         循环不变式：
@@ -155,9 +160,17 @@ class ReActAgent:
         - 调用 answer 工具会设置 `state.answer` 并立刻 break
         - native 空 tool_calls 只消耗 empty retry budget，不消耗业务 max_steps
         - 达到 max_steps 未 answer 时，写入 failure_reason 并正常返回
+
+        `initial_user_content`: 子代理（video / focused explorer）可注入自定义首条消息；
+        None 走默认任务提示词路径。
         """
         state = AgentRuntimeState()
-        initial_content = build_initial_user_content(task, preact=self.config.enable_preact)
+        # 子代理（video / focused explorer）可注入自定义首条消息；None 走默认任务提示词路径
+        initial_content = (
+            initial_user_content
+            if initial_user_content is not None
+            else build_initial_user_content(task, preact=self.config.enable_preact)
+        )
         step_counter = 0
         effective_turns = 0
         empty_tool_call_retries = 0

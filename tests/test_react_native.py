@@ -80,6 +80,18 @@ class _ScriptedVerifierAdapter:
         return ModelResponse(content=text, raw_response=text)
 
 
+class _RecordingAdapter:
+    """包装 scripted adapter，记录每轮收到的 messages。"""
+
+    def __init__(self, inner: ScriptedNativeModelAdapter) -> None:
+        self.inner = inner
+        self.seen: list[list[ModelMessage]] = []
+
+    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+        self.seen.append(messages)
+        return self.inner.complete(messages)
+
+
 def test_reasoning_tool_call_draft_parser_handles_multiline_python() -> None:
     reasoning = """
 I should run Python.
@@ -1212,3 +1224,33 @@ def test_preact_disabled_no_planning_message(task: PublicTask) -> None:
         m for m in first_messages if "Before acting, outline a brief plan" in (m.content or "")
     ]
     assert len(planning_msgs) == 0
+
+
+def test_run_initial_user_content_override(task: PublicTask) -> None:
+    answer_call, answer_raw = _build_tool_call(
+        call_id="c1", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
+    )
+    adapter = _RecordingAdapter(
+        ScriptedNativeModelAdapter(
+            [
+                ModelResponse(
+                    content="ok",
+                    tool_calls=[answer_call],
+                    raw_response="ok",
+                    raw_tool_calls=[answer_raw],
+                )
+            ]
+        )
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=2),
+    )
+
+    result = agent.run(task, initial_user_content="CUSTOM OVERRIDE")
+
+    assert result.succeeded is True
+    first_user = adapter.seen[0][1]
+    assert first_user.role == "user"
+    assert first_user.content == "CUSTOM OVERRIDE"
