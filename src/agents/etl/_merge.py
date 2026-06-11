@@ -14,6 +14,7 @@ from agents.etl._types import (
     APPROX_TAG,
     DATE_SCALAR,
     NUMERIC_SCALAR,
+    has_standalone_id,
     is_placeholder,
     normalize_boolean,
     split_approx_tag,
@@ -176,10 +177,47 @@ def _repair_fabricated_pks(
     return parsed
 
 
+def _drop_unanchored_pks(
+    parsed: list[tuple[str | None, list[tuple[str, str]]]],
+    primary_key: str | None,
+    source_text: str | None,
+) -> list[tuple[str | None, list[tuple[str, str]]]]:
+    """Drop lines whose digit primary key never anchors in the source text.
+
+    Every real record label is stated in the prose by construction; a digit
+    pk that appears nowhere as a standalone token (``has_standalone_id``) is
+    fabricated — typically a hallucinated line mixing values from several
+    entities — so its data attribution cannot be trusted and the whole line
+    is dropped. This differs from blank-PK fragments (an honest "unknown",
+    handled by the round-3 echo sweep): a fabricated pk also poisons round-2
+    anchor uniqueness, blocking legitimate fragments from merging home.
+
+    Non-digit pks and lines without a pk are left alone; no-op without
+    ``source_text``.
+    """
+    if not primary_key or not source_text:
+        return parsed
+    kept: list[tuple[str | None, list[tuple[str, str]]]] = []
+    dropped: list[str] = []
+    for pk_val, pairs in parsed:
+        if pk_val and pk_val.isdigit() and not has_standalone_id(source_text, pk_val):
+            dropped.append(pk_val)
+            continue
+        kept.append((pk_val, pairs))
+    if dropped:
+        logger.info(
+            "ETL pre-merge: dropped %d lines with source-unanchored pks: %s",
+            len(dropped),
+            dropped[:10],
+        )
+    return kept
+
+
 def pre_merge_entity_lines(
     text: str,
     primary_key: str | None = None,
     anchor_keys: list[str] | None = None,
+    source_text: str | None = None,
 ) -> str:
     """Merge multi-line entity records into one line per unique entity.
 
@@ -187,9 +225,12 @@ def pre_merge_entity_lines(
     a different attribute subset).  This collapses them so downstream
     extraction sees one complete record per entity.
 
-    Round 1: group by primary key (existing behavior).
+    Round 1: group by primary key (existing behavior), after repairing
+    fabricated sequential pks and dropping pks with no standalone anchor in
+    ``source_text``.
     Round 2: merge groups that share a secondary anchor value (e.g. same
     ``chinesename`` but different ``personalcode`` across sections).
+    Round 3: drop unplaced identity-echo fragments.
     """
     pk_token = f"{primary_key}:" if primary_key else None
     key_map = _canonical_key_map([k for k in [primary_key, *(anchor_keys or [])] if k])
@@ -249,6 +290,7 @@ def pre_merge_entity_lines(
 
     parsed = [_parse_kv(line) for line in entity_lines]
     parsed = _repair_fabricated_pks(parsed, primary_key, anchor_keys)
+    parsed = _drop_unanchored_pks(parsed, primary_key, source_text)
 
     # Round 1: group by primary key
     groups: dict[str, dict[str, str]] = {}

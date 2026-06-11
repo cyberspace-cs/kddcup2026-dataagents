@@ -358,3 +358,85 @@ def test_pre_merge_single_real_row_disables_constant_echo_rule() -> None:
 
     assert len(lines) == 2
     assert any("city: X" in ln and "dept: B" in ln for ln in lines)
+
+
+_UNIT_SOURCE = (
+    "Strategic Unit 112 had liabilities of 888,100 to the central bank. "
+    "Strategic Unit 7 reported total assets of 600. "
+    "Strategic Unit 9 reported total assets of 700."
+)
+
+
+def test_pre_merge_drops_source_unanchored_pk_and_heals_anchor_merge() -> None:
+    """A fabricated pk is dropped, restoring anchor uniqueness so the
+    legitimate blank-PK fragment merges into its real record."""
+    text = "\n".join(
+        [
+            "record_id: 112 | asset_id: 112 | totalassets: 500",
+            "record_id: 7 | asset_id: 7 | totalassets: 600",
+            "record_id: 9 | asset_id: 9 | totalassets: 700",
+            # fabricated line: pk 0 never appears in the source text
+            "record_id: 0 | asset_id: 112 | liabilities_cb: 946200",
+            # honest fragment: blank pk, real anchor, real data
+            "record_id:  | asset_id: 112 | liabilities_cb: 888100",
+        ]
+    )
+    merged = pre_merge_entity_lines(
+        text,
+        primary_key="record_id",
+        anchor_keys=["record_id", "asset_id"],
+        source_text=_UNIT_SOURCE,
+    )
+    lines = [ln for ln in merged.splitlines() if ln.strip()]
+
+    assert len(lines) == 3
+    assert not any("record_id: 0 " in ln or "946200" in ln for ln in lines)
+    unit_112 = next(ln for ln in lines if ln.startswith("record_id: 112"))
+    assert "liabilities_cb: 888100" in unit_112
+
+
+def test_pre_merge_drops_pk_only_embedded_in_larger_numbers() -> None:
+    """Digits appearing only inside formatted numbers do not anchor a pk."""
+    text = "\n".join(
+        [
+            "record_id: 112 | asset_id: 112 | totalassets: 500",
+            "record_id: 7 | asset_id: 7 | totalassets: 600",
+            "record_id: 408 | asset_id: 408 | totalassets: 900",
+        ]
+    )
+    merged = pre_merge_entity_lines(
+        text,
+        primary_key="record_id",
+        anchor_keys=["record_id", "asset_id"],
+        source_text=_UNIT_SOURCE + " The ledger total reached 8,408,793 yuan.",
+    )
+    lines = [ln for ln in merged.splitlines() if ln.strip()]
+
+    assert len(lines) == 2
+    assert not any("record_id: 408" in ln for ln in lines)
+
+
+def test_pre_merge_unanchored_gate_skips_non_digit_pks_and_no_source() -> None:
+    text = "\n".join(
+        [
+            "record_id: TR06 | label: a",
+            "record_id: TR07 | label: b",
+        ]
+    )
+    # non-digit pks survive even though absent from source_text
+    merged = pre_merge_entity_lines(
+        text,
+        primary_key="record_id",
+        anchor_keys=["record_id"],
+        source_text=_UNIT_SOURCE,
+    )
+    assert len([ln for ln in merged.splitlines() if ln.strip()]) == 2
+
+    # without source_text the gate is a no-op for digit pks too
+    digit_text = "record_id: 9991 | label: a\nrecord_id: 9992 | label: b"
+    merged = pre_merge_entity_lines(
+        digit_text,
+        primary_key="record_id",
+        anchor_keys=["record_id"],
+    )
+    assert len([ln for ln in merged.splitlines() if ln.strip()]) == 2

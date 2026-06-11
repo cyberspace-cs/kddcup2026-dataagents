@@ -16,6 +16,8 @@ from agents.etl._types import (
     NUMERIC_SCALAR,
     RECORD_ID_FIELDS,
     RECORD_ID_KEYWORDS,
+    has_standalone_id,
+    is_embedded_digit_run,
     is_placeholder,
     normalize_boolean,
 )
@@ -51,28 +53,10 @@ RECORD_ID_RANGE = re.compile(
 _DIGIT_RUN = re.compile(r"\d{1,8}")
 
 
-def _is_embedded_digit_run(text: str, start: int, end: int) -> bool:
-    """True when ``text[start:end]`` is a digit fragment of a larger token.
-
-    Record IDs are standalone digit tokens.  Captures inside comma/dot
-    formatted numbers ("8,408,793" → "408", "671,408.57" → "408"), longer
-    digit runs ("2003" → "200"), or digit+letter words ("30th" → "30") are
-    false IDs: they spawn spurious entity groups and hijack paragraphs away
-    from the entity they belong to.
-    """
-    before = text[start - 1] if start > 0 else ""
-    before2 = text[start - 2] if start > 1 else ""
-    after = text[end] if end < len(text) else ""
-    after2 = text[end + 1] if end + 1 < len(text) else ""
-    if before.isdigit() or after.isdigit():
-        return True
-    if before in ",." and before2.isdigit():
-        return True
-    if after in ",." and after2.isdigit():
-        return True
-    # ASCII letters only: a CJK char right after the digits ("档案286的…")
-    # is ordinary prose, not a fragment.
-    return after.isascii() and after.isalpha()
+# Anchor-verification helpers live in _types (shared with the merge layer);
+# private aliases keep this module's established import surface stable.
+_is_embedded_digit_run = is_embedded_digit_run
+_has_standalone_id = has_standalone_id
 
 
 def _first_standalone_match(regex: re.Pattern[str], text: str) -> re.Match[str] | None:
@@ -458,14 +442,6 @@ def _split_prose_paragraphs(text: str) -> list[str]:
     position in this list.
     """
     return [p.strip() for p in text.split("\n\n") if p.strip() and len(p.strip()) > 30]
-
-
-def _has_standalone_id(text: str, rid: str) -> bool:
-    """``rid`` occurs in ``text`` as a standalone digit token (anchor verification)."""
-    for m in re.finditer(re.escape(rid), text):
-        if not _is_embedded_digit_run(text, m.start(), m.end()):
-            return True
-    return False
 
 
 def _make_grouping_batches(

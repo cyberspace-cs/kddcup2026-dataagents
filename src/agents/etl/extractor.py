@@ -1454,6 +1454,7 @@ def extract_prose_file(
         compressed,
         primary_key=primary_key,
         anchor_keys=anchor_keys,
+        source_text=full_text,
     )
     if schema_columns:
         compressed = normalize_entity_lines(compressed, schema_columns, primary_key)
