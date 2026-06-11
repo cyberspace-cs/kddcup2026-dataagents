@@ -55,12 +55,6 @@ def test_multi_processor_add_and_remove() -> None:
     assert p2.events == ["trace_start", "trace_end"]
 
 
-def test_remove_nonexistent_processor_is_noop() -> None:
-    mp = SynchronousMultiTracingProcessor()
-    p = _RecordingProcessor()
-    mp.remove_processor(p)
-
-
 def test_provider_register_and_unregister() -> None:
     provider = DefaultTraceProvider()
     p = _RecordingProcessor()

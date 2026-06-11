@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -175,28 +176,13 @@ def _patch_run_single_task(monkeypatch: pytest.MonkeyPatch) -> _CapturingSingleT
     return fake
 
 
-def _patch_dataset(monkeypatch: pytest.MonkeyPatch, task_ids: list[str]) -> None:
-    """把 DABenchPublicDataset 换成 fake，避免真依赖磁盘数据。"""
-
-    class _FakeTask:
-        def __init__(self, tid: str) -> None:
-            self.task_id = tid
-
-    class _FakeDataset:
-        def __init__(self, root: Path) -> None:
-            del root
-
-        def iter_tasks(self) -> list[_FakeTask]:
-            return [_FakeTask(tid) for tid in task_ids]
-
-    monkeypatch.setattr(runner_mod, "DABenchPublicDataset", _FakeDataset)
-
-
 def test_run_benchmark_parallel_rotates_keys(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patch_dataset: Callable[[list[str]], None],
 ) -> None:
     fake = _patch_run_single_task(monkeypatch)
-    _patch_dataset(monkeypatch, ["task_0", "task_1", "task_2", "task_3"])
+    patch_dataset(["task_0", "task_1", "task_2", "task_3"])
 
     rl = RateLimitConfig(state_dir=None)
     cfg = _make_config(tmp_path=tmp_path, api_keys=("key-A", "key-B"), rate_limit=rl)
@@ -213,10 +199,12 @@ def test_run_benchmark_parallel_rotates_keys(
 
 
 def test_run_benchmark_serial_rotates_keys_when_pool_set(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patch_dataset: Callable[[list[str]], None],
 ) -> None:
     fake = _patch_run_single_task(monkeypatch)
-    _patch_dataset(monkeypatch, ["task_0", "task_1", "task_2"])
+    patch_dataset(["task_0", "task_1", "task_2"])
 
     rl = RateLimitConfig(state_dir=None)
     cfg = _make_config(tmp_path=tmp_path, api_keys=("key-A", "key-B"), rate_limit=rl)
@@ -230,10 +218,12 @@ def test_run_benchmark_serial_rotates_keys_when_pool_set(
 
 
 def test_run_benchmark_no_pool_passes_config_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patch_dataset: Callable[[list[str]], None],
 ) -> None:
     fake = _patch_run_single_task(monkeypatch)
-    _patch_dataset(monkeypatch, ["task_0", "task_1"])
+    patch_dataset(["task_0", "task_1"])
 
     cfg = _make_config(tmp_path=tmp_path)  # api_keys=()
     cfg = replace(cfg, run=replace(cfg.run, max_workers=2))
@@ -245,7 +235,9 @@ def test_run_benchmark_no_pool_passes_config_unchanged(
 
 
 def test_run_benchmark_state_dir_default_resolution(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    patch_dataset: Callable[[list[str]], None],
 ) -> None:
     """未显式指定 state_dir 时，runner 应把它解析为 <output_dir.parent>/ratelimit/<run_id>/。"""
 
@@ -272,7 +264,7 @@ def test_run_benchmark_state_dir_default_resolution(
         )
 
     monkeypatch.setattr(runner_mod, "run_single_task", _capture_state_dir)
-    _patch_dataset(monkeypatch, ["task_0"])
+    patch_dataset(["task_0"])
 
     rl = RateLimitConfig(state_dir=None)  # 让 runner 推导
     cfg = _make_config(tmp_path=tmp_path, api_keys=("key-A",), rate_limit=rl)

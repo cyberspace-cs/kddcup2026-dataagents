@@ -84,61 +84,72 @@ def test_schema_adds_record_id_for_repeated_local_record_labels() -> None:
     assert anchors == ["record_id", "personalcode", "manager_name"]
 
 
-def test_parse_schema_response_normal_order() -> None:
-    result = _parse_schema_response(
-        "PK: fundcode\n"
-        "ANCHORS: fundcode, fundname\n"
-        "TYPES: fundcode=scalar_id, fundname=string, nav=number\n"
-        "fundcode, fundname, nav"
-    )
+@pytest.mark.parametrize(
+    ("raw", "pk", "anchors", "types", "cols"),
+    [
+        pytest.param(
+            "PK: fundcode\n"
+            "ANCHORS: fundcode, fundname\n"
+            "TYPES: fundcode=scalar_id, fundname=string, nav=number\n"
+            "fundcode, fundname, nav",
+            "fundcode",
+            ["fundcode", "fundname"],
+            {"fundcode": "scalar_id", "fundname": "string", "nav": "number"},
+            ["fundcode", "fundname", "nav"],
+            id="normal-order",
+        ),
+        # 各前缀行乱序出现也按前缀识别，不按位置
+        pytest.param(
+            "TYPES: id=integer, score=number\nANCHORS: id\nPK: id\nid, score, label",
+            "id",
+            ["id"],
+            {"id": "integer", "score": "number"},
+            ["id", "score", "label"],
+            id="out-of-order",
+        ),
+        # 只有 PK 行：anchors 回退为 [pk]，types 为空
+        pytest.param(
+            "PK: patient_id\npatient_id, age, weight",
+            "patient_id",
+            ["patient_id"],
+            {},
+            ["patient_id", "age", "weight"],
+            id="missing-anchors-and-types",
+        ),
+        # 前后的 prose 行被忽略，不污染列清单
+        pytest.param(
+            "Here is the schema:\n"
+            "PK: record_id\n"
+            "ANCHORS: record_id, province_name\n"
+            "TYPES: record_id=integer_scalar local_record_id, gdp=number\n"
+            "record_id, province_name, gdp\n"
+            "Note: gdp is in billions.",
+            "record_id",
+            ["record_id", "province_name"],
+            {"record_id": "integer_scalar local_record_id", "gdp": "number"},
+            ["record_id", "province_name", "gdp"],
+            id="extra-commentary-ignored",
+        ),
+        # 声明为 ANCHOR 但缺席列清单的字段被补到 columns 尾部
+        pytest.param(
+            "PK: id\nANCHORS: id, name\nid, score",
+            "id",
+            ["id", "name"],
+            {},
+            ["id", "score", "name"],
+            id="anchor-appended-to-columns",
+        ),
+    ],
+)
+def test_parse_schema_response_variants(
+    raw: str, pk: str, anchors: list[str], types: dict[str, str], cols: list[str]
+) -> None:
+    result = _parse_schema_response(raw)
     assert result is not None
-    pk, anchors, types, cols, units, defs = result
-    assert pk == "fundcode"
-    assert anchors == ["fundcode", "fundname"]
-    assert types == {"fundcode": "scalar_id", "fundname": "string", "nav": "number"}
-    assert cols == ["fundcode", "fundname", "nav"]
+    got_pk, got_anchors, got_types, got_cols, units, defs = result
+    assert (got_pk, got_anchors, got_types, got_cols) == (pk, anchors, types, cols)
     assert units == {}
     assert defs == {}
-
-
-def test_parse_schema_response_out_of_order() -> None:
-    result = _parse_schema_response(
-        "TYPES: id=integer, score=number\nANCHORS: id\nPK: id\nid, score, label"
-    )
-    assert result is not None
-    pk, anchors, _, cols, _, _ = result
-    assert pk == "id"
-    assert anchors == ["id"]
-    assert cols == ["id", "score", "label"]
-
-
-def test_parse_schema_response_missing_anchors_and_types() -> None:
-    result = _parse_schema_response("PK: patient_id\npatient_id, age, weight")
-    assert result is not None
-    pk, anchors, types, cols, units, defs = result
-    assert pk == "patient_id"
-    assert anchors == ["patient_id"]
-    assert types == {}
-    assert cols == ["patient_id", "age", "weight"]
-    assert units == {}
-    assert defs == {}
-
-
-def test_parse_schema_response_extra_commentary_ignored() -> None:
-    result = _parse_schema_response(
-        "Here is the schema:\n"
-        "PK: record_id\n"
-        "ANCHORS: record_id, province_name\n"
-        "TYPES: record_id=integer_scalar local_record_id, gdp=number\n"
-        "record_id, province_name, gdp\n"
-        "Note: gdp is in billions."
-    )
-    assert result is not None
-    pk, anchors, types, cols, _, _ = result
-    assert pk == "record_id"
-    assert anchors == ["record_id", "province_name"]
-    assert "gdp" in types
-    assert cols == ["record_id", "province_name", "gdp"]
 
 
 @pytest.mark.parametrize(
@@ -151,13 +162,6 @@ def test_parse_schema_response_extra_commentary_ignored() -> None:
 )
 def test_parse_schema_response_returns_none_on_garbage(raw: str) -> None:
     assert _parse_schema_response(raw) is None
-
-
-def test_parse_schema_response_anchor_added_to_columns() -> None:
-    result = _parse_schema_response("PK: id\nANCHORS: id, name\nid, score")
-    assert result is not None
-    _, _, _, cols, _, _ = result
-    assert "name" in cols
 
 
 @pytest.mark.parametrize(
