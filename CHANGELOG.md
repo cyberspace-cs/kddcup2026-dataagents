@@ -24,6 +24,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed from user-facing docs and submission defaults.
 
 ### Fixed
+- **Identity-echo fragments no longer materialize as CSV rows.** Compression
+  intentionally emits identity-only lines (security code + company name,
+  no record label) as merge fodder; in single-entity documents those
+  anchors are shared by every record, the anchor merge cannot place the
+  fragment, and it used to surface as an extra junk row the gold table
+  does not have. Pre-merge now drops unplaced blank-PK fragments whose
+  every populated field is an anchor or a column-constant echo across the
+  real records. Fragments carrying actual data are still kept (with a
+  warning) rather than silently destroyed.
 - **Approximate numerals recomputed from mined table invariants.** Prose
   documents state some numbers only coarsely ("持有约六百九十七万股");
   these used to land in the CSV as the literal coarse value (6970000) or

@@ -317,6 +317,57 @@ def pre_merge_entity_lines(
                 anchor_keys,
             )
 
+    # Round 3: identity-echo fragments. A blank-PK group that round 2 could
+    # not attach (its anchor values are shared by several real records — e.g.
+    # secucode in a single-company table) and whose every populated field is
+    # an anchor or a value constant across all real records carries no
+    # record-distinguishing information: it is narrative echo, not a record.
+    # Compression emits such lines BY DESIGN as merge fodder for multi-entity
+    # documents; in single-entity documents they can never attach and would
+    # otherwise materialize as junk rows the gold table does not have.
+    # Fragments carrying actual data are kept as rows — a visible extra row
+    # beats silently destroying extracted values.
+    real_keys = [key for key in order if key in groups and not key.startswith(TEMP_ANCHOR_PREFIX)]
+    temp_keys = [key for key in order if key in groups and key.startswith(TEMP_ANCHOR_PREFIX)]
+    if temp_keys and real_keys:
+        identity_fields = {key.lower() for key in [primary_key, *(anchor_keys or [])] if key}
+        real_field_values: dict[str, set[str]] = {}
+        for key in real_keys:
+            for field, val in groups[key].items():
+                val = val.strip()
+                if val and not _is_placeholder(val):
+                    real_field_values.setdefault(field, set()).add(val)
+
+        echo_dropped = 0
+        for key in temp_keys:
+            informative: list[str] = []
+            for field, val in groups[key].items():
+                val = val.strip()
+                if not val or _is_placeholder(val):
+                    continue
+                if field.lower() in identity_fields:
+                    continue
+                real_vals = real_field_values.get(field)
+                is_constant_echo = (
+                    len(real_keys) >= 2 and real_vals is not None and real_vals == {val}
+                )
+                if not is_constant_echo:
+                    informative.append(field)
+            if informative:
+                logger.warning(
+                    "ETL pre-merge: unplaced fragment kept as row — anchors ambiguous, "
+                    "data fields: %s",
+                    informative,
+                )
+            else:
+                del groups[key]
+                echo_dropped += 1
+        if echo_dropped:
+            logger.info(
+                "ETL pre-merge: dropped %d identity-echo fragments with no data fields",
+                echo_dropped,
+            )
+
     merged: list[str] = []
     for pk_val in order:
         if pk_val not in groups:

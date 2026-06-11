@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import io
 
+import pytest
+
 from agents.etl._merge import (
     deterministic_kv_to_csv,
     normalize_entity_lines,
@@ -287,3 +289,72 @@ def test_pre_merge_keeps_genuine_small_sequential_pks() -> None:
 
     assert len(lines) == 3
     assert any(ln.startswith("record_id: 1 ") for ln in lines)
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        # anchor + non-anchor column whose value is constant across real rows
+        "record_id:  | secucode: 300707 | companyname: 无锡威唐工业技术股份有限公司",
+        # anchor values only
+        "record_id:  | secucode: 300707",
+    ],
+)
+def test_pre_merge_drops_identity_echo_fragment(fragment: str) -> None:
+    """Blank-PK fragments carrying only identity echoes never become rows."""
+    text = "\n".join(
+        [
+            "record_id: 29 | secucode: 300707 | companyname: 无锡威唐工业技术股份有限公司 | transfer_shares: 300000",
+            "record_id: 30 | secucode: 300707 | companyname: 无锡威唐工业技术股份有限公司 | transfer_shares: 785000",
+            "record_id: 31 | secucode: 300707 | companyname: 无锡威唐工业技术股份有限公司 | transfer_shares: 40000",
+            fragment,
+        ]
+    )
+    merged = pre_merge_entity_lines(
+        text,
+        primary_key="record_id",
+        anchor_keys=["record_id", "secucode"],
+    )
+    lines = [ln for ln in merged.splitlines() if ln.strip()]
+
+    assert len(lines) == 3
+    assert all(ln.split("|")[0].strip() != "record_id:" for ln in lines)
+
+
+def test_pre_merge_keeps_data_carrying_fragment_with_ambiguous_anchor() -> None:
+    """An unplaced fragment holding real data survives as its own row."""
+    text = "\n".join(
+        [
+            "record_id: 29 | secucode: 300707 | transfer_shares: 300000",
+            "record_id: 30 | secucode: 300707 | transfer_shares: 785000",
+            "record_id:  | secucode: 300707 | transfer_shares: 99999",
+        ]
+    )
+    merged = pre_merge_entity_lines(
+        text,
+        primary_key="record_id",
+        anchor_keys=["record_id", "secucode"],
+    )
+    lines = [ln for ln in merged.splitlines() if ln.strip()]
+
+    assert len(lines) == 3
+    assert any("transfer_shares: 99999" in ln for ln in lines)
+
+
+def test_pre_merge_single_real_row_disables_constant_echo_rule() -> None:
+    """With one real record, column constancy is no evidence — fragment stays."""
+    text = "\n".join(
+        [
+            "personalcode: 101 | chinesename: 柳军 | dept: A | city: X",
+            "personalcode:  | chinesename: 柳军 | dept: B | city: X",
+        ]
+    )
+    merged = pre_merge_entity_lines(
+        text,
+        primary_key="personalcode",
+        anchor_keys=["personalcode", "chinesename", "dept"],
+    )
+    lines = [ln for ln in merged.splitlines() if ln.strip()]
+
+    assert len(lines) == 2
+    assert any("city: X" in ln and "dept: B" in ln for ln in lines)
