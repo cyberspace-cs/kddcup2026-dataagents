@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **No joins for columns the base table already has.** A lookup join
+  against a sparse dimension table can collapse the base row set
+  (task_13: an inner merge with a 50-entity doc table cut 12,962 rows
+  to 48 to fetch a fund-name column the source table already carried).
+  The answer rules now require checking the base table's own columns
+  before any merge/JOIN.
 - **Name-splitting rule scoped by writing system.** The "names are
   always two columns" rule now applies to Latin-script names only; CJK
   person names (no whitespace boundary) are submitted as a single name
