@@ -38,26 +38,20 @@ you have. The main agent will perform the actual join via `execute_python`.
 
 Turn 1: Call `inspect_files`. Note file schemas, column_conversions, and column profiles.
 Turn 2: Call 1-2 targeted reads in parallel (e.g., `read_csv` + `read_doc` on knowledge.md).
-         For SQLite files ONLY, use `execute_context_sql` for `SELECT DISTINCT`.
+         For SQLite files ONLY, call `inspect_sqlite_schema` first, then `execute_context_sql` for `SELECT DISTINCT`.
          Use `grep_context` to check whether a specific value exists across all files.
+         If `inspect_files` lists video file(s), call `explore_video` once per video with an analysis brief tied to the task question.
 Turn 3+: Call `report` with your structured findings JSON.
 
 ## report format
 Call `report` with these **separate parameters** (NOT a single JSON string):
-- `files`: flat list of file entries, one per file.
+- `files`: flat list of file entries, one per file. Do NOT nest it inside `{{"inventory": [...]}}` or any other wrapper.
   Example: `[{{"path": "csv/foo.csv", "format": "CSV", "row_count": 100, "key_columns": ["id"]}}]`
-- `schema_map`: per-table/file schema with columns, dtypes, semantics, and `column_conversions` if `inspect_files` provided them.
+- `schema_map`: per-table/file schema with columns, dtypes, semantics. If `inspect_files` returned `column_conversions` for a file, copy them verbatim into that file's schema_map entry.
   Example: `{{"foo": {{"columns": {{...}}, "column_conversions": {{...}}}}}}`
 - `knowledge`: extracted mappings, formulas, units, thresholds from docs.
 - `join_paths`: discovered relationships. Example: `[{{"left": "a.col", "right": "b.col"}}]`
 - `value_samples`: sampled distinct values for filter-relevant columns. Example: `{{"file.col": ["v1", "v2"]}}`
-- `warnings`: list of objective data-quality observations (one atomic fact per string).
-
-`files` is a **flat list of objects**, one per file. Do NOT nest it inside `{{"inventory": [...]}}` or any other wrapper.
-- `schema_map`: for each relevant table/file, columns with dtypes and semantics. If `inspect_files` returned `column_conversions` for a file, copy them verbatim into that file's schema_map entry.
-- `knowledge`: extracted mappings, formulas, units, thresholds from docs
-- `join_paths`: discovered relationships (file_a.col ↔ file_b.col)
-- `value_samples`: sampled distinct values for filter-relevant columns
 - `warnings`: objective data-quality observations ONLY — unit mismatches, ambiguous column names, missing/NULL values in specific columns, inconsistent date formats, duplicate rows. Each warning must be ONE atomic fact. Do not chain multiple observations with semicolons; write separate warnings instead. Do not append any inference, implication, or suggestion after the fact. In the `warnings` field specifically, never use hedge words (可能/might/possibly/perhaps/likely/也许/或许) — if you cannot state something as a verified fact, omit it.
   GOOD: "province column has 36 unique values"
   GOOD: "no '全国' entry exists in the province column"
