@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Name-splitting rule scoped by writing system.** The "names are
+  always two columns" rule now applies to Latin-script names only; CJK
+  person names (no whitespace boundary) are submitted as a single name
+  column exactly as the source stores them. Previously an English
+  question over Chinese names triggered a forced 谢/理斌-style split
+  that zeroed the answer against a single-column 姓名 gold.
 - **Answer verifier sees the producing code and rejects NULL-filtered
   listings.** The pre-submit verifier now receives the last execute
   steps that built the answer table and rejects listing answers whose

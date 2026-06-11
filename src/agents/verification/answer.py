@@ -106,20 +106,12 @@ the data.  Values like 100%, 0%, or 99.95% are perfectly valid.
 Only flag values that are MATHEMATICALLY impossible for the requested measure.
 
 Check 5 — NULL-filter leakage (only when a PRODUCING CODE section is present):
-PRODUCING CODE shows the final execute steps that built the submitted
-table.  If that code removes empty/NULL rows of a column that IS being
-submitted — patterns: `WHERE <col> IS NOT NULL`, `.dropna(`,
-`df[df['<col>'].notna()]` — and the question is a data listing/retrieval
-request that does not explicitly ask to exclude empty values, reject:
-the gold reference keeps NULL rows as empty cells, so dropping them
-breaks the row multiset.  Instruct the agent to rebuild WITHOUT the
-NULL filter on submitted columns (row exclusion is only legitimate on
-identity/key columns) and resubmit.
-- NULL filters on columns NOT being submitted, and NULL handling inside
-  aggregate/ratio computations (AVG/SUM/COUNT...), are fine — say "ok".
-- Exploration habits leak: a `WHERE col IS NOT NULL` written earlier to
-  sample values often gets copied into the final query.  Judge only the
-  code that produced the submitted table.
+Reject a data-listing answer whose producing code drops NULL rows of a
+SUBMITTED column (`WHERE <col> IS NOT NULL`, `.dropna(`, `.notna()`)
+unless the question explicitly excludes empty values.  Instruction:
+rebuild keeping NULL rows; filter only on identity/key columns.
+NULL filters on non-submitted columns and inside aggregates
+(AVG/SUM/COUNT...) are fine — say "ok".
 
 Reply with a JSON object (no markdown fence):
 {"verdict": "ok"} — all checks pass.
