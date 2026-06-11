@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Answer rules: conversions follow the semantic field; junk-row filters
+  use identity columns only.** The unit-conversion rule now states that a
+  factor bound to an empty canonical column applies to values answered
+  from its synonym/substitute column, and the NULL-preservation rule now
+  forbids `notna()` filters on submitted value columns (identity-column
+  filters only) — the observed failure mode that silently deleted
+  legitimate NULL rows while excluding a junk row.
 - **Explorer reports stay data maps.** The explorer prompt now forbids
   resolving cross-source joins during exploration (extracting key lists
   from one source to look up another, paginating to match records,
@@ -24,6 +31,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed from user-facing docs and submission defaults.
 
 ### Fixed
+- **Fabricated primary keys with no source anchor are dropped.** A digit
+  pk that never appears as a standalone token in the source document is a
+  hallucinated line (typically mixing values from several entities); the
+  pre-merge now drops it before grouping. Besides removing the junk row
+  itself, this restores round-2 anchor uniqueness so legitimate blank-PK
+  fragments sharing the same anchor value merge back into their real
+  record instead of surfacing as extra rows.
 - **Identity-echo fragments no longer materialize as CSV rows.** Compression
   intentionally emits identity-only lines (security code + company name,
   no record label) as merge fodder; in single-entity documents those
