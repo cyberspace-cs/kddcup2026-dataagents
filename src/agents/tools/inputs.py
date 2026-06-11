@@ -56,9 +56,41 @@ class InspectFilesInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# `explore` 入参与 `inspect_files` 同构——空模型，无配置全量探索。
+# `explore` 入参：默认空调用 = 全量探索；`focus` = 定向重探（启用 run_explorer 预留的 question 参数）。
 class ExploreInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    focus: str | None = Field(
+        default=None,
+        description=(
+            "Optional targeted re-exploration directive. Use after a previous explore "
+            "when its findings (including video_findings) lack one specific detail, "
+            "e.g. 're-watch the video: per-category Q3 revenue in the bar chart near "
+            "00:42' or 'sample distinct values of orders.status'. Omit for the first "
+            "full exploration."
+        ),
+    )
+
+
+# `explore_video` 入参：explorer 专属（不进主 registry）。
+class ExploreVideoInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Annotated[
+        str,
+        _path_field(file_kind="video file", examples=("video.mp4", "media/demo.mov")),
+    ]
+    instructions: str = Field(
+        description=(
+            "Analysis brief for the video agent: what the task needs from this video — "
+            "which charts, tables, values, or text to transcribe, plus any IDs or labels "
+            "to look for. When a focused re-exploration directive targets this video, "
+            "copy the directive into this field verbatim."
+        ),
+    )
+
+
+EXPLORE_VIDEO_SCHEMA = normalize_for_vllm(ExploreVideoInput.model_json_schema())
 
 
 class ReadCsvInput(BaseModel):
