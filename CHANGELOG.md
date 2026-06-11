@@ -90,7 +90,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   floor, and unit conversion factors within known scale families are
   computed deterministically instead of trusting LLM arithmetic.
   Previously up to 3 of 50 entities per document were silently dropped
-  from converted CSVs (task_59 regression).
+  from converted CSVs (task_59 regression). The grouping prompt
+  disambiguates multi-ID paragraphs — group by the document-local record
+  label that introduces the record, never by domain codes
+  (identification/company/security codes), dates, or amounts stated as
+  the record's data (task_13 mf_fcretscalerank: 37/152 paragraphs keyed
+  by advisor code split 50 entities into 83 groups, invisible to anchor
+  verification) — and all its example IDs are placeholders, never
+  concrete digits a model could echo into verifiable group claims. The
+  response parser strips enumeration prefixes echoing the input's
+  paragraph numbering ("1) 9: 1"), which previously dropped whole
+  batches to the leftover path as unparsed lines.
 - **`agent.backend_kind` config field (`vllm` | `dashscope` | `null`).**
   Picks where `enable_thinking` is placed in the chat completions
   request: `"vllm"` → `extra_body.chat_template_kwargs.enable_thinking`
