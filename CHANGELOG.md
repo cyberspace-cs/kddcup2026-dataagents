@@ -37,6 +37,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   video report.
 
 ### Changed
+- **Ungrouped aggregate answers are pinned to the SQL result shape.**
+  Questions asking for aggregates without grouping (e.g., max and min of
+  two quantities) now submit one row with one column per aggregate;
+  metric-label columns and label+value transposes are forbidden, and a
+  matching `knowledge.md` use-case SQL pins the shape. Previously the
+  layout was a per-run coin flip — the same task produced wide, pivoted,
+  and transposed layouts across three runs — and any non-wide layout
+  scores 0 against the whole-column grader.
+- **Grouping prompts render paragraph heads as leading sentences.** The
+  paragraph-grouping prompt used to show each paragraph's first 300
+  characters; it now shows the first sentence, extended to the second
+  only when the first carries no standalone number while the paragraph
+  does (rhetorical openers defer the record ID to sentence two). Halves
+  grouping input tokens (37-54% of the previous cost on the benchmark
+  corpus) with equal-or-better verified coverage; record-ID retention
+  audited at 100%.
+- **No joins for columns the base table already has.** A lookup join
+  against a sparse dimension table can collapse the base row set
+  (task_13: an inner merge with a 50-entity doc table cut 12,962 rows
+  to 48 to fetch a fund-name column the source table already carried).
+  The answer rules now require checking the base table's own columns
+  before any merge/JOIN.
+- **Name-splitting rule scoped by writing system.** The "names are
+  always two columns" rule now applies to Latin-script names only; CJK
+  person names (no whitespace boundary) are submitted as a single name
+  column exactly as the source stores them. Previously an English
+  question over Chinese names triggered a forced 谢/理斌-style split
+  that zeroed the answer against a single-column 姓名 gold.
+- **Answer verifier sees the producing code and rejects NULL-filtered
+  listings.** The pre-submit verifier now receives the last execute
+  steps that built the answer table and rejects listing answers whose
+  final SQL/python drops NULL rows of a submitted column
+  (`WHERE col IS NOT NULL` / `dropna()` / `notna()`), instructing a
+  rebuild that keeps NULL rows. The agent rules also state explicitly
+  that exploration-time `IS NOT NULL` sampling filters must not be
+  copied into the final answer query.
+- **%→ratio conversion decisions are grounded in sibling sources.** Whether
+  a doc-extracted percentage field converts to a decimal fraction used to
+  depend on question wording alone; the ETL now scans the task's sibling
+  SQLite tables and CSVs for proportion-named columns, classifies each by
+  value magnitude (a fraction of a whole cannot exceed 1), and aggregates
+  per naming subfamily (pct/percentage vs ratio vs proportion vs 比例 —
+  observed to carry different storage semantics within one database). A
+  unanimous subfamily verdict deterministically installs or cancels the
+  ×0.01 conversion for fields of that subfamily; mixed or absent evidence
+  falls back to the existing heuristic.
+- **Answer rules: conversions follow the semantic field; junk-row filters
+  use identity columns only.** The unit-conversion rule now states that a
+  factor bound to an empty canonical column applies to values answered
+  from its synonym/substitute column, and the NULL-preservation rule now
+  forbids `notna()` filters on submitted value columns (identity-column
+  filters only) — the observed failure mode that silently deleted
+  legitimate NULL rows while excluding a junk row.
 - **Explorer reports stay data maps.** The explorer prompt now forbids
   resolving cross-source joins during exploration (extracting key lists
   from one source to look up another, paginating to match records,
@@ -54,6 +107,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed from user-facing docs and submission defaults.
 
 ### Fixed
+- **Grouping batches are balanced; no more weak tail batch.** Paragraph
+  grouping used fixed 40-paragraph strides, so a document's remainder
+  became a sub-handful final batch whose numbered-list format anchor was
+  too weak — the model drifted to prose or rejected the batch wholesale,
+  and its paragraphs silently fell to the unverified leftover path
+  (task_53 ed_otherdepositorycorpbs: 606 paragraphs → a 6-paragraph tail
+  batch lost the last five entities' totalliabilities, flipping the
+  reported maximum). Batches now split into ceil(n/40) contiguous slices
+  whose sizes differ by at most one, so every multi-batch slice keeps at
+  least 20 lines.
+- **Fabricated primary keys with no source anchor are dropped.** A digit
+  pk that never appears as a standalone token in the source document is a
+  hallucinated line (typically mixing values from several entities); the
+  pre-merge now drops it before grouping. Besides removing the junk row
+  itself, this restores round-2 anchor uniqueness so legitimate blank-PK
+  fragments sharing the same anchor value merge back into their real
+  record instead of surfacing as extra rows.
+- **Identity-echo fragments no longer materialize as CSV rows.** Compression
+  intentionally emits identity-only lines (security code + company name,
+  no record label) as merge fodder; in single-entity documents those
+  anchors are shared by every record, the anchor merge cannot place the
+  fragment, and it used to surface as an extra junk row the gold table
+  does not have. Pre-merge now drops unplaced blank-PK fragments whose
+  every populated field is an anchor or a column-constant echo across the
+  real records. Fragments carrying actual data are still kept (with a
+  warning) rather than silently destroyed.
+- **Approximate numerals recomputed from mined table invariants.** Prose
+  documents state some numbers only coarsely ("持有约六百九十七万股");
+  these used to land in the CSV as the literal coarse value (6970000) or
+  vanish entirely, breaking exact-match grading. The ETL now mines
+  additive identities (`a = b + c`) from each table's exact rows and uses
+  them to recompute values that compression tagged approximate (`~`),
+  untagged coarse values that uniquely violate a validated identity at a
+  column-anomalous granularity, and single missing terms whose two
+  siblings are present. Repairs apply only when every candidate identity
+  agrees on one solution; rows missing 2+ terms (genuine source nulls)
+  stay null.
+- **Value-split synonym columns unified into governance names.** When a
+  materialized prose CSV leaves a governance-defined column empty — or
+  partially filled, with the remaining values routed under an
+  extraction-discovered column of identical meaning (e.g.
+  `transferor_shares_before` vs `sumbeforetran`) — the ETL now merges
+  the values under the canonical name and re-points unit conversion
+  metadata at it. The merge is gated deterministically: identity columns
+  are protected, any row-level disagreement vetoes the pair, ambiguous
+  multi-claims and unit-family mismatches are skipped, and an
+  adjudication LLM call (semantic equivalence only) is spent only when a
+  structurally mergeable pair exists.
 - **Fabricated sequential primary keys repaired before entity merge.**
   When compression renumbers paragraphs (1, 2, 3, ...) instead of copying
   the stated record label, the pre-merge step now rewrites the primary

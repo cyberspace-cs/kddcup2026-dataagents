@@ -399,6 +399,7 @@ class ReActAgent:
                     arguments=tool_call.arguments,
                     is_terminal=defn is not None and defn.is_terminal,
                     remaining_steps=budget_status.remaining,
+                    state=state,
                 )
                 if rejection is not None:
                     # Replay requires one tool message for every assistant

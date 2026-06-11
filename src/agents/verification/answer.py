@@ -105,9 +105,17 @@ based on domain knowledge or common sense — you do not have access to
 the data.  Values like 100%, 0%, or 99.95% are perfectly valid.
 Only flag values that are MATHEMATICALLY impossible for the requested measure.
 
+Check 5 — NULL-filter leakage (only when a PRODUCING CODE section is present):
+Reject a data-listing answer whose producing code drops NULL rows of a
+SUBMITTED column (`WHERE <col> IS NOT NULL`, `.dropna(`, `.notna()`)
+unless the question explicitly excludes empty values.  Instruction:
+rebuild keeping NULL rows; filter only on identity/key columns.
+NULL filters on non-submitted columns and inside aggregates
+(AVG/SUM/COUNT...) are fine — say "ok".
+
 Reply with a JSON object (no markdown fence):
 {"verdict": "ok"} — all checks pass.
-{"verdict": "reject", "check": "extra|missing|row_count|value", \
+{"verdict": "reject", "check": "extra|missing|row_count|value|null_filter", \
 "reason": "one-sentence diagnosis with concrete fix instruction"}
 
 Be conservative: when in doubt, say "ok".  Only reject when you are
@@ -130,13 +138,18 @@ class AnswerVerifier:
     model: ModelAdapter
     max_rejections: int = 1
 
-    def verify(self, question: str, arguments: dict[str, Any]) -> str | None:
+    def verify(
+        self,
+        question: str,
+        arguments: dict[str, Any],
+        producing_code: str | None = None,
+    ) -> str | None:
         """Return a rejection message for this answer tool call, or None."""
         result = preview_answer_table(arguments)
         if result is None:
             return None
         columns, rows = result
-        return verify_answer(self.model, question, columns, rows)
+        return verify_answer(self.model, question, columns, rows, producing_code)
 
 
 def preview_answer_table(
@@ -174,6 +187,7 @@ def verify_answer(
     question: str,
     columns: list[str],
     rows: list[list[Any]],
+    producing_code: str | None = None,
 ) -> str | None:
     """Run the sub-agent verifier.  Returns rejection reason or None."""
     if not columns:
@@ -187,6 +201,10 @@ def verify_answer(
         f"SAMPLE ROWS ({len(sample)} of {len(rows)}):\n"
         f"{json.dumps(sample, ensure_ascii=False, default=str)}"
     )
+    if producing_code:
+        user_content += (
+            f"\n\nPRODUCING CODE (the final execute steps that built this table):\n{producing_code}"
+        )
 
     messages = [
         ModelMessage(role="system", content=_VERIFIER_SYSTEM),

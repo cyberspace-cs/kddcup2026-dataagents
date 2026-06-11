@@ -40,6 +40,8 @@ from pathlib import Path
 
 from agents.config import load_app_config
 from agents.etl._compress import (
+    GROUPING_BATCH_SIZE,
+    GROUPING_TRUNCATE_CHARS,
     RECORD_ID_INLINE,
     _first_standalone_match,
     _grouping_messages,
@@ -249,8 +251,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("docs", nargs="*", default=DEFAULT_DOCS)
     ap.add_argument("--config", default="configs/react.local.yaml")
-    ap.add_argument("--batch-size", type=int, default=40)
-    ap.add_argument("--truncate", type=int, default=300)
+    ap.add_argument("--batch-size", type=int, default=GROUPING_BATCH_SIZE)
+    ap.add_argument("--truncate", type=int, default=GROUPING_TRUNCATE_CHARS)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--expected", type=int, default=None, help="expected entity count per doc")
     ap.add_argument("--dry-run", action="store_true")

@@ -16,6 +16,8 @@ from agents.etl._types import (
     NUMERIC_SCALAR,
     RECORD_ID_FIELDS,
     RECORD_ID_KEYWORDS,
+    has_standalone_id,
+    is_embedded_digit_run,
     is_placeholder,
     normalize_boolean,
 )
@@ -51,28 +53,10 @@ RECORD_ID_RANGE = re.compile(
 _DIGIT_RUN = re.compile(r"\d{1,8}")
 
 
-def _is_embedded_digit_run(text: str, start: int, end: int) -> bool:
-    """True when ``text[start:end]`` is a digit fragment of a larger token.
-
-    Record IDs are standalone digit tokens.  Captures inside comma/dot
-    formatted numbers ("8,408,793" → "408", "671,408.57" → "408"), longer
-    digit runs ("2003" → "200"), or digit+letter words ("30th" → "30") are
-    false IDs: they spawn spurious entity groups and hijack paragraphs away
-    from the entity they belong to.
-    """
-    before = text[start - 1] if start > 0 else ""
-    before2 = text[start - 2] if start > 1 else ""
-    after = text[end] if end < len(text) else ""
-    after2 = text[end + 1] if end + 1 < len(text) else ""
-    if before.isdigit() or after.isdigit():
-        return True
-    if before in ",." and before2.isdigit():
-        return True
-    if after in ",." and after2.isdigit():
-        return True
-    # ASCII letters only: a CJK char right after the digits ("档案286的…")
-    # is ordinary prose, not a fragment.
-    return after.isascii() and after.isalpha()
+# Anchor-verification helpers live in _types (shared with the merge layer);
+# private aliases keep this module's established import surface stable.
+_is_embedded_digit_run = is_embedded_digit_run
+_has_standalone_id = has_standalone_id
 
 
 def _first_standalone_match(regex: re.Pattern[str], text: str) -> re.Match[str] | None:
@@ -199,7 +183,8 @@ def _format_hard_type_rules(
     if number_fields:
         lines.append(
             "- number/integer fields: numeric values only (integers or decimals); "
-            "strip unit suffixes and thousand separators. "
+            "strip unit suffixes and thousand separators. A leading ~ marking an "
+            "approximate value is allowed (see FUZZY NUMBERS). "
             f"Fields: {', '.join(number_fields)}."
         )
     if date_fields:
@@ -459,12 +444,41 @@ def _split_prose_paragraphs(text: str) -> list[str]:
     return [p.strip() for p in text.split("\n\n") if p.strip() and len(p.strip()) > 30]
 
 
-def _has_standalone_id(text: str, rid: str) -> bool:
-    """``rid`` occurs in ``text`` as a standalone digit token (anchor verification)."""
-    for m in re.finditer(re.escape(rid), text):
-        if not _is_embedded_digit_run(text, m.start(), m.end()):
-            return True
-    return False
+_SENTENCE_END = re.compile(r"[。！？]|[.!?](?=\s|$)")
+
+
+def _leading_sentences(flat: str, count: int) -> str:
+    """First *count* sentences of whitespace-collapsed text.
+
+    A sentence ends at a CJK terminator or at ``.!?`` followed by whitespace
+    (or end of text) — the lookahead keeps decimal points inside numerals
+    ("141,389,573.43") from terminating the sentence early. Falls back to the
+    whole text when fewer terminators exist.
+    """
+    end = 0
+    for _ in range(count):
+        m = _SENTENCE_END.search(flat, end)
+        if not m:
+            return flat
+        end = m.end()
+    return flat[:end]
+
+
+def _grouping_head(para: str) -> str:
+    """Paragraph opening rendered for grouping prompts.
+
+    First sentence by default — record IDs introduce their paragraph, so that
+    is where the grouping signal lives. Extends to the second sentence only
+    when the first carries no standalone number while the paragraph does:
+    rhetorical openers ("The investigation now turns to ...") defer the ID to
+    sentence two, and a head without the ID turns a data paragraph into
+    apparent filler.
+    """
+    flat = " ".join(para.split())
+    head = _leading_sentences(flat, 1)
+    if _contains_standalone_number(head) or not _contains_standalone_number(flat):
+        return head
+    return _leading_sentences(flat, 2)
 
 
 def _make_grouping_batches(
@@ -472,16 +486,34 @@ def _make_grouping_batches(
     batch_size: int = GROUPING_BATCH_SIZE,
     truncate: int = GROUPING_TRUNCATE_CHARS,
 ) -> list[tuple[list[int], str]]:
-    """Contiguous batches of (global 1-based indices, rendered numbered block)."""
+    """Contiguous balanced batches of (global 1-based indices, rendered numbered block).
+
+    Batch count is ceil(n / batch_size) but sizes are balanced (they differ by
+    at most one) instead of fixed-stride: a stride remainder produces a
+    sub-handful tail batch whose numbered-list format anchor is too weak — the
+    model drifts to prose, every claim falls to unparsed, and the batch's
+    paragraphs all drop to the leftover path (task_53 ed_otherdepositorycorpbs:
+    606 paras → tail batch of 6 → the document's last five entities lost their
+    Section XI fields). Balancing keeps every multi-batch slice at
+    >= batch_size // 2 lines with no extra parameter.
+    """
+    if not paras:
+        return []
+    n_batches = -(-len(paras) // batch_size)
+    base, extra = divmod(len(paras), n_batches)
     batches: list[tuple[list[int], str]] = []
-    for start in range(0, len(paras), batch_size):
-        chunk = paras[start : start + batch_size]
-        indices = list(range(start + 1, start + 1 + len(chunk)))
+    start = 0
+    for i in range(n_batches):
+        size = base + (1 if i < extra else 0)
+        chunk = paras[start : start + size]
+        indices = list(range(start + 1, start + 1 + size))
         lines: list[str] = []
         for idx, para in zip(indices, chunk, strict=True):
-            head = " ".join(para[:truncate].split())
+            # head = " ".join(para[:truncate].split())  # 300-char opening (sentence-head A/B)
+            head = _grouping_head(para)
             lines.append(f"{idx}) {head}")
         batches.append((indices, "\n".join(lines)))
+        start += size
     return batches
 
 
@@ -928,11 +960,12 @@ def _generate_compress_guide(
            paragraph (large share count, large pct ~1-50%), NEVER from the
            transaction paragraph (small transfer count, tiny ratio ~0.001-0.01%).
 
-        4. FUZZY NUMBER RESOLUTION: if any values use approximate language
+        4. FUZZY NUMBER MARKING: if any values use approximate language
            ("约", "大约", "近", Chinese number words like "六百九十七万"),
-           instruct the extractor to compute the exact value from other
-           precise numbers in the same paragraph (e.g. pre = post + transfer).
-           Always output computed precise values, never fuzzy approximations.
+           instruct the extractor to convert the numeral mechanically and
+           prefix it with ~ (e.g. "约六百九十七万" → ~6970000) — never to
+           attempt arithmetic on it; a downstream deterministic pass
+           recomputes exact values from sibling fields.
 
         Output ONLY the system prompt text (under 1200 words), no wrapping
         or commentary.""")
@@ -1211,12 +1244,15 @@ def compress_chunk(
         ratio you picked doesn't satisfy this, you grabbed the wrong one.
           If any check fails, re-read the paragraph and pick the value that \
         satisfies all three constraints.
-        - FUZZY NUMBERS: when a value is approximate (marked with "约", \
-        "大约", "近", "roughly", Chinese number words like "六百九十七万"), \
-        compute the exact value from other precise numbers in the SAME \
-        paragraph if possible (e.g. pre = post + transferred, or \
-        post = pre - transferred). Output the computed precise value, \
-        not the fuzzy approximation.
+        - FUZZY NUMBERS: when a value is approximate — marked with "约", \
+        "大约", "近", "左右", "roughly", "approximately", or written in \
+        coarse Chinese number words like "六百九十七万" — convert the \
+        numeral mechanically and prefix it with ~ (e.g. "约六百九十七万股" \
+        → ~6970000). Do NOT attempt arithmetic to sharpen it, and NEVER \
+        omit a value merely because it is approximate — always output it \
+        with the ~ prefix: a downstream deterministic pass recomputes exact \
+        values from sibling fields. Values stated as exact digits get NO \
+        prefix.
         {placeholder_rule}
         - For corrections: output the FINAL corrected value directly — e.g. \
         "label: positive", not "label: positive (placeholder)".
