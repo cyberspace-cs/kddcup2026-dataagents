@@ -1,4 +1,4 @@
-"""Task media attachment helpers for the ReAct runtime."""
+"""Task media helpers: video discovery, notice lines, and video-agent content."""
 
 from __future__ import annotations
 
@@ -17,49 +17,41 @@ VIDEO_EXTENSIONS = {".mp4", ".m4v", ".avi", ".mov", ".mkv", ".webm", ".flv", ".w
 VIDEO_MAX_BYTES = 100 * 1024 * 1024
 
 
-def find_first_video(context_dir: Path) -> Path | None:
-    """Recurse into ``context/`` and return the first video file, sorted for determinism."""
-    candidates = sorted(
+def find_videos(context_dir: Path) -> list[Path]:
+    """Recurse into ``context/`` and return all video files, sorted for determinism."""
+    return sorted(
         p for p in context_dir.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
     )
-    if len(candidates) > 1:
-        logger.warning(
-            "Multiple videos in %s; using %s, ignoring %s",
-            context_dir.name,
-            candidates[0].name,
-            [c.name for c in candidates[1:]],
-        )
-    return candidates[0] if candidates else None
 
 
-def build_initial_user_content(
-    task: PublicTask, *, preact: bool = False
-) -> str | list[dict[str, Any]]:
-    """Build the initial user message content, attaching a video if one exists."""
+def build_initial_user_content(task: PublicTask, *, preact: bool = False) -> str:
+    """Build the initial user message content.
+
+    视频不再内联（原始帧只进 video 子代理的上下文，见 agents/video/）；
+    存在视频时仅追加一行文字提示，列出全部相对路径。
+    """
     text = build_task_prompt(task, preact=preact)
-    video_path = find_first_video(task.context_dir)
-    if video_path is None:
+    videos = find_videos(task.context_dir)
+    if not videos:
         return text
-    size = video_path.stat().st_size
-    if size > VIDEO_MAX_BYTES:
-        logger.warning(
-            "Video %s skipped: %d bytes exceeds %d byte limit",
-            video_path.name,
-            size,
-            VIDEO_MAX_BYTES,
-        )
-        return text
+    rels: list[str] = []
+    for video_path in videos:
+        try:
+            rels.append(str(video_path.relative_to(task.context_dir)))
+        except ValueError:
+            rels.append(video_path.name)
+    return (
+        f"{text}\n\nThe task context contains video file(s): {', '.join(rels)}. "
+        "Raw video is not attached to this conversation; use your available tools "
+        "to have the video content analyzed."
+    )
+
+
+def build_video_user_content(text: str, video_path: Path) -> list[dict[str, Any]]:
+    """Build multimodal user content for the video sub-agent: text + base64 data URI."""
     mime_type = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
     video_b64 = base64.standard_b64encode(video_path.read_bytes()).decode("ascii")
-    data_url = f"data:{mime_type};base64,{video_b64}"
-    try:
-        relative_video_path = video_path.relative_to(task.context_dir)
-    except ValueError:
-        relative_video_path = video_path.name
     return [
-        {
-            "type": "text",
-            "text": f"{text}\n\nA video file from the task context is attached: {relative_video_path}.",
-        },
-        {"type": "video_url", "video_url": {"url": data_url}},
+        {"type": "text", "text": text},
+        {"type": "video_url", "video_url": {"url": f"data:{mime_type};base64,{video_b64}"}},
     ]
