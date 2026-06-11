@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **`explore_video` sub-agent tool (explorer-only).** On tasks whose context
+  contains a video, the explorer can launch a video sub-agent that sees the raw
+  video in the leaf context only and returns a validated structured report;
+  reports also pass through to the main agent verbatim as `video_findings`.
+- **`explore(focus=...)` targeted re-exploration.** The main agent can re-run
+  the explorer with a specific directive instead of redoing a full exploration.
+- **`agent.video_tool_choice` config field.** `"forced"` (default) pins the
+  video sub-agent's tool choice to `report`; `"auto"` is the deployment fallback.
+
+### Behavior changes (intentional tightening)
+- **Video is no longer inlined into main-agent/explorer conversations.** The
+  first user message now carries a one-line notice listing context videos; raw
+  frames reach only the video sub-agent.
+- **Terminal tool calls mixed with non-terminal calls in one turn are rejected.**
+  The terminal call's arguments were written before this turn's observations;
+  the agent is told to re-issue it alone next turn. Pure-terminal turns keep the
+  old short-circuit behavior.
+- **Sub-agent `report` payloads are now validated at the registry boundary**
+  (`ToolDefinition.input_model`), with a 64 KB serialized-size backstop for the
+  video report.
+
 ### Changed
 - **Explorer reports stay data maps.** The explorer prompt now forbids
   resolving cross-source joins during exploration (extracting key lists

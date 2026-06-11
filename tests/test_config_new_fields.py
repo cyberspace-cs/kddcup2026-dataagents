@@ -459,3 +459,11 @@ def test_enable_preact_false_explicit(tmp_path: Path) -> None:
     cfg_path = _write_config(tmp_path / "cfg.yaml", "  enable_preact: false\n")
     cfg = load_app_config(cfg_path)
     assert cfg.agent.enable_preact is False
+
+
+# ---------- video_tool_choice ----------
+
+
+def test_video_tool_choice_default_forced() -> None:
+    assert AgentConfig().video_tool_choice == "forced"
+    assert AgentConfig(video_tool_choice="auto").video_tool_choice == "auto"

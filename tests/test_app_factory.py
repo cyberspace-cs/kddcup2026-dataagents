@@ -151,3 +151,30 @@ def test_build_application_tools_override(tmp_path: Path) -> None:
     custom = create_default_tool_registry()
     app = build_application(cfg, tools=custom)
     assert app.registry is custom
+
+
+def _video_cfg(monkeypatch: pytest.MonkeyPatch, **agent_overrides: object) -> object:
+    import types
+    from unittest.mock import MagicMock
+
+    from agents.llm import openai as model_mod
+
+    monkeypatch.setattr(model_mod, "OpenAI", MagicMock())
+    agent = AgentConfig(api_key="test-key", **agent_overrides)
+    return types.SimpleNamespace(agent=agent)
+
+
+def test_build_video_adapter_forced_tool_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.application import _build_video_adapter
+
+    adapter = _build_video_adapter(_video_cfg(monkeypatch))
+    assert adapter.tool_choice == {"type": "function", "function": {"name": "report"}}
+    assert list(adapter.tools.definitions) == ["report"]
+    assert adapter.allow_parallel_tool_calls is False
+
+
+def test_build_video_adapter_auto_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.application import _build_video_adapter
+
+    adapter = _build_video_adapter(_video_cfg(monkeypatch, video_tool_choice="auto"))
+    assert adapter.tool_choice == "auto"

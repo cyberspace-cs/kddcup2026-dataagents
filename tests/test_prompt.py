@@ -85,6 +85,12 @@ def test_native_system_prompt_front_loads_knowledge_md() -> None:
     assert "knowledge" in lower
 
 
+def test_native_system_prompt_mentions_focus_reexploration() -> None:
+    prompt = build_native_system_prompt()
+    assert "focus" in prompt
+    assert "video_findings" in prompt
+
+
 def test_native_system_prompt_warns_execute_python_is_stateless() -> None:
     """`execute_python` 子进程之间不共享状态——必须把读文件和计算合并到一次调用。
 

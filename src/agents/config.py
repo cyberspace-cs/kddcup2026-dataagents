@@ -337,6 +337,10 @@ class AgentConfig:
     rate_limit: RateLimitConfig | None = None
     max_empty_tool_call_retries: StrictInt = 8
     enable_preact: StrictBool = False
+    # Video sub-agent report tool_choice mode:
+    # - "forced": request-level named-function tool_choice pins `report`.
+    # - "auto": deployment fallback when a backend cannot combine named tool_choice with thinking.
+    video_tool_choice: Literal["forced", "auto"] = "forced"
 
     @field_validator("model", "api_base", "api_key", mode="before")
     @classmethod

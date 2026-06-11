@@ -28,8 +28,9 @@ from agents.llm import (
 )
 from agents.llm.openai import resolve_backend_kind
 from agents.runtime import StepCallback
-from agents.tools import ToolRegistry, create_default_tool_registry
+from agents.tools import ToolDefinition, ToolRegistry, create_default_tool_registry
 from agents.tools.explore import create_explore_tool_definition
+from agents.tools.explore_video import create_explore_video_tool_definition
 from agents.verification import AnswerVerifier
 
 # Qwen3 model card Best Practices 推荐的两套采样组合：
@@ -176,12 +177,16 @@ def build_no_tools_model_adapter(config: AppConfig) -> ModelAdapter:
     return _maybe_wrap_rate_limiter(config, inner)
 
 
-def _build_explorer_adapter(config: AppConfig) -> ModelAdapter:
+def _build_explorer_adapter(
+    config: AppConfig,
+    *,
+    video_tool: ToolDefinition | None = None,
+) -> ModelAdapter:
     """Build a model adapter for the Explorer sub-agent.
 
     Uses the same model/API/sampling config as the main agent. The Explorer's
-    tool registry (``create_explorer_tool_registry``) is wired directly into
-    the ``NativeToolsOpenAIAdapter`` constructed here.
+    tool registry is wired directly into the ``NativeToolsOpenAIAdapter``.
+    ``video_tool`` is provided only for the video-capable explorer variant.
 
     Rate limiting is shared: both adapters use the same ``api_key`` →
     ``FileTokenBucket`` automatically deduplicates on the same bucket file.
@@ -196,8 +201,39 @@ def _build_explorer_adapter(config: AppConfig) -> ModelAdapter:
         model=config.agent.model,
         api_base=config.agent.api_base,
         api_key=config.agent.api_key,
-        tools=create_explorer_tool_registry(),
+        tools=create_explorer_tool_registry(video_tool=video_tool),
         allow_parallel_tool_calls=config.agent.allow_parallel_tool_calls,
+        max_tokens=config.agent.max_tokens,
+        enable_thinking=config.agent.enable_thinking,
+        thinking_mode=config.agent.thinking_mode,
+        reasoning_effort=config.agent.reasoning_effort,
+        backend_kind=config.agent.backend_kind,
+        max_retries=0 if has_rate_limiter else 2,
+        **sampling,
+    )
+
+    return _maybe_wrap_rate_limiter(config, inner)
+
+
+def _build_video_adapter(config: AppConfig) -> ModelAdapter:
+    """Build the report-only video sub-agent adapter."""
+    sampling = _resolve_sampling_defaults(config.agent)
+    reject_placeholder_api_key(config.agent.api_key, field="agent.api_key")
+    has_rate_limiter = _has_rate_limiter(config)
+
+    from agents.video.registry import create_video_tool_registry
+
+    tool_choice: str | dict[str, Any] = "auto"
+    if config.agent.video_tool_choice == "forced":
+        tool_choice = {"type": "function", "function": {"name": "report"}}
+
+    inner = NativeToolsOpenAIAdapter(
+        model=config.agent.model,
+        api_base=config.agent.api_base,
+        api_key=config.agent.api_key,
+        tools=create_video_tool_registry(),
+        allow_parallel_tool_calls=False,
+        tool_choice=tool_choice,
         max_tokens=config.agent.max_tokens,
         enable_thinking=config.agent.enable_thinking,
         thinking_mode=config.agent.thinking_mode,
@@ -271,8 +307,15 @@ def build_application(
     if tools is not None:
         registry = tools
     else:
-        explorer_adapter = _build_explorer_adapter(config)
-        explore_def = create_explore_tool_definition(explorer_adapter)
+        video_adapter = _build_video_adapter(config)
+        video_tool = create_explore_video_tool_definition(video_adapter)
+        explorer_plain = _build_explorer_adapter(config)
+        explorer_with_video = _build_explorer_adapter(config, video_tool=video_tool)
+        explore_def = create_explore_tool_definition(
+            explorer_plain,
+            explorer_model_with_video=explorer_with_video,
+            video_tool=video_tool,
+        )
         registry = create_default_tool_registry(explore_tool=explore_def)
 
     model_adapter = model if model is not None else build_model_adapter(config, tools=registry)
