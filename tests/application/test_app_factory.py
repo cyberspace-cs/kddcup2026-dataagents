@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,7 +24,7 @@ from agents.config import (
     RateLimitConfig,
     RunConfig,
 )
-from agents.llm.openai import OpenAIModelAdapter
+from agents.llm.openai import NativeToolsOpenAIAdapter, OpenAIModelAdapter
 from agents.llm.rate_limit import RateLimitedAdapter
 from agents.tools.registry import ToolRegistry, create_default_tool_registry
 from agents.verification.answer import AnswerVerifier
@@ -128,28 +129,41 @@ def test_build_application_tools_override(tmp_path: Path) -> None:
     assert app.registry is custom
 
 
-def _video_cfg(monkeypatch: pytest.MonkeyPatch, **agent_overrides: object) -> object:
-    import types
+def _video_cfg(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    **agent_overrides: Any,
+) -> AppConfig:
     from unittest.mock import MagicMock
 
     from agents.llm import openai as model_mod
 
     monkeypatch.setattr(model_mod, "OpenAI", MagicMock())
     agent = AgentConfig(api_key="test-key", **agent_overrides)
-    return types.SimpleNamespace(agent=agent)
+    return AppConfig(
+        dataset=DatasetConfig(root_path=tmp_path / "data"),
+        agent=agent,
+        run=RunConfig(output_dir=tmp_path / "runs"),
+    )
 
 
-def test_build_video_adapter_forced_tool_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_video_adapter_forced_tool_choice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from agents.application import _build_video_adapter
 
-    adapter = _build_video_adapter(_video_cfg(monkeypatch))
+    adapter = _build_video_adapter(_video_cfg(monkeypatch, tmp_path))
+    assert isinstance(adapter, NativeToolsOpenAIAdapter)
     assert adapter.tool_choice == {"type": "function", "function": {"name": "report"}}
     assert list(adapter.tools.definitions) == ["report"]
     assert adapter.allow_parallel_tool_calls is False
 
 
-def test_build_video_adapter_auto_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_video_adapter_auto_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from agents.application import _build_video_adapter
 
-    adapter = _build_video_adapter(_video_cfg(monkeypatch, video_tool_choice="auto"))
+    adapter = _build_video_adapter(_video_cfg(monkeypatch, tmp_path, video_tool_choice="auto"))
+    assert isinstance(adapter, NativeToolsOpenAIAdapter)
     assert adapter.tool_choice == "auto"

@@ -255,6 +255,7 @@ def _extract_video_findings(steps: list[Any]) -> tuple[dict[str, Any], ...]:
             continue
         obs: Any = getattr(step, "observation", None)
         if isinstance(obs, dict):
-            content = obs.get("content", obs)
-            found.append(cast(dict[str, Any], content if isinstance(content, dict) else obs))
+            obs_dict = cast(dict[str, Any], obs)
+            content: Any = obs_dict.get("content", obs_dict)
+            found.append(cast(dict[str, Any], content if isinstance(content, dict) else obs_dict))
     return tuple(found)

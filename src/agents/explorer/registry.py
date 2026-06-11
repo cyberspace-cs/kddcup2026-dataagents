@@ -39,7 +39,7 @@ class ReportInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    files: list[dict[str, Any]] = Field(
+    files: list[dict[str, Any]] = Field(  # pyright: ignore[reportUnknownVariableType]
         default_factory=list,
         description="Flat list of file entries, one per file.",
     )
