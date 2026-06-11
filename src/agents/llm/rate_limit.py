@@ -36,7 +36,7 @@ from agents.llm.tokenizer import count_qwen_tokens
 
 if TYPE_CHECKING:
     from agents.config import RateLimitConfig
-    from agents.llm.types import ModelAdapter, ModelMessage, ModelResponse
+    from agents.llm.types import ModelAdapter, ModelMessage, ModelResponse, ToolSchemaSource
 
 __all__ = [
     "FileTokenBucket",
@@ -87,11 +87,15 @@ def estimate_prompt_tokens(messages: list[ModelMessage]) -> int:
     return max(1, total)
 
 
-def _estimate_prompt_tokens_for_adapter(inner: ModelAdapter, messages: list[ModelMessage]) -> int:
+def _estimate_prompt_tokens_for_adapter(
+    inner: ModelAdapter,
+    messages: list[ModelMessage],
+    tools: ToolSchemaSource | None,
+) -> int:
     """Use an adapter-specific estimator when available, otherwise fall back to messages."""
     estimator = getattr(cast(Any, inner), "estimate_prompt_tokens", None)
     if callable(estimator):
-        estimated = cast(Any, estimator)(messages)
+        estimated = cast(Any, estimator)(messages, tools=tools)
         return max(1, int(estimated))
     return estimate_prompt_tokens(messages)
 
@@ -204,10 +208,12 @@ class RateLimitedAdapter:
             tpm_capacity=tpm_cap,
         )
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+    def complete(
+        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+    ) -> ModelResponse:
         """预扣 → 调 inner → 对账 → 返回；429/5xx 走内部重试，其他异常原样上抛。"""
         reserved_tpm = (
-            _estimate_prompt_tokens_for_adapter(self.inner, messages)
+            _estimate_prompt_tokens_for_adapter(self.inner, messages, tools)
             + self.rate_limit_config.reserve_output_tokens
         )
 
@@ -219,7 +225,7 @@ class RateLimitedAdapter:
         # 循环 max_retries+1 次（初次 + 最多 max_retries 次重试）
         for attempt in range(self.rate_limit_config.max_retries + 1):
             try:
-                response = self.inner.complete(messages)
+                response = self.inner.complete(messages, tools=tools)
             except RuntimeError as exc:
                 if not _is_retriable(exc):
                     self.bucket.refund(rpm=0, tpm=reserved_tpm)

@@ -224,3 +224,8 @@ def test_greedy_decoding_warning_matrix(tmp_path: Path, body: str, expects_warni
         load_app_config(cfg_path)
     user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
     assert any("greedy" in str(w.message).lower() for w in user_warnings) is expects_warning
+
+
+def test_video_tool_choice_default_auto() -> None:
+    assert AgentConfig().video_tool_choice == "auto"
+    assert AgentConfig(video_tool_choice="forced").video_tool_choice == "forced"

@@ -15,6 +15,7 @@ from agents.llm.types import (
     ModelResponse,
     ModelToolCall,
     TokenUsage,
+    ToolSchemaSource,
 )
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "RateLimitedAdapter",
     "TokenUsage",
     "ToolCallParseError",
+    "ToolSchemaSource",
     "adapt_model_response",
     "count_qwen_tokens",
     "estimate_prompt_tokens",

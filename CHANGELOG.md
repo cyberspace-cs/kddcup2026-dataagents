@@ -6,6 +6,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **`explore_video` sub-agent tool (explorer-only).** On tasks whose context
+  contains a video, the explorer can launch a video sub-agent that sees the raw
+  video in the leaf context only and returns a validated structured report;
+  reports also pass through to the main agent verbatim as `video_findings`.
+  A single explorer adapter serves all tasks: the tool is injected per task
+  into the run's registry, which the ReAct loop pushes per call.
+- **`agent.video_tool_choice` config field.** `"auto"` (default) coexists with
+  thinking on every backend — DashScope compatible-mode rejects named
+  `tool_choice` in thinking mode. `"forced"` is an opt-in optimization that
+  pins the video sub-agent's tool choice to `report` in one turn, for
+  deployments verified via `scripts/smoke_video_tool_choice.py`.
+- **Model adapters accept per-call `tools`.** `ModelAdapter.complete(messages,
+  tools=...)` lets the ReAct loop push its own registry on every turn, so the
+  request-body tool advertisement and the execution dispatch table are the
+  same instance. `tools=None` (or the adapter's constructor registry) keeps
+  the byte-stable cached payload; overrides render fresh.
+
+### Behavior changes (intentional tightening)
+- **Video is no longer inlined into main-agent/explorer conversations.** Raw
+  frames reach only the video sub-agent; the explorer discovers videos via
+  `inspect_files`.
+- **Terminal tool calls mixed with non-terminal calls in one turn are rejected.**
+  The terminal call's arguments were written before this turn's observations;
+  the agent is told to re-issue it alone next turn. Pure-terminal turns keep the
+  old short-circuit behavior.
+- **Sub-agent `report` payloads are now validated at the registry boundary**
+  (`ToolDefinition.input_model`), with a 64 KB serialized-size backstop for the
+  video report.
+
 ### Changed
 - **Explorer reports stay data maps.** The explorer prompt now forbids
   resolving cross-source joins during exploration (extracting key lists

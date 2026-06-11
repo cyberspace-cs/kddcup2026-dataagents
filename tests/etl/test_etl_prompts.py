@@ -323,7 +323,7 @@ def test_apply_km_schema_floor_readds_omitted_columns() -> None:
 class _FailingAdapter:
     """Asserts the knowledge path is skipped before any LLM call."""
 
-    def complete(self, messages: list[Any]) -> ModelResponse:
+    def complete(self, messages: list[Any], *, tools: object | None = None) -> ModelResponse:
         raise AssertionError("LLM must not be called when km lacks the table")
 
 
@@ -332,7 +332,7 @@ class _SequenceAdapter:
         self._responses = list(responses)
         self.calls = 0
 
-    def complete(self, messages: list[Any]) -> ModelResponse:
+    def complete(self, messages: list[Any], *, tools: object | None = None) -> ModelResponse:
         self.calls += 1
         return ModelResponse(content=self._responses.pop(0))
 

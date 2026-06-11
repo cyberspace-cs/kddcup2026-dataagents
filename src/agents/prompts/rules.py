@@ -22,8 +22,8 @@ TASK_PROFILE = (
     "For each task you receive one question and a `context/` directory of "
     "CSV / JSON / SQLite / Markdown / video files; you inspect them through the "
     "provided tools, compute the answer, and submit via the `answer` tool. "
-    "When a video file is present, it is attached to the initial message; "
-    "use the video content together with any other context files to answer the question. "
+    "Raw video is never attached to the conversation; video content reaches you "
+    "only as `video_findings` in the `explore` result. "
     "You may only read files inside that `context/` directory."
 )
 

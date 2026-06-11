@@ -39,10 +39,12 @@ class ReportInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    files: list[dict[str, Any]] = Field(
+    files: list[dict[str, Any]] = Field(  # pyright: ignore[reportUnknownVariableType]
+        default_factory=list,
         description="Flat list of file entries, one per file.",
     )
     schema_map: dict[str, Any] = Field(
+        default_factory=dict,
         description=(
             "Per-table/file schema: columns with dtypes, semantics, "
             "and column_conversions if inspect_files provided them."
@@ -88,12 +90,16 @@ def handle_report(_task: PublicTask, args: Any) -> ToolExecutionResult:
     )
 
 
-def create_explorer_tool_registry() -> ToolRegistry:
+def create_explorer_tool_registry(
+    *,
+    video_tool: ToolDefinition | None = None,
+) -> ToolRegistry:
     """Read-only tool registry for the Explorer sub-agent.
 
-    Includes all inspection/preview tools from the main registry,
-    plus `report` as the only terminal tool. Excludes `execute_python`
-    and `answer`.
+    Includes all inspection/preview tools from the main registry, plus `report`
+    as the only terminal tool. Excludes `execute_python` and `answer`.
+    ``video_tool``（`create_explore_video_tool_definition` 的产物）按任务条件注入：
+    无视频任务传 None，模型完全看不到该工具（schema 仅经 tools=[...] 下推）。
     """
     definitions: list[ToolDefinition] = [
         ToolDefinition(
@@ -178,6 +184,10 @@ def create_explorer_tool_registry() -> ToolRegistry:
             json_schema=GREP_CONTEXT_SCHEMA,
             handler=handle_grep_context,
         ),
+    ]
+    if video_tool is not None:
+        definitions.append(video_tool)
+    definitions.append(
         ToolDefinition(
             name="report",
             description=(
@@ -189,6 +199,7 @@ def create_explorer_tool_registry() -> ToolRegistry:
             json_schema=REPORT_SCHEMA,
             handler=handle_report,
             is_terminal=True,
+            input_model=ReportInput,
         ),
-    ]
+    )
     return ToolRegistry(definitions={d.name: d for d in definitions})

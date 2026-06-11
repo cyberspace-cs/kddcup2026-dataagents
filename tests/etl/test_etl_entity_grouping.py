@@ -231,7 +231,7 @@ class _PromptDispatchAdapter:
         self._rules = rules
         self.prompts: list[str] = []
 
-    def complete(self, messages: list[Any]) -> ModelResponse:
+    def complete(self, messages: list[Any], *, tools: object | None = None) -> ModelResponse:
         prompt = messages[-1].content
         self.prompts.append(prompt)
         for marker, response in self._rules:
@@ -368,7 +368,7 @@ class _RecoveryAdapter:
     def __init__(self) -> None:
         self.chunk_prompts: list[str] = []
 
-    def complete(self, messages: list[Any]) -> ModelResponse:
+    def complete(self, messages: list[Any], *, tools: object | None = None) -> ModelResponse:
         prompt = messages[-1].content
         if "numbered paragraph openings" in prompt:
             return ModelResponse(content="5: 1\n6: 2\n7: 3")
@@ -411,7 +411,7 @@ class _LeftoverAdapter:
     def __init__(self) -> None:
         self.chunk_prompts: list[str] = []
 
-    def complete(self, messages: list[Any]) -> ModelResponse:
+    def complete(self, messages: list[Any], *, tools: object | None = None) -> ModelResponse:
         prompt = messages[-1].content
         if "numbered paragraph openings" in prompt:
             return ModelResponse(content="5: 1\n6: 2\n7: 3")
@@ -455,7 +455,7 @@ class _GroupingDownAdapter:
     def __init__(self) -> None:
         self.chunk_prompts: list[str] = []
 
-    def complete(self, messages: list[Any]) -> ModelResponse:
+    def complete(self, messages: list[Any], *, tools: object | None = None) -> ModelResponse:
         prompt = messages[-1].content
         if "numbered paragraph openings" in prompt:
             raise RuntimeError("grouping endpoint down")
@@ -496,7 +496,7 @@ class _GateRejectAdapter:
     def __init__(self) -> None:
         self.chunk_prompts: list[str] = []
 
-    def complete(self, messages: list[Any]) -> ModelResponse:
+    def complete(self, messages: list[Any], *, tools: object | None = None) -> ModelResponse:
         prompt = messages[-1].content
         if "numbered paragraph openings" in prompt:
             return ModelResponse(content="1: 1\n2: 2\n3: 3\n4: 4")

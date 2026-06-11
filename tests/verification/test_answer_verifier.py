@@ -8,7 +8,9 @@ class _ScriptedVerifier:
     def __init__(self, response: str) -> None:
         self.response = response
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+    def complete(
+        self, messages: list[ModelMessage], *, tools: object | None = None
+    ) -> ModelResponse:
         return ModelResponse(content=self.response, raw_response=self.response)
 
 

@@ -337,6 +337,12 @@ class AgentConfig:
     rate_limit: RateLimitConfig | None = None
     max_empty_tool_call_retries: StrictInt = 8
     enable_preact: StrictBool = False
+    # Video sub-agent report tool_choice mode:
+    # - "auto" (default): works with thinking enabled everywhere; DashScope compatible-mode
+    #   rejects named tool_choice in thinking mode (400).
+    # - "forced": opt-in optimization — request-level named-function tool_choice pins `report`
+    #   in one turn; only for deployments verified via scripts/smoke_video_tool_choice.py.
+    video_tool_choice: Literal["forced", "auto"] = "auto"
 
     @field_validator("model", "api_base", "api_key", mode="before")
     @classmethod

@@ -71,12 +71,29 @@ class _ScriptedVerifierAdapter:
         self.responses = list(responses)
         self.messages: list[list[ModelMessage]] = []
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+    def complete(
+        self, messages: list[ModelMessage], *, tools: object | None = None
+    ) -> ModelResponse:
+        del tools
         self.messages.append(messages)
         if not self.responses:
             raise RuntimeError("No verifier responses remaining.")
         text = self.responses.pop(0)
         return ModelResponse(content=text, raw_response=text)
+
+
+class _RecordingAdapter:
+    """包装 scripted adapter，记录每轮收到的 messages。"""
+
+    def __init__(self, inner: ScriptedNativeModelAdapter) -> None:
+        self.inner = inner
+        self.seen: list[list[ModelMessage]] = []
+
+    def complete(
+        self, messages: list[ModelMessage], *, tools: object | None = None
+    ) -> ModelResponse:
+        self.seen.append(messages)
+        return self.inner.complete(messages, tools=tools)
 
 
 @pytest.mark.parametrize(
@@ -234,9 +251,9 @@ def test_native_parallel_tool_calls_share_turn_index(task: PublicTask) -> None:
     captured_messages: list[list] = []
 
     class CapturingAdapter(ScriptedNativeModelAdapter):
-        def complete(self, messages):
+        def complete(self, messages, *, tools=None):
             captured_messages.append(messages)
-            return super().complete(messages)
+            return super().complete(messages, tools=tools)
 
     adapter = CapturingAdapter(
         [
@@ -291,23 +308,25 @@ def test_native_parallel_tool_calls_share_turn_index(task: PublicTask) -> None:
     assert second_round[4].tool_call_id == "c_b"
 
 
-def test_native_answer_short_circuits_same_turn(task: PublicTask) -> None:
-    # 并行：第一个就是 answer，第二个不应执行
+def test_native_answer_short_circuits_terminal_only_turn(task: PublicTask) -> None:
+    # 纯终止轮：两个 answer 并行，首个成功即终止，第二个被短路（不属于混合轮拒绝范围）
     answer_call, answer_raw = _build_tool_call(
         call_id="first_answer",
         name="answer",
         arguments={"columns": ["c"], "rows": [["v"]]},
     )
-    list_call, list_raw = _build_tool_call(
-        call_id="should_not_run", name="inspect_files", arguments={}
+    second_call, second_raw = _build_tool_call(
+        call_id="should_not_run",
+        name="answer",
+        arguments={"columns": ["c"], "rows": [["other"]]},
     )
     adapter = ScriptedNativeModelAdapter(
         [
             ModelResponse(
                 content="submitting early",
-                tool_calls=[answer_call, list_call],
+                tool_calls=[answer_call, second_call],
                 raw_response="submitting early",
-                raw_tool_calls=[answer_raw, list_raw],
+                raw_tool_calls=[answer_raw, second_raw],
             )
         ]
     )
@@ -320,7 +339,6 @@ def test_native_answer_short_circuits_same_turn(task: PublicTask) -> None:
     result = agent.run(task)
 
     assert result.succeeded is True
-    # 只有 answer 被记录；后续 inspect_files 被短路
     assert len(result.steps) == 1
     assert result.steps[0].action == "answer"
     assert result.steps[0].tool_call_id == "first_answer"
@@ -384,11 +402,6 @@ def test_native_answer_verifier_rejects_once_then_allows_resubmit(task: PublicTa
 def test_native_answer_verifier_rejection_stops_same_turn_tool_calls(
     task: PublicTask,
 ) -> None:
-    inspect_call, inspect_raw = _build_tool_call(
-        call_id="inspect_first",
-        name="inspect_files",
-        arguments={},
-    )
     rejected_call, rejected_raw = _build_tool_call(
         call_id="rejected_answer",
         name="answer",
@@ -408,9 +421,9 @@ def test_native_answer_verifier_rejection_stops_same_turn_tool_calls(
         [
             ModelResponse(
                 content="submit twice",
-                tool_calls=[inspect_call, rejected_call, same_turn_call],
+                tool_calls=[rejected_call, same_turn_call],
                 raw_response="submit twice",
-                raw_tool_calls=[inspect_raw, rejected_raw, same_turn_raw],
+                raw_tool_calls=[rejected_raw, same_turn_raw],
             ),
             ModelResponse(
                 content="submit after feedback",
@@ -437,11 +450,10 @@ def test_native_answer_verifier_rejection_stops_same_turn_tool_calls(
     assert result.answer is not None
     assert result.answer.rows == [["fresh_turn_submit"]]
     assert [step.tool_call_id for step in result.steps] == [
-        "inspect_first",
         "rejected_answer",
         "next_turn_answer",
     ]
-    assert result.steps[0].raw_tool_calls == [inspect_raw, rejected_raw]
+    assert result.steps[0].raw_tool_calls == [rejected_raw]
 
 
 def test_native_answer_verifier_fallback_uses_latest_valid_rejection(
@@ -758,7 +770,10 @@ def test_native_tool_call_parse_error_preserves_partial_trace_and_recovers(
             self.calls = 0
             self.messages: list[list[ModelMessage]] = []
 
-        def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+        def complete(
+            self, messages: list[ModelMessage], *, tools: object | None = None
+        ) -> ModelResponse:
+            del tools
             self.messages.append(messages)
             self.calls += 1
             if self.calls == 1:
@@ -932,9 +947,9 @@ def test_budget_warning_injected_at_75_percent(task: PublicTask) -> None:
     captured_messages: list[list] = []
 
     class CapturingAdapter(ScriptedNativeModelAdapter):
-        def complete(self, messages):
+        def complete(self, messages, *, tools=None):
             captured_messages.append(messages)
-            return super().complete(messages)
+            return super().complete(messages, tools=tools)
 
     adapter = CapturingAdapter(responses)
     agent = ReActAgent(
@@ -964,9 +979,9 @@ def test_preact_planning_message_injection(
     captured_messages: list[list] = []
 
     class CapturingAdapter(ScriptedNativeModelAdapter):
-        def complete(self, messages):
+        def complete(self, messages, *, tools=None):
             captured_messages.append(messages)
-            return super().complete(messages)
+            return super().complete(messages, tools=tools)
 
     adapter = CapturingAdapter(
         [
@@ -992,3 +1007,194 @@ def test_preact_planning_message_injection(
         m for m in first_messages if "Before acting, outline a brief plan" in (m.content or "")
     ]
     assert len(planning_msgs) == expected_count
+
+
+def test_run_initial_user_content_override(task: PublicTask) -> None:
+    answer_call, answer_raw = _build_tool_call(
+        call_id="c1", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
+    )
+    adapter = _RecordingAdapter(
+        ScriptedNativeModelAdapter(
+            [
+                ModelResponse(
+                    content="ok",
+                    tool_calls=[answer_call],
+                    raw_response="ok",
+                    raw_tool_calls=[answer_raw],
+                )
+            ]
+        )
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=2),
+    )
+
+    result = agent.run(task, initial_user_content="CUSTOM OVERRIDE")
+
+    assert result.succeeded is True
+    first_user = adapter.seen[0][1]
+    assert first_user.role == "user"
+    assert first_user.content == "CUSTOM OVERRIDE"
+
+
+def test_native_mixed_terminal_turn_rejects_answer_and_runs_tools(task: PublicTask) -> None:
+    # 混合轮：answer 与非终止调用同轮 → answer 被拒（参数是盲写的），inspect 照常执行
+    blind_answer_call, blind_answer_raw = _build_tool_call(
+        call_id="c_blind", name="answer", arguments={"columns": ["c"], "rows": [["blind"]]}
+    )
+    inspect_call, inspect_raw = _build_tool_call(
+        call_id="c_inspect", name="inspect_files", arguments={}
+    )
+    final_answer_call, final_answer_raw = _build_tool_call(
+        call_id="c_final", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="mixed turn",
+                tool_calls=[blind_answer_call, inspect_call],
+                raw_response="mixed turn",
+                raw_tool_calls=[blind_answer_raw, inspect_raw],
+            ),
+            ModelResponse(
+                content="solo answer",
+                tool_calls=[final_answer_call],
+                raw_response="solo answer",
+                raw_tool_calls=[final_answer_raw],
+            ),
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert result.answer is not None
+    assert result.answer.rows == [["v"]]
+    assert [s.action for s in result.steps] == ["__error__", "inspect_files", "answer"]
+    rejected = result.steps[0]
+    assert rejected.ok is False
+    assert "rejected" in rejected.observation["error"]  # recorder.py:224 形态
+    assert rejected.tool_call_id == "c_blind"
+
+
+def test_final_step_mixed_turn_blocked_with_free_retry(task: PublicTask) -> None:
+    # 末步混合轮：整轮阻断、不执行、不耗预算（免费重试），下一轮 solo answer 正常提交。
+    # 守卫激活区间要求 remaining<=1 且 ratio>=0.90（budget.py），最小激活配置是
+    # max_steps=10 且已耗 9 个有效轮（max_steps=1 时首轮 ratio=0 不会激活），
+    # 故先用 9 个 filler 轮把预算烧到末步。
+    filler = [
+        _build_tool_call(call_id=f"m_fill_{i}", name="inspect_files", arguments={})
+        for i in range(9)
+    ]
+    inspect_call, inspect_raw = _build_tool_call(
+        call_id="m_inspect", name="inspect_files", arguments={}
+    )
+    blind_answer_call, blind_answer_raw = _build_tool_call(
+        call_id="m_blind", name="answer", arguments={"columns": ["c"], "rows": [["blind"]]}
+    )
+    solo_answer_call, solo_answer_raw = _build_tool_call(
+        call_id="m_solo", name="answer", arguments={"columns": ["c"], "rows": [["good"]]}
+    )
+    responses = [
+        ModelResponse(
+            content=f"explore {i}",
+            tool_calls=[call],
+            raw_response=f"explore {i}",
+            raw_tool_calls=[raw],
+        )
+        for i, (call, raw) in enumerate(filler)
+    ]
+    responses.append(
+        ModelResponse(
+            content="mixed on final step",
+            tool_calls=[inspect_call, blind_answer_call],
+            raw_response="mixed on final step",
+            raw_tool_calls=[inspect_raw, blind_answer_raw],
+        )
+    )
+    responses.append(
+        ModelResponse(
+            content="solo answer",
+            tool_calls=[solo_answer_call],
+            raw_response="solo answer",
+            raw_tool_calls=[solo_answer_raw],
+        )
+    )
+    adapter = ScriptedNativeModelAdapter(responses)
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=10),
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert result.answer is not None
+    assert result.answer.rows == [["good"]]
+    # 第 10 轮整轮被阻断：混合轮的 inspect_files（m_inspect）无执行记录，
+    # 执行过的 inspect_files 全部来自 filler；trace 形态 = 9 filler + 阻断错误步 + answer
+    actions = [s.action for s in result.steps]
+    assert actions == ["inspect_files"] * 9 + ["__error__", "answer"]
+    executed_inspect_ids = [s.tool_call_id for s in result.steps if s.action == "inspect_files"]
+    assert "m_inspect" not in executed_inspect_ids
+    block_step = result.steps[9]
+    assert block_step.ok is False
+    assert "BLOCKED" in block_step.observation["error"]
+    assert block_step.turn_index == 10
+    # 免费重试：阻断轮不耗 effective_turns，否则 max_steps=10 下第 11 轮无法再跑 answer
+    assert result.steps[-1].action == "answer"
+    assert result.steps[-1].turn_index == 11
+
+
+def test_mixed_turn_rejection_when_terminal_is_not_lead(task: PublicTask) -> None:
+    # 非末步混合轮，终止调用排第二：非终止先执行，终止被拒；lead 步承载 raw_tool_calls
+    inspect_call, inspect_raw = _build_tool_call(
+        call_id="n_inspect", name="inspect_files", arguments={}
+    )
+    blind_answer_call, blind_answer_raw = _build_tool_call(
+        call_id="n_blind", name="answer", arguments={"columns": ["c"], "rows": [["blind"]]}
+    )
+    solo_answer_call, solo_answer_raw = _build_tool_call(
+        call_id="n_solo", name="answer", arguments={"columns": ["c"], "rows": [["v"]]}
+    )
+    adapter = ScriptedNativeModelAdapter(
+        [
+            ModelResponse(
+                content="tools first",
+                tool_calls=[inspect_call, blind_answer_call],
+                raw_response="tools first",
+                raw_tool_calls=[inspect_raw, blind_answer_raw],
+            ),
+            ModelResponse(
+                content="solo",
+                tool_calls=[solo_answer_call],
+                raw_response="solo",
+                raw_tool_calls=[solo_answer_raw],
+            ),
+        ]
+    )
+    agent = ReActAgent(
+        model=adapter,
+        tools=create_default_tool_registry(),
+        config=ReActAgentConfig(max_steps=4),
+    )
+
+    result = agent.run(task)
+
+    assert result.succeeded is True
+    assert [s.action for s in result.steps] == ["inspect_files", "__error__", "answer"]
+    lead, rejected, final = result.steps
+    assert lead.tool_call_id == "n_inspect"
+    assert lead.raw_tool_calls == [inspect_raw, blind_answer_raw]  # lead-only 承载
+    assert rejected.tool_call_id == "n_blind"
+    assert rejected.raw_tool_calls is None
+    assert "rejected" in rejected.observation["error"]
+    assert final.tool_call_id == "n_solo"

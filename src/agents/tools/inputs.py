@@ -56,9 +56,28 @@ class InspectFilesInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# `explore` 入参与 `inspect_files` 同构——空模型，无配置全量探索。
 class ExploreInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+# `explore_video` 入参：explorer 专属（不进主 registry）。
+class ExploreVideoInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Annotated[
+        str,
+        _path_field(file_kind="video file", examples=("video.mp4", "media/demo.mov")),
+    ]
+    instructions: str = Field(
+        description=(
+            "Analysis brief for the video agent: what the task needs from this video — "
+            "which charts, tables, values, or text to transcribe, plus any IDs or labels "
+            "to look for."
+        ),
+    )
+
+
+EXPLORE_VIDEO_SCHEMA = normalize_for_vllm(ExploreVideoInput.model_json_schema())
 
 
 class ReadCsvInput(BaseModel):

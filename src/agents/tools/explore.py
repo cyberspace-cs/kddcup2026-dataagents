@@ -113,19 +113,25 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
 
 def create_explore_tool_definition(
     explorer_model: ModelAdapter,
+    *,
+    video_tool: ToolDefinition | None = None,
 ) -> ToolDefinition:
     """Build a ToolDefinition that runs the Explorer sub-agent.
 
-    The returned handler closes over ``explorer_model``
-    so the main agent's ``ToolRegistry.execute`` can dispatch to it
-    without knowing about the Explorer internals.
+    `explore_video` 按任务动态注入：含视频任务把 ``video_tool`` 传给
+    `run_explorer`，registry 在其内部组装一次——既是执行分发表，也是该 run
+    每轮请求下推的工具广告源，广告与执行结构性同源。
     """
     from agents.tools.registry import ToolDefinition as _ToolDefinition
 
     def handler(task: PublicTask, _args: Any) -> ToolExecutionResult:
-        from agents.explorer.runner import run_explorer
+        import agents.explorer.runner as explorer_runner
+        from agents.runtime.media import find_videos
 
-        result = run_explorer(task, task.question, explorer_model)
+        has_video = video_tool is not None and bool(find_videos(task.context_dir))
+        result = explorer_runner.run_explorer(
+            task, task.question, explorer_model, video_tool=video_tool if has_video else None
+        )
         content: dict[str, Any]
         if result.success:
             try:
@@ -138,6 +144,9 @@ def create_explore_tool_definition(
             except (json.JSONDecodeError, TypeError):
                 content = {"findings": result.findings}
             content["explorer_steps_used"] = result.steps_used
+            if has_video and result.video_findings:
+                # 确定性透传：视频精确数值不经 explorer 二次转写直达主 agent
+                content["video_findings"] = list(result.video_findings)
             _ensure_column_conversions(task, content)
         else:
             content = result.to_tool_content()

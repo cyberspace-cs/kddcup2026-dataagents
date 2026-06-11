@@ -93,8 +93,10 @@ class _ScriptedInnerAdapter:
         self._script = list(script)
         self.calls = 0
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
-        del messages
+    def complete(
+        self, messages: list[ModelMessage], *, tools: object | None = None
+    ) -> ModelResponse:
+        del messages, tools
         self.calls += 1
         if not self._script:
             raise RuntimeError("Scripted inner adapter exhausted.")
@@ -112,8 +114,10 @@ class _EstimatingInnerAdapter(_ScriptedInnerAdapter):
         self.prompt_tokens = prompt_tokens
         self.estimate_calls = 0
 
-    def estimate_prompt_tokens(self, messages: list[ModelMessage]) -> int:
-        del messages
+    def estimate_prompt_tokens(
+        self, messages: list[ModelMessage], *, tools: object | None = None
+    ) -> int:
+        del messages, tools
         self.estimate_calls += 1
         return self.prompt_tokens
 

@@ -94,6 +94,9 @@ class ToolDefinition:
     - handler:       具体执行函数；内置工具签名为 `(task, args: <ModelClass>) -> ToolExecutionResult`，
                      未在 `_INPUT_MODELS` 注册的用户工具沿用 `(task, action_input: dict)`
     - is_terminal:   True 时 ReAct 循环会在该工具成功返回后立即终止；默认仅 answer 为 True
+    - input_model:   registry 局部入参校验模型；优先于全局 `_INPUT_MODELS`；None 时回退全局表
+                     / 裸 dict 透传。子代理 registry（explorer/video 的 report 等）用它挂校验，
+                     避免在全局名表里撞名。
     """
 
     name: str
@@ -101,6 +104,9 @@ class ToolDefinition:
     json_schema: dict[str, Any] | None
     handler: ToolHandler
     is_terminal: bool = False
+    # registry 局部入参校验模型：优先于全局 _INPUT_MODELS；None 时回退全局表 / 裸 dict 透传。
+    # 子代理 registry（explorer/video 的 report 等）用它挂校验，避免在全局名表里撞名。
+    input_model: type[BaseModel] | None = None
 
 
 # 工具名 → 对应入参模型；ToolRegistry.execute 用这张表把原始 dict 翻译成已验证模型实例。
@@ -195,7 +201,7 @@ class ToolRegistry:
         """
         if action not in self.definitions:
             raise KeyError(f"Unknown tool: {action}")
-        model_cls = _INPUT_MODELS.get(action)
+        model_cls = self.definitions[action].input_model or _INPUT_MODELS.get(action)
         if model_cls is None:
             # 用户自定义工具：未在 _INPUT_MODELS 注册时直接透传 dict（向后兼容）
             return self.definitions[action].handler(task, action_input)

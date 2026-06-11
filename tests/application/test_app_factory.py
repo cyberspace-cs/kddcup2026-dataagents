@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,9 +24,9 @@ from agents.config import (
     RateLimitConfig,
     RunConfig,
 )
-from agents.llm.openai import OpenAIModelAdapter
+from agents.llm.openai import NativeToolsOpenAIAdapter, OpenAIModelAdapter
 from agents.llm.rate_limit import RateLimitedAdapter
-from agents.tools.registry import ToolRegistry
+from agents.tools.registry import ToolRegistry, create_default_tool_registry
 from agents.verification.answer import AnswerVerifier
 
 
@@ -118,3 +119,49 @@ def test_build_no_tools_model_adapter_preserves_rate_limit_wrapper(tmp_path: Pat
     assert isinstance(adapter, RateLimitedAdapter)
     assert isinstance(adapter.inner, OpenAIModelAdapter)
     assert adapter.inner.enable_thinking is False
+
+
+def test_build_application_tools_override(tmp_path: Path) -> None:
+    """传 tools=custom_registry 时跳过 create_default_tool_registry。"""
+    cfg = _make_config(tmp_path=tmp_path)
+    custom = create_default_tool_registry()
+    app = build_application(cfg, tools=custom)
+    assert app.registry is custom
+
+
+def _video_cfg(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    **agent_overrides: Any,
+) -> AppConfig:
+    from unittest.mock import MagicMock
+
+    from agents.llm import openai as model_mod
+
+    monkeypatch.setattr(model_mod, "OpenAI", MagicMock())
+    agent = AgentConfig(api_key="test-key", **agent_overrides)
+    return AppConfig(
+        dataset=DatasetConfig(root_path=tmp_path / "data"),
+        agent=agent,
+        run=RunConfig(output_dir=tmp_path / "runs"),
+    )
+
+
+def test_build_video_adapter_forced_tool_choice_opt_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agents.application import _build_video_adapter
+
+    adapter = _build_video_adapter(_video_cfg(monkeypatch, tmp_path, video_tool_choice="forced"))
+    assert isinstance(adapter, NativeToolsOpenAIAdapter)
+    assert adapter.tool_choice == {"type": "function", "function": {"name": "report"}}
+    assert list(adapter.tools.definitions) == ["report"]
+    assert adapter.allow_parallel_tool_calls is False
+
+
+def test_build_video_adapter_default_auto(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from agents.application import _build_video_adapter
+
+    adapter = _build_video_adapter(_video_cfg(monkeypatch, tmp_path))
+    assert isinstance(adapter, NativeToolsOpenAIAdapter)
+    assert adapter.tool_choice == "auto"

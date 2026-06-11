@@ -9,6 +9,16 @@ from agents.benchmark.schema import PublicTask
 from agents.config import ETL_SCRATCH_ROOT
 
 
+def _link_or_copy_file(source: Path, dest: Path) -> None:
+    """Prefer symlinks, but fall back to copying on Windows without link privileges."""
+    try:
+        dest.symlink_to(source)
+    except OSError:
+        import shutil
+
+        shutil.copy2(source, dest)
+
+
 def build_virtual_context(task: PublicTask) -> Path:
     """Create /tmp/dabench/<task_id>/context/ with symlinks merging real context + ETL."""
     import shutil
@@ -38,7 +48,7 @@ def build_virtual_context(task: PublicTask) -> Path:
         dest = virtual_dir / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not dest.exists():
-            dest.symlink_to(child)
+            _link_or_copy_file(child, dest)
 
     if etl_dir.is_dir():
         csv_dir = virtual_dir / "csv"
@@ -47,7 +57,7 @@ def build_virtual_context(task: PublicTask) -> Path:
             if etl_file.suffix == ".csv":
                 dest = csv_dir / etl_file.name
                 if not dest.exists():
-                    dest.symlink_to(etl_file)
+                    _link_or_copy_file(etl_file, dest)
 
     for dirpath in sorted(virtual_dir.rglob("*"), reverse=True):
         if dirpath.is_dir() and not any(dirpath.iterdir()):

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -23,10 +24,12 @@ from agents.benchmark.schema import PublicTask
 from agents.llm import (
     ModelAdapter,
     ModelMessage,
+    ModelToolCall,
     TokenUsage,
     ToolCallParseError,
     adapt_model_response,
 )
+from agents.prompts import build_task_prompt
 from agents.runtime import (
     AgentRunResult,
     AgentRuntimeState,
@@ -37,11 +40,11 @@ from agents.runtime import (
     StepCallback,
     ToolErrorEvent,
     build_budget_prompt,
-    build_initial_user_content,
     build_messages,
     build_system_message,
     compute_budget_status,
     final_step_block_error,
+    is_final_step_blocking_active,
     record_step_event,
     serialize_message,
     serialize_response,
@@ -50,6 +53,21 @@ from agents.runtime import (
 )
 from agents.tools import ToolRegistry, dispatch_tool_call
 from agents.verification import AnswerVerifier, TerminalAnswerPolicy
+
+
+def _has_mixed_terminal_calls(calls: Sequence[ModelToolCall], tools: ToolRegistry) -> bool:
+    """同一 turn 是否混合了终止与非终止调用。
+
+    混合轮里的终止调用（answer/report）参数是在看到本轮 observation 之前盲写的；
+    vLLM 不尊重 `parallel_tool_calls` 请求字段，无法在请求侧阻止，只能在派发层拒绝。
+    未知工具名按非终止处理（随后会走 KeyError → tool_error 路径）。
+    """
+    flags = [
+        (defn := tools.definitions.get(call.name)) is not None and defn.is_terminal
+        for call in calls
+    ]
+    return any(flags) and not all(flags)
+
 
 __all__ = [
     "ReActAgent",
@@ -147,7 +165,12 @@ class ReActAgent:
 
     # ----------------------------- 主循环 -----------------------------
 
-    def run(self, task: PublicTask) -> AgentRunResult:
+    def run(
+        self,
+        task: PublicTask,
+        *,
+        initial_user_content: str | list[dict[str, Any]] | None = None,
+    ) -> AgentRunResult:
         """驱动 ReAct 循环解决单个任务。
 
         循环不变式：
@@ -155,9 +178,16 @@ class ReActAgent:
         - 调用 answer 工具会设置 `state.answer` 并立刻 break
         - native 空 tool_calls 只消耗 empty retry budget，不消耗业务 max_steps
         - 达到 max_steps 未 answer 时，写入 failure_reason 并正常返回
+
+        `initial_user_content`: 子代理（video）可注入自定义首条消息；
+        None 走默认任务提示词路径。
         """
         state = AgentRuntimeState()
-        initial_content = build_initial_user_content(task, preact=self.config.enable_preact)
+        initial_content = (
+            initial_user_content
+            if initial_user_content is not None
+            else build_task_prompt(task, preact=self.config.enable_preact)
+        )
         step_counter = 0
         effective_turns = 0
         empty_tool_call_retries = 0
@@ -193,7 +223,8 @@ class ReActAgent:
             # prompt_messages 落进 ModelErrorEvent，方便复盘"哪条请求把 LLM 炸了"
             serialized_prompt = [serialize_message(message) for message in messages]
             try:
-                response = self.model.complete(messages)
+                # 每轮下推自己手里的 registry：请求体工具广告与执行分发同源
+                response = self.model.complete(messages, tools=self.tools)
             except ToolCallParseError as exc:
                 # tool_call arguments JSON 解析失败：携带部分响应，保留
                 # raw_tool_calls / usage / reasoning 供 trace 和回放
@@ -270,14 +301,23 @@ class ReActAgent:
 
             # ---- 3. 依次派发 tool_calls ----
 
+            reject_terminal_this_turn = _has_mixed_terminal_calls(turn.calls, self.tools)
+
             # Last-step guardrail: on the final step of a long-running task
             # (past the 90% CRITICAL threshold), block non-answer tools and
             # give the model one free retry to call `answer`. The blocked
             # turn does NOT consume effective_turns budget.
+            # 末步混合轮走免费重试而非逐调用拒绝，否则模型在预算最后一步
+            # "带工具的 answer" 会被拒掉并烧光预算。
             if should_block_non_answer_final_turn(
                 status=budget_status,
                 last_step_retries=last_step_retries,
                 calls=turn.calls,
+            ) or (
+                reject_terminal_this_turn
+                and is_final_step_blocking_active(
+                    status=budget_status, last_step_retries=last_step_retries
+                )
             ):
                 last_step_retries += 1
                 step_counter += 1
@@ -326,6 +366,34 @@ class ReActAgent:
 
                 # 终止工具预验证：在 handler 执行（会删 CSV artifact）之前跑 verifier
                 defn = self.tools.definitions.get(tool_call.name)
+
+                if reject_terminal_this_turn and defn is not None and defn.is_terminal:
+                    record_step_event(
+                        state,
+                        ToolErrorEvent(
+                            thought=turn.thought,
+                            arguments=tool_call.arguments,
+                            error=(
+                                f"{tool_call.name} rejected: it was issued in the same "
+                                "turn as non-terminal tool calls, so its arguments were "
+                                "written before seeing this turn's observations. Review "
+                                f"the observations, then call {tool_call.name} again in "
+                                "its own turn."
+                            ),
+                            raw_response=response.raw_response,
+                            tool_call_id=step_tool_call_id,
+                            raw_tool_calls=step_raw_tool_calls,
+                            reasoning=step_reasoning,
+                            usage=step_usage,
+                            prompt_messages=step_prompt_messages,
+                            response_message=step_response_message,
+                        ),
+                        step_index=step_counter,
+                        turn_index=turn_index,
+                        callback=self.step_callback,
+                    )
+                    continue
+
                 rejection = terminal_policy.maybe_reject(
                     task=task,
                     arguments=tool_call.arguments,

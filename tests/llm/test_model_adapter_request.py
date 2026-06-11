@@ -32,7 +32,8 @@ from agents.llm.openai import (
 )
 from agents.llm.rate_limit import estimate_prompt_tokens
 from agents.llm.types import ModelMessage, TokenUsage
-from agents.tools.registry import create_default_tool_registry
+from agents.tools.handlers import ToolExecutionResult
+from agents.tools.registry import ToolDefinition, ToolRegistry, create_default_tool_registry
 
 
 def _make_usage(
@@ -326,6 +327,63 @@ def test_native_adapter_sends_tool_payload(monkeypatch: pytest.MonkeyPatch) -> N
     assert kwargs["tool_choice"] == "auto"
     assert kwargs["parallel_tool_calls"] is True
     assert isinstance(kwargs["tools"], list) and len(kwargs["tools"]) > 0
+
+
+def test_native_adapter_forced_tool_choice_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
+    forced = {"type": "function", "function": {"name": "report"}}
+    adapter = _adapter(NativeToolsOpenAIAdapter, tool_choice=forced)
+    adapter.complete([ModelMessage(role="user", content="hello")])
+
+    assert create_mock.call_args.kwargs["tool_choice"] == forced
+
+
+def _tiny_registry() -> ToolRegistry:
+    """单工具 registry，schema 远小于默认 registry，用作 per-call override。"""
+    return ToolRegistry(
+        {
+            "ping": ToolDefinition(
+                name="ping",
+                description="tiny override tool",
+                json_schema={"type": "object", "properties": {}},
+                handler=lambda _t, _a: ToolExecutionResult(ok=True, content={}),
+            )
+        }
+    )
+
+
+def test_native_adapter_per_call_tools_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """per-call override registry：请求 kwargs 的 tools 等于 override 的渲染结果。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
+    adapter = _adapter(NativeToolsOpenAIAdapter)
+    override = _tiny_registry()
+    adapter.complete([ModelMessage(role="user", content="hello")], tools=override)
+
+    assert create_mock.call_args.kwargs["tools"] == override.to_openai_tools()
+
+
+def test_native_adapter_same_registry_identity_hits_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tools 传构造期同一 registry 对象时走缓存路径（字节稳定的同一 payload 对象）。"""
+    create_mock = _install_fake_openai(monkeypatch, _make_stream_chunks(content=""))
+    registry = create_default_tool_registry()
+    adapter = _adapter(NativeToolsOpenAIAdapter, tools=registry)
+    adapter.complete([ModelMessage(role="user", content="hello")], tools=registry)
+
+    assert create_mock.call_args.kwargs["tools"] is adapter._openai_tools
+
+
+def test_native_adapter_prompt_estimate_reflects_tools_override() -> None:
+    messages = [ModelMessage(role="user", content="hello")]
+    adapter = _adapter(NativeToolsOpenAIAdapter)
+
+    default_estimate = adapter.estimate_prompt_tokens(messages)
+    override_estimate = adapter.estimate_prompt_tokens(messages, tools=_tiny_registry())
+
+    # override schema 远小于默认 registry，但仍大于纯 messages 估算
+    assert override_estimate < default_estimate
+    assert override_estimate > estimate_prompt_tokens(messages)
 
 
 # ---------- 响应解析 ----------
