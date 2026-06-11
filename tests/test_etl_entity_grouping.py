@@ -17,10 +17,7 @@ paragraphs, and silently dropped 3 of 50 entities from the converted CSV.
 
 from __future__ import annotations
 
-import logging
 from typing import Any, cast
-
-import pytest
 
 from agents.etl._compress import (
     _group_paragraphs_by_entity,
@@ -360,30 +357,29 @@ class _RecoveryAdapter:
         return ModelResponse(content="RECORD_ID: 5 | metric: fifty\n\nrecord_id: 6 | metric: sixty")
 
 
-def test_compress_prose_recovers_missing_and_ignores_casing(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_compress_prose_recovers_missing_and_ignores_casing() -> None:
     paras = [
         f"Record {i} shows a metric value of interest in this cycle period." for i in (5, 6, 7)
     ]
     adapter = _RecoveryAdapter()
 
-    with caplog.at_level(logging.INFO):
-        result = compress_prose(
-            cast(Any, adapter),
-            "\n\n".join(paras),
-            schema_columns=["record_id", "metric"],
-            primary_key="record_id",
-        )
+    result = compress_prose(
+        cast(Any, adapter),
+        "\n\n".join(paras),
+        schema_columns=["record_id", "metric"],
+        primary_key="record_id",
+    )
 
-    # Marker-style casing is normalized by the scan, not reported missing.
+    # Marker-style casing is normalized by the scan: entity 5 is not treated as
+    # missing, so the main chunk is followed by exactly one recovery chunk and
+    # that chunk re-requests entity 7 alone.
     assert "record_id: 5 | metric: fifty" in result
-    assert "'5'" not in caplog.text
+    assert len(adapter.chunk_prompts) == 2
+    recovery = next(p for p in adapter.chunk_prompts if "[RECORD_ID: 5]" not in p)
+    assert "[RECORD_ID: 7]" in recovery
+    assert "[RECORD_ID: 6]" not in recovery
     # Entity 7 was missing from the main pass and recovered by the retry.
-    assert "missing entities ['7']" in caplog.text
-    assert "recovery pass extracted ['7']" in caplog.text
     assert "record_id: 7 | metric: seventy" in result
-    assert any("[RECORD_ID: 7]" in p and "[RECORD_ID: 5]" not in p for p in adapter.chunk_prompts)
 
 
 class _LeftoverAdapter:

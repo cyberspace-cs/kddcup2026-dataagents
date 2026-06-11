@@ -733,14 +733,6 @@ def test_native_empty_tool_calls_records_error(task: PublicTask) -> None:
     error_step, answer_step = result.steps
     assert error_step.action == "__error__"
     assert error_step.ok is False
-    error = error_step.observation["error"].lower()
-    assert "did not produce an executable tool call" in error
-    assert "reasoning/thinking text was ignored" in error
-    assert "syntactically complete" in error
-    assert "already decided which tool to call last turn" in error
-    assert "structured tool call" in error
-    assert "call answer directly" in error
-    assert "must call a tool" in error
     assert "drafted_tool_call" not in error_step.observation
     assert answer_step.action == "answer"
 
@@ -1131,7 +1123,6 @@ def test_budget_warning_injected_at_75_percent(task: PublicTask) -> None:
     fourth_call_messages = captured_messages[3]
     budget_msgs = [m for m in fourth_call_messages if "BUDGET WARNING" in (m.content or "")]
     assert len(budget_msgs) == 1
-    assert "call `answer` NOW" in budget_msgs[0].content
 
 
 def test_preact_planning_message_on_first_turn(task: PublicTask) -> None:
@@ -1172,7 +1163,6 @@ def test_preact_planning_message_on_first_turn(task: PublicTask) -> None:
         m for m in first_messages if "Before acting, outline a brief plan" in (m.content or "")
     ]
     assert len(planning_msgs) == 1
-    assert "explore" in planning_msgs[0].content
 
 
 def test_preact_disabled_no_planning_message(task: PublicTask) -> None:

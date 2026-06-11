@@ -161,11 +161,14 @@ def test_from_csv_bool_column(task: PublicTask, tmp_path: Path) -> None:
 
 
 def test_from_csv_missing_file_raises(task: PublicTask, tmp_path: Path) -> None:
+    """error message 包含具体路径：模型才能 retry execute_python 重写文件。"""
     missing = tmp_path / "_answer" / "ghost.csv"
     args = AnswerInput.model_validate({"from_csv": str(missing)})
 
-    with pytest.raises(ValueError, match=r"from_csv file not found"):
+    with pytest.raises(ValueError, match=r"from_csv file not found") as exc_info:
         handle_answer(task, args)
+
+    assert str(missing) in str(exc_info.value)
 
 
 # ----- #7 relative path -----
@@ -284,21 +287,6 @@ def test_from_csv_ack_content_includes_dtypes_and_preview(task: PublicTask, tmp_
     # head_preview 永远 ≤ 5 行
     assert len(from_csv_meta["head_preview"]) == 5
     assert from_csv_meta["head_preview"][0] == [1, "name_1", 0.25]
-
-
-# ----- 补充：non-existent absolute path with explicit hint -----
-
-
-def test_from_csv_missing_file_hint_messages_are_actionable(
-    task: PublicTask, tmp_path: Path
-) -> None:
-    """error message 包含具体路径：模型才能 retry execute_python 重写文件。"""
-    args = AnswerInput.model_validate({"from_csv": str(tmp_path / "nope.csv")})
-
-    with pytest.raises(ValueError) as exc_info:
-        handle_answer(task, args)
-
-    assert str(tmp_path / "nope.csv") in str(exc_info.value)
 
 
 # ----- 补充：成功提交后 artifact 自动清理（避免污染输入树） -----
