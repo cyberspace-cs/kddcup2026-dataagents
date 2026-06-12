@@ -13,8 +13,10 @@ agent:
   # - "vllm":      enable_thinking 嵌套到 chat_template_kwargs
   # - "dashscope": enable_thinking 走顶层（DashScope OpenAI 兼容模式约定）
   # - "deepseek":  thinking 对象走顶层（DeepSeek V4 API 协议）
-  # - null:        按 api_base 主机名自动推断
-  backend_kind: vllm                       # "vllm" | "dashscope" | "deepseek" | null
+  # - null:        按 api_base 主机名自动推断（openai.resolve_backend_kind）
+  # NEVER 硬编码 vllm：DashScope 演练时 chat_template_kwargs 会被静默忽略，
+  # thinking 开关全部失效（ETL 关不掉思考，单调用慢 10×）。
+  backend_kind: null                       # "vllm" | "dashscope" | "deepseek" | null
 
   # ---- 最优采样参数 (benchmarked: avg 0.80, best 0.82) ----
   # temp=0.6 在 Qwen3 thinking 模���下平衡了质量与稳定性：
