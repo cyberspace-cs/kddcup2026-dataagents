@@ -1,15 +1,16 @@
 """Submission entrypoint per §3.6: iterate /input task_<id>, write /output/<task_id>/prediction.csv.
 
-Wires through the shared `agents.application.build_application` factory rather than
-hand-assembling model + tools + agent — that's how the on-laptop CLI runs too,
-and it's the only path that picks the right adapter (NativeToolsOpenAIAdapter
-with tool schemas wired through the registry).
+Each task goes through `agents.runs.runner.run_single_task` — the exact same
+path the on-laptop CLI (`dabench run-task` / `run-benchmark`) uses. That path
+owns the full pre-agent sequence (ETL extraction → virtual context →
+retrieval index), subprocess hard timeout, and prediction.csv writing; routing
+the container through it guarantees the judged run behaves like the local
+rehearsal instead of silently skipping the preprocessing stages.
 
-Concurrency: tasks run on a `ThreadPoolExecutor` with `app` shared across
-workers. Safe because (1) the OpenAI client is thread-safe, (2) `RateLimitedAdapter`
-serialises via filelock, (3) `ToolRegistry` is frozen + MappingProxyType with
-stateless handlers, (4) `app.new_agent()` mints a fresh ReAct loop per call.
-Worker count: `MAX_WORKERS` env overrides → falls back to `config.run.max_workers`.
+Concurrency: tasks run on a `ThreadPoolExecutor`; each `run_single_task` call
+spawns a subprocess for hard-timeout isolation (mirrors `run_benchmark`'s
+parallel path). Worker count: `MAX_WORKERS` env overrides → falls back to
+`config.run.max_workers`.
 
 §3.7 trade-off: only minimal status lines go to /logs/main.log. ReAct traces
 contain raw rows from /input CSVs (read_csv / inspect_files outputs); the
@@ -25,7 +26,6 @@ Exit codes: 0 ok; 78 (EX_CONFIG) missing env / mounts; 73 (EX_CANTCREAT)
 from __future__ import annotations
 
 import contextlib
-import csv
 import json
 import os
 import sys
@@ -43,9 +43,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from agents.application import AgentApp, build_application
-from agents.benchmark.schema import PublicTask
+from agents.benchmark.dataset import DABenchPublicDataset
 from agents.config import AppConfig, RateLimitConfig, load_app_config
+from agents.runs.runner import run_single_task
 
 REQUIRED_ENV = ("MODEL_API_URL", "MODEL_API_KEY", "MODEL_NAME")
 DEFAULT_INPUT = Path("/input")
@@ -55,6 +55,23 @@ DEFAULT_CONFIG = Path("/app/configs/react.example.yaml")
 DEFAULT_GLOBAL_BUDGET_SECONDS = 42_000.0  # ~11.7 h, fits a 50-task batch with headroom
 
 _LOG_LOCK = threading.Lock()
+
+
+def derive_task_timeout(
+    configured: int, *, global_budget: float, workers: int, task_count: int
+) -> int:
+    """Per-task hard timeout for the container run.
+
+    The configured value is tuned for warm-cache CLI runs; a container run
+    pays cold ETL on every task, so cap each task at its fair share of the
+    global wall budget instead — at least the configured floor, but never
+    above the budget itself (the budget cap wins when the floor exceeds it).
+    `configured <= 0` keeps timeouts disabled.
+    """
+    if configured <= 0 or task_count <= 0:
+        return configured
+    fair_share = global_budget * workers / task_count
+    return int(min(global_budget, max(float(configured), fair_share)))
 
 
 def _log(logs_dir: Path, line: str) -> None:
@@ -69,22 +86,6 @@ def _log(logs_dir: Path, line: str) -> None:
         with (logs_dir / "main.log").open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
         sys.stderr.write(line + "\n")
-
-
-def _write_prediction_csv(path: Path, columns: list[str], rows: list[list[Any]]) -> None:
-    """Write prediction.csv at the exact byte shape `runs.artifacts._write_csv` produces.
-
-    Inlined (instead of importing the private symbol) to keep the entrypoint
-    independent of `runs/` internals; if the runner format ever shifts, sync
-    here.  `newline=""` is the csv-module-mandated form for cross-platform
-    line endings.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(columns)
-        for row in rows:
-            writer.writerow(row)
 
 
 def _build_config(input_root: Path) -> AppConfig:
@@ -104,6 +105,8 @@ def _build_config(input_root: Path) -> AppConfig:
       state_dir resolved to /logs/ratelimit/. Prevents 500 concurrency
       errors from consuming agent steps.
     - `agent.max_steps` ← `MAX_STEPS` env when set (smoke-test escape hatch)
+    - `run.blocklist` → (): local debug skip-lists must never reach the
+      judged run — a skipped task is a guaranteed zero.
     """
     config_path = Path(os.environ.get("CONFIG_PATH", DEFAULT_CONFIG))
     # Fail loud rather than silently fall back to `AppConfig()` defaults: a
@@ -139,41 +142,38 @@ def _build_config(input_root: Path) -> AppConfig:
         base,
         dataset=replace(base.dataset, root_path=input_root),
         agent=replace(base.agent, **agent_overrides),
+        run=replace(base.run, blocklist=()),
     )
 
 
-def _run_one_task(app: AgentApp, task: PublicTask, output_root: Path, logs_root: Path) -> bool:
-    """Run a single task; return True if a prediction.csv landed on disk."""
-    task_started = time.monotonic()
-    task_output_dir = output_root / task.task_id
-    task_output_dir.mkdir(parents=True, exist_ok=True)
+def _run_one_task(config: AppConfig, task_id: str, output_root: Path, logs_root: Path) -> bool:
+    """Run a single task through the shared runner; return True if prediction.csv landed.
 
-    answer = None
+    `run_single_task` owns ETL → virtual context → retrieval index →
+    subprocess hard timeout → prediction.csv, identical to the CLI path.
+    """
+    task_started = time.monotonic()
+
+    artifact = None
     failure_reason: str | None = None
-    result: Any = None
     try:
-        agent = app.new_agent()
-        result = agent.run(task)
-        answer = result.answer
-        failure_reason = result.failure_reason
+        artifact = run_single_task(
+            task_id=task_id,
+            config=config,
+            run_output_dir=output_root,
+        )
+        failure_reason = artifact.failure_reason
     except Exception as exc:
         # Tracebacks to stderr only — they may quote question strings, but
         # not raw row payloads. /logs/main.log records the redacted summary.
         traceback.print_exc(file=sys.stderr)
         failure_reason = f"{type(exc).__name__}: {exc}"
 
-    wrote = False
-    if answer is not None and answer.columns:
-        _write_prediction_csv(
-            task_output_dir / "prediction.csv",
-            list(answer.columns),
-            [list(row) for row in answer.rows],
-        )
-        wrote = True
+    wrote = artifact is not None and artifact.prediction_csv_path is not None
 
     elapsed = time.monotonic() - task_started
     status = "ok" if wrote else f"no_answer ({failure_reason or 'unknown'})"
-    _log(logs_root, f"task={task.task_id} status={status} elapsed={elapsed:.1f}s")
+    _log(logs_root, f"task={task_id} status={status} elapsed={elapsed:.1f}s")
     return wrote
 
 
@@ -203,13 +203,19 @@ def main() -> int:
     global_budget = float(os.environ.get("GLOBAL_WALL_SECONDS", DEFAULT_GLOBAL_BUDGET_SECONDS))
 
     config = _build_config(input_root)
-    app = build_application(config)
-    tasks = app.dataset.iter_tasks()
+    tasks = DABenchPublicDataset(config.dataset.root_path).iter_tasks()
     workers = max(1, int(os.environ.get("MAX_WORKERS", config.run.max_workers)))
+    task_timeout = derive_task_timeout(
+        config.run.task_timeout_seconds,
+        global_budget=global_budget,
+        workers=workers,
+        task_count=len(tasks),
+    )
+    config = replace(config, run=replace(config.run, task_timeout_seconds=task_timeout))
     _log(
         logs_root,
         f"start input={input_root} output={output_root} budget={global_budget:.0f}s "
-        f"tasks={len(tasks)} workers={workers}",
+        f"tasks={len(tasks)} workers={workers} task_timeout={task_timeout}s",
     )
 
     started = time.monotonic()
@@ -218,13 +224,13 @@ def main() -> int:
 
     # Submit every task up front; the executor caps concurrency at `workers`
     # and the global wall budget is enforced by `as_completed(timeout=...)`.
-    # Shared `app` is fine — see module docstring for the thread-safety
-    # argument. `app.new_agent()` is called inside `_run_one_task`, so each
-    # worker gets an isolated ReAct loop.
+    # Each worker thread calls `run_single_task`, which spawns its own
+    # subprocess — task state is process-isolated, nothing is shared beyond
+    # the immutable config.
     executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="submission")
     try:
         futures = {
-            executor.submit(_run_one_task, app, task, output_root, logs_root): task
+            executor.submit(_run_one_task, config, task.task_id, output_root, logs_root): task
             for task in tasks
         }
         try:

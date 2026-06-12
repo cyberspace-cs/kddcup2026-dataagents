@@ -25,6 +25,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the byte-stable cached payload; overrides render fresh.
 
 ### Behavior changes (intentional tightening)
+- **`run.blocklist` never reaches the judged container.** The submission
+  entrypoint force-clears the blocklist baked into the image config: a
+  skip-list entry kept from local debugging would otherwise silently
+  zero the matching judged task.
 - **Video is no longer inlined into main-agent/explorer conversations.** Raw
   frames reach only the video sub-agent; the explorer discovers videos via
   `inspect_files`.
@@ -37,6 +41,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   video report.
 
 ### Changed
+- **The container entrypoint runs the full CLI task pipeline.** Each
+  `agents.submission` task now goes through `run_single_task` — ETL
+  extraction, virtual context, retrieval index, subprocess hard timeout,
+  prediction.csv writing — identical to `dabench run-benchmark`.
+  Previously the container hand-assembled the agent and silently skipped
+  the preprocessing stages. The per-task timeout derives from the global
+  wall budget (`GLOBAL_WALL_SECONDS` fair share per worker, floored at
+  the configured `task_timeout_seconds`, capped at the budget).
 - **Task and `python_exec` subprocesses always start via `spawn`.** The
   start method no longer follows the platform default (`fork` on Linux
   ≤3.13): forking a parent that runs ThreadPoolExecutor workers can
