@@ -41,6 +41,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   video report.
 
 ### Changed
+- **Submission image upgraded to Python 3.14.** Aligns the container with
+  the dev interpreter. All locked dependencies resolve to cp314 manylinux
+  wheels (verified via `uv pip install --dry-run --no-build`), so the
+  no-compiler builder stage still holds.
 - **The container entrypoint runs the full CLI task pipeline.** Each
   `agents.submission` task now goes through `run_single_task` — ETL
   extraction, virtual context, retrieval index, subprocess hard timeout,

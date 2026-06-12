@@ -4,14 +4,18 @@
 # and installs Python deps into the system site-packages, final image only
 # carries runtime artefacts (no compilers / no uv).
 #
-# Opt-in CN mirror:
+# Python version: keep both FROM lines and the site-packages COPY path on the
+# same minor version, aligned with the dev interpreter (3.14) — rehearsal and
+# judged run must share runtime semantics. multiprocessing is pinned to spawn
+# in code (runs/subprocess.py, tools/python_exec.py), so safety does not hinge
+# on this version, but stdlib behaviour should still not drift.
+#
+# Opt-in CN mirror (uv reads UV_INDEX_URL only — not pip.conf):
 #   docker build \
 #       --build-arg UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
 #       -t <team_id>:v<N> -f docker/Dockerfile .
-# main's old `docker/pip.conf` was dead — uv does not read pip.conf, only
-# UV_INDEX_URL / [tool.uv] in pyproject.toml. Build-arg is the correct knob.
 
-FROM --platform=linux/amd64 python:3.11-slim AS builder
+FROM --platform=linux/amd64 python:3.14-slim AS builder
 
 ARG UV_INDEX_URL=""
 ENV UV_INDEX_URL=${UV_INDEX_URL}
@@ -21,8 +25,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # All listed deps (numpy/pandas/pyarrow/polars/pydantic/...) ship
-# manylinux wheels for x86_64, so no compilers needed. If a future dep
-# requires C extensions, re-add: build-essential gcc g++.
+# manylinux wheels for x86_64 on this Python version, so no compilers needed.
+# If a future dep requires C extensions, re-add: build-essential gcc g++.
 RUN pip install --no-cache-dir uv
 
 WORKDIR /build
@@ -36,18 +40,17 @@ COPY pyproject.toml uv.lock ./
 RUN uv export --frozen --no-dev --no-emit-project --no-hashes -o requirements.txt \
  && uv pip install --system --no-cache -r requirements.txt
 
-FROM --platform=linux/amd64 python:3.11-slim
+FROM --platform=linux/amd64 python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
-# Pure-version tools handle csv / json / md / sqlite / xlsx only — no OCR,
-# no PDF rasterisation, no image processing — so the image-side stack
-# (tesseract, poppler-utils, libgl1, libglib2.0-0) is unneeded. python:3.11-slim
-# already ships everything Python deps load at runtime.
+# Parsing deps are self-contained manylinux wheels (pymupdf bundles MuPDF;
+# pyarrow/pandas ship their own native libs), so no OCR / rasterisation apt
+# stack (tesseract, poppler-utils, libgl1) is needed on top of the slim base.
 
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/lib/python3.14/site-packages /usr/local/lib/python3.14/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 WORKDIR /app
