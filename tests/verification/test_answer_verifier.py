@@ -49,7 +49,10 @@ class _CapturingVerifier:
         self.response = response
         self.seen_content: object = None
 
-    def complete(self, messages: list[ModelMessage]) -> ModelResponse:
+    def complete(
+        self, messages: list[ModelMessage], *, tools: object | None = None
+    ) -> ModelResponse:
+        del tools
         self.seen_content = messages[-1].content
         return ModelResponse(content=self.response, raw_response=self.response)
 
