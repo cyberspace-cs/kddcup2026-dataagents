@@ -36,10 +36,11 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) — canonical source for commit message
 
 ## KDD Cup 2026 constraints
 
-- Heterogeneous data analysis (SQL + PDF + image/dashboard + docs). Not pure text-to-SQL.
+- Heterogeneous data analysis: `context/` = any subset of `csv/`, `db/` (SQLite), `json/`, `doc/` (`.md`/`.pdf`), `video/` (MP4), `knowledge.md`; detect what exists. Not pure text-to-SQL.
+- Phase-2 `task.json`: only `task_id` + `question` (no `difficulty`); questions may be Chinese.
 - Inference-time only — no model training.
 - Target model: `qwen3.5-35b-a3b` (judge-required model string; ~3B active params, supports video). See `scripts/eval_local.sh`.
-- Online evaluation deploys via vLLM (`--tensor-parallel-size 8 --max-model-len 262144 --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder`). Video input uses base64 data URI inline (no URL reference — local deployment has no external fetch path).
+- Online evaluation deploys via vLLM (`--tensor-parallel-size 8 --max-model-len 262144 --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder --media-io-kwargs '{"video": {"num_frames": -1}}'`). Video sampling defaults `fps=2`, `do_sample_frames=True`; override `fps` via `extra_body`. Video input uses base64 data URI inline (no URL reference — local deployment has no external fetch path).
 - Prefer workflow engines, tool use, multi-agent decomposition, and deterministic post-processing.
 - Constrain tool I/O and use structured intermediate files rather than dumping large state into conversation history.
 
