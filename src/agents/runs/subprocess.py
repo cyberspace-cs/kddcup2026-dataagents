@@ -3,7 +3,7 @@
 三层抽象：
 - `run_single_task_core`:         在当前进程跑核心 ReAct 循环并返回 dict 结果
 - `_run_single_task_in_subprocess`: 子进程入口，把结果/异常塞回 multiprocessing.Queue
-- `run_single_task_with_timeout`: 父进程：fork + join(timeout) + crash 兜底
+- `run_single_task_with_timeout`: 父进程：spawn 子进程 + 限时收 Queue + crash 兜底
 
 `run_single_task_core` 同时供 in-process 路径（测试注入 model/tools 时）和子进程路径
 共用，避免两份逻辑分叉。
@@ -28,6 +28,12 @@ if TYPE_CHECKING:
     from agents.llm.types import ModelAdapter
     from agents.tools.registry import ToolRegistry
     from agents.verification import AnswerVerifier
+
+# 统一 spawn 起子进程：父进程在 run_benchmark / agents.submission 里带着
+# ThreadPoolExecutor 线程，Linux ≤3.13 默认的 fork 会让子进程继承 fork 瞬间
+# 其他线程持有的锁（import 锁等）而死锁；spawn 从干净解释器启动，且不依赖
+# 平台/版本各异的默认 start method（darwin=spawn，Linux 3.14 起=forkserver）。
+_MP_SPAWN = multiprocessing.get_context("spawn")
 
 
 def run_single_task_core(
@@ -246,8 +252,8 @@ def run_single_task_with_timeout(
     if timeout_seconds <= 0:
         return run_single_task_core(task_id=task_id, config=config)
 
-    queue: multiprocessing.Queue[Any] = multiprocessing.Queue()
-    process = multiprocessing.Process(
+    queue: multiprocessing.Queue[Any] = _MP_SPAWN.Queue()
+    process = _MP_SPAWN.Process(
         target=_run_single_task_in_subprocess,
         args=(task_id, config, queue),
     )

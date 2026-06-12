@@ -64,8 +64,8 @@ def test_timeout_marks_running_sqlite_trace_error(tmp_path: Path, monkeypatch: A
     db_path = tmp_path / "traces.db"
     _make_running_trace(db_path)
 
-    monkeypatch.setattr(runs_subprocess.multiprocessing, "Queue", lambda: _EmptyQueue())
-    monkeypatch.setattr(runs_subprocess.multiprocessing, "Process", _TimeoutProcess)
+    monkeypatch.setattr(runs_subprocess._MP_SPAWN, "Queue", lambda: _EmptyQueue())
+    monkeypatch.setattr(runs_subprocess._MP_SPAWN, "Process", _TimeoutProcess)
     ticks = iter([0.0, 2.0])
     monkeypatch.setattr(runs_subprocess, "perf_counter", lambda: next(ticks))
 

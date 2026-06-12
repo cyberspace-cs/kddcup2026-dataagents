@@ -26,6 +26,11 @@ from pathlib import Path
 from queue import Empty
 from typing import Any
 
+# 统一 spawn 起子进程（与 runs/subprocess.py 同理）：宿主进程可能带线程，fork 会
+# 继承锁状态导致死锁；spawn 从干净解释器启动，平台/版本间行为一致，也让下方
+# "子进程内 set env 不回写父进程" 的隔离假设始终成立。
+_MP_SPAWN = multiprocessing.get_context("spawn")
+
 # 单股 stdout/stderr 的硬上限（字节）。64KB ≈ 16K tokens（按 cl100k 经验 ~4 字节/token），
 # 远低于典型 context 预算（≥128K），既给出足够的调试信息又防止单次 observation 把
 # 模型 prompt 撑过上限——失败案例：run 20260430-025 task_2 一次 `print(records)` 输出
@@ -217,8 +222,8 @@ def execute_python_code(
         stderr_path.write_text("")
 
         # 用 Queue 回传结构化结果（success/error/traceback）；stdout/stderr 走文件
-        queue: multiprocessing.Queue[Any] = multiprocessing.Queue()
-        process = multiprocessing.Process(
+        queue: multiprocessing.Queue[Any] = _MP_SPAWN.Queue()
+        process = _MP_SPAWN.Process(
             target=_run_python_code,
             args=(
                 resolved_context_root.as_posix(),

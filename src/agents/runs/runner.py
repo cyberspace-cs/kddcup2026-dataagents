@@ -205,7 +205,7 @@ def run_benchmark(
                 if progress_callback is not None:
                     progress_callback(artifact)
     else:
-        # 并行路径：每个线程自己调 run_single_task，内部会 fork 子进程做超时隔离
+        # 并行路径：每个线程自己调 run_single_task，内部会 spawn 子进程做超时隔离
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             future_to_index = {
                 executor.submit(

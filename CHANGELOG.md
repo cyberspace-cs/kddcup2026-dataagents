@@ -37,6 +37,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   video report.
 
 ### Changed
+- **Task and `python_exec` subprocesses always start via `spawn`.** The
+  start method no longer follows the platform default (`fork` on Linux
+  ≤3.13): forking a parent that runs ThreadPoolExecutor workers can
+  deadlock the child on locks held at fork time. Local (macOS) and
+  container (Linux) runs now share identical process semantics; measured
+  overhead is ~25 ms per child, noise against task budgets.
 - **Ungrouped aggregate answers are pinned to the SQL result shape.**
   Questions asking for aggregates without grouping (e.g., max and min of
   two quantities) now submit one row with one column per aggregate;
