@@ -52,7 +52,7 @@ def create_explore_video_tool_definition(video_model: ModelAdapter) -> FunctionT
     def handler(task: PublicTask, args: ExploreVideoInput) -> ToolExecutionResult:
         import agents.runtime.media as media
         import agents.video.runner as video_runner
-        from agents.tools.filesystem.path import resolve_context_path
+        from agents.tools.context import resolve_context_path
 
         try:
             video_path = resolve_context_path(task, args.path)

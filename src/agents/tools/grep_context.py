@@ -10,8 +10,8 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
+from agents.tools.constants import CSV_EXTS, DOC_EXTS, JSON_EXTS, SQLITE_EXTS
 from agents.tools.decorator import function_tool
-from agents.tools.filesystem.constants import CSV_EXTS, DOC_EXTS, JSON_EXTS, SQLITE_EXTS
 from agents.tools.registry import ToolExecutionResult
 
 TEXT_EXTS = CSV_EXTS | JSON_EXTS | DOC_EXTS

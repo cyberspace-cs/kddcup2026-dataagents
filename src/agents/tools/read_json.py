@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 
 from agents.benchmark.schema import PublicTask
+from agents.tools import constants
 from agents.tools._fields import path_field
+from agents.tools.context import resolve_context_path
 from agents.tools.decorator import function_tool
-from agents.tools.filesystem import constants
-from agents.tools.filesystem.path import resolve_context_path
 from agents.tools.registry import ToolExecutionResult
 
 

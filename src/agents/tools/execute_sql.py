@@ -10,9 +10,9 @@ from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
 from agents.tools._fields import positive_int_field
+from agents.tools.context import resolve_context_path
 from agents.tools.contracts import PATH_CONVENTION_NOTE
 from agents.tools.decorator import function_tool
-from agents.tools.filesystem import resolve_context_path
 from agents.tools.registry import ToolExecutionResult
 
 _NON_SQLITE_PATH_REDIRECT: dict[str, str] = {

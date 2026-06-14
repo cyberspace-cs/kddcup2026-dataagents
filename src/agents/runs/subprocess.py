@@ -107,7 +107,7 @@ def run_single_task_core(
         except Exception:
             pass
 
-        from agents.tools.filesystem.path import build_virtual_context
+        from agents.tools.context import build_virtual_context
 
         virtual_ctx = build_virtual_context(task)
         task = PublicTask(
