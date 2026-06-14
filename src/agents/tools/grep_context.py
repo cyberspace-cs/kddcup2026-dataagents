@@ -1,24 +1,18 @@
-"""grep_context：跨 context 目录的纯文本 + SQLite 正则搜索。
-
-文本文件（csv/json/md/txt）按行 regex 匹配，类似 ripgrep；
-SQLite（db/sqlite）注册 REGEXP 函数后按相同 regex 语义查询。
-PDF 等二进制格式跳过（ETL 已提取为 CSV）。
-"""
+"""grep_context tool: regex search across all context files."""
 
 from __future__ import annotations
 
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
-from agents.tools.filesystem.constants import (
-    CSV_EXTS,
-    DOC_EXTS,
-    JSON_EXTS,
-    SQLITE_EXTS,
-)
+from agents.tools.decorator import function_tool
+from agents.tools.filesystem.constants import CSV_EXTS, DOC_EXTS, JSON_EXTS, SQLITE_EXTS
+from agents.tools.registry import ToolExecutionResult
 
 TEXT_EXTS = CSV_EXTS | JSON_EXTS | DOC_EXTS
 ALL_SEARCHABLE_EXTS = TEXT_EXTS | SQLITE_EXTS
@@ -26,6 +20,7 @@ ALL_SEARCHABLE_EXTS = TEXT_EXTS | SQLITE_EXTS
 GREP_MAX_RESULTS = 30
 GREP_MAX_LINE_CHARS = 500
 GREP_MAX_FILE_BYTES = 50 * 1024 * 1024
+SQLITE_SAMPLE_PER_TABLE = 3
 
 
 def _grep_text_file(
@@ -34,26 +29,23 @@ def _grep_text_file(
     compiled: re.Pattern[str],
     remaining: int,
 ) -> list[dict[str, Any]]:
-    """Search a text file line-by-line, return up to `remaining` matches."""
+    """Search a text file line by line, returning up to remaining matches."""
     if path.stat().st_size > GREP_MAX_FILE_BYTES:
         return []
     hits: list[dict[str, Any]] = []
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for line_no, line in enumerate(fh, 1):
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line_no, line in enumerate(handle, 1):
                 if compiled.search(line):
                     text = line.rstrip("\n\r")
                     if len(text) > GREP_MAX_LINE_CHARS:
-                        text = text[:GREP_MAX_LINE_CHARS] + "…"
+                        text = text[:GREP_MAX_LINE_CHARS] + "..."
                     hits.append({"file": rel_path, "line": line_no, "text": text})
                     if len(hits) >= remaining:
                         break
     except OSError:
         pass
     return hits
-
-
-SQLITE_SAMPLE_PER_TABLE = 3
 
 
 def _grep_sqlite(
@@ -63,7 +55,7 @@ def _grep_sqlite(
     compiled: re.Pattern[str],
     remaining: int,
 ) -> list[dict[str, Any]]:
-    """Search text columns across all tables with the compiled regex."""
+    """Search text columns across all SQLite tables with the compiled regex."""
     hits: list[dict[str, Any]] = []
     uri = f"file:{path.resolve().as_posix()}?mode=ro"
     try:
@@ -116,7 +108,7 @@ def _grep_sqlite(
                 for row in sample_rows:
                     val = str(row[1]) if row[1] is not None else ""
                     if len(val) > GREP_MAX_LINE_CHARS:
-                        val = val[:GREP_MAX_LINE_CHARS] + "…"
+                        val = val[:GREP_MAX_LINE_CHARS] + "..."
                     samples.append(val)
                 hits.append(
                     {
@@ -136,19 +128,14 @@ def _grep_sqlite(
     return hits
 
 
-def grep_context(
+def run_grep_context(
     task: PublicTask,
     pattern: str,
     *,
     path_filter: str | None = None,
     max_results: int = GREP_MAX_RESULTS,
 ) -> dict[str, Any]:
-    """Search for a regex pattern across all context files.
-
-    Text files (csv/json/md/txt) are searched line-by-line.
-    SQLite databases are searched via a registered REGEXP function.
-    Returns matching lines/rows with file path and location.
-    """
+    """Search for a regex pattern across all searchable context files."""
     context_root = task.context_dir.resolve()
 
     try:
@@ -170,7 +157,7 @@ def grep_context(
     candidates.sort(key=lambda item: item[0])
 
     if path_filter:
-        candidates = [(r, p) for r, p in candidates if path_filter in r]
+        candidates = [(rel, path) for rel, path in candidates if path_filter in rel]
 
     all_hits: list[dict[str, Any]] = []
     files_searched = 0
@@ -194,3 +181,36 @@ def grep_context(
         "truncated": len(all_hits) >= max_results,
         "results": all_hits,
     }
+
+
+@function_tool
+def grep_context(
+    task: PublicTask,
+    pattern: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Regex pattern to search for across all context files. "
+                "Case-insensitive. Supports full Python regex syntax."
+            ),
+        ),
+    ],
+    path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional path substring filter. When set, only files whose "
+                "path contains this string are searched."
+            ),
+        ),
+    ] = None,
+) -> ToolExecutionResult:
+    """Use this when you need to search for a regex pattern across ALL context
+    files at once: CSV column values, JSON fields, Markdown/text content,
+    and SQLite text columns. Returns matching lines/rows with file path
+    and location. Checks whether a specific value exists in the data
+    (e.g., does province column contain '全国'?) without needing to
+    read each file individually."""
+    content = run_grep_context(task, pattern=pattern, path_filter=path)
+    return ToolExecutionResult(ok=True, content=content)

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from agents.benchmark.schema import PublicTask
-from agents.tools.defs._fields import path_field
+from agents.tools._fields import path_field
 from agents.tools.registry import ToolExecutionResult
 from agents.tools.schema_normalize import normalize_for_vllm
 

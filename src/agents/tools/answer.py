@@ -19,7 +19,7 @@ from agents.tools.contracts import (
     inline_answer_size_phrase,
 )
 from agents.tools.decorator import function_tool
-from agents.tools.filesystem import classify_dtype
+from agents.tools.read_csv import classify_dtype
 from agents.tools.registry import ToolExecutionResult
 
 _ANSWER_SCRATCH_ROOT = pathlib.Path("/tmp/dabench")

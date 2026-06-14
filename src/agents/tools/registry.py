@@ -3,12 +3,12 @@
 Responsibilities:
 - ``FunctionTool`` / ``ToolRegistry``: immutable structures
 - ``ToolExecutionResult`` / ``ToolHandler``: canonical return type + handler signature
-- ``create_default_tool_registry()``: builds the standard tool set from ``defs/``
+- ``create_default_tool_registry()``: builds the standard tool set
 - Input validation via ``tool.input_model`` (no global lookup table)
 
 Implementation details live in sibling modules:
 - ``tools/contracts.py``        — shared constants
-- ``tools/defs/``               — self-contained tool definitions (incl. descriptions)
+- ``tools/*.py``                — self-contained tool definitions (incl. descriptions)
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def create_default_tool_registry(
     *,
     explore_tool: FunctionTool | None = None,
 ) -> ToolRegistry:
-    """Build the default tool registry from ``defs/`` specs.
+    """Build the default tool registry from top-level tool specs.
 
     Registration order (fixed by convention):
     1. explore / inspect_files  — first-step exploration
@@ -149,21 +149,31 @@ def create_default_tool_registry(
     10. execute_python          — subprocess Python execution
     11. answer                  — terminal: submit answer (only terminal tool)
     """
-    from agents.tools import defs
+    from agents.tools.answer import answer
+    from agents.tools.execute_python import execute_python
+    from agents.tools.execute_sql import execute_context_sql
+    from agents.tools.grep_context import grep_context
+    from agents.tools.inspect_files import inspect_files
+    from agents.tools.inspect_sqlite import inspect_sqlite_schema
+    from agents.tools.lookup_field import lookup_field
+    from agents.tools.read_csv import read_csv
+    from agents.tools.read_doc import read_doc
+    from agents.tools.read_json import read_json
+    from agents.tools.search_context import search_context
 
-    first_tool = explore_tool or defs.inspect_files
+    first_tool = explore_tool or inspect_files
     definitions: list[FunctionTool] = [
         first_tool,
-        defs.read_csv,
-        defs.read_doc,
-        defs.search_context,
-        defs.lookup_field,
-        defs.read_json,
-        defs.inspect_sqlite_schema,
-        defs.execute_context_sql,
-        defs.grep_context,
-        defs.execute_python,
-        defs.answer,
+        read_csv,
+        read_doc,
+        search_context,
+        lookup_field,
+        read_json,
+        inspect_sqlite_schema,
+        execute_context_sql,
+        grep_context,
+        execute_python,
+        answer,
     ]
     return ToolRegistry(definitions={d.name: d for d in definitions})
 

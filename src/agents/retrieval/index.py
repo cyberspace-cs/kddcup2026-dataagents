@@ -467,7 +467,7 @@ def _index_json_schema(conn: sqlite3.Connection, path: str, schema: dict[str, An
 
 
 def _index_schema_summaries(conn: sqlite3.Connection, task: PublicTask) -> tuple[int, int]:
-    from agents.tools.filesystem import inspect_context_files
+    from agents.tools.inspect_files import inspect_context_files
 
     summary = inspect_context_files(task)
     files = summary.get("files", [])

@@ -7,9 +7,17 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agents.benchmark.schema import PublicTask
-from agents.tools import defs
+from agents.tools.execute_sql import execute_context_sql
+from agents.tools.grep_context import grep_context
+from agents.tools.inspect_files import inspect_files
+from agents.tools.inspect_sqlite import inspect_sqlite_schema
+from agents.tools.lookup_field import lookup_field
+from agents.tools.read_csv import read_csv
+from agents.tools.read_doc import read_doc
+from agents.tools.read_json import read_json
 from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
+from agents.tools.search_context import search_context
 
 
 class ReportInput(BaseModel):
@@ -74,43 +82,43 @@ def create_explorer_tool_registry(
 ) -> ToolRegistry:
     """Read-only tool registry for the Explorer sub-agent.
 
-    Includes inspection/preview tools from ``defs/``, plus ``report``
+    Includes inspection/preview tools from top-level tool modules, plus ``report``
     as the only terminal tool. Excludes ``execute_python`` and ``answer``.
     """
     definitions: list[FunctionTool] = [
-        defs.inspect_files.with_description(
+        inspect_files.with_description(
             "One-shot summary of every file under context "
             "(columns, dtypes, row counts, table schemas, column_conversions).",
         ),
-        defs.read_csv.with_description(
+        read_csv.with_description(
             "Preview a CSV file: columns, dtypes, row_count, "
             "head (20 rows), tail (5 rows). Sample only.",
         ),
-        defs.read_doc.with_description(
+        read_doc.with_description(
             "Preview a text document (md/txt). Without keyword: paging. "
             "With keyword: returns ALL matching paragraphs across the file.",
         ),
-        defs.search_context.with_description(
+        search_context.with_description(
             "Search the local retrieval index by entity, ID, phrase, or keyword. "
             "Returns path, line range, score, text preview.",
         ),
-        defs.lookup_field.with_description(
+        lookup_field.with_description(
             "Resolve field meanings, units, code labels, aliases, thresholds "
             "from knowledge.md and schema summaries.",
         ),
-        defs.read_json.with_description(
+        read_json.with_description(
             "Preview a JSON file: kind (array/object/scalar), length/keys, "
             "sample values. Sample only.",
         ),
-        defs.inspect_sqlite_schema.with_description(
+        inspect_sqlite_schema.with_description(
             "View SQLite database table structures (columns, row counts). "
             "Do NOT call on .csv/.json/.md/.txt paths.",
         ),
-        defs.execute_context_sql.with_description(
+        execute_context_sql.with_description(
             "Run read-only SQL on a SQLite database. Use for SELECT DISTINCT, "
             "MIN/MAX, sample queries. Do NOT call on .csv/.json/.md/.txt paths.",
         ),
-        defs.grep_context.with_description(
+        grep_context.with_description(
             "Search for a regex pattern across ALL context files at once: "
             "CSV values, JSON fields, Markdown text, and SQLite text columns. "
             "Use this to check whether a value exists in any file.",

@@ -1,19 +1,22 @@
-"""CSV 预览与列级 profiling。"""
+"""read_csv tool: CSV schema + head/tail preview."""
 
 from __future__ import annotations
 
 import contextlib
 import csv
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from agents.benchmark.schema import PublicTask
+from agents.tools._fields import path_field
+from agents.tools.decorator import function_tool
 from agents.tools.filesystem import constants
 from agents.tools.filesystem.path import resolve_context_path
+from agents.tools.registry import ToolExecutionResult
 
 
 def classify_dtype(values: list[str]) -> str:
-    """根据列前 N 个非空样本推断粗 dtype（int/float/bool/str/empty）。"""
+    """Infer a coarse dtype from non-empty string samples."""
     non_empty = [v for v in values if v != ""]
     if not non_empty:
         return "empty"
@@ -44,7 +47,7 @@ def profile_columns(
     columns: list[str],
     sample_rows: list[list[str]],
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """从字符串化的样本行推断 dtypes 和列级 profile。返回 (dtypes, profile)。"""
+    """Infer dtypes and lightweight column profiles from string sample rows."""
     column_count = len(columns)
     dtype_sample = sample_rows[: constants.INSPECT_FILES_DTYPE_SAMPLE]
     dtypes: list[str] = []
@@ -89,7 +92,7 @@ def profile_columns(
 
 
 def read_csv_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
-    """返回 CSV 的 schema + head/tail 样本（**不是**取数据工具）。"""
+    """Return CSV schema plus head/tail samples. This is not full data access."""
     path = resolve_context_path(task, relative_path)
     with path.open(newline="") as handle:
         reader = csv.reader(handle)
@@ -132,7 +135,7 @@ def read_csv_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
 
 
 def summarize_csv(path: Path) -> dict[str, Any]:
-    """流式读取 CSV：拿 header + 前 N 行做 dtype 推断 + 列级 profiling + 累加总行数。"""
+    """Stream a CSV enough for inspect_files schema and column profiling."""
     with path.open(newline="") as handle:
         reader = csv.reader(handle)
         try:
@@ -160,3 +163,20 @@ def summarize_csv(path: Path) -> dict[str, Any]:
         "profile": profile,
         "profile_sample_rows": min(len(sample_rows), row_count),
     }
+
+
+@function_tool
+def read_csv(
+    task: PublicTask,
+    path: Annotated[
+        str,
+        path_field(file_kind="CSV file", examples=("csv/member.csv", "data/train.csv")),
+    ],
+) -> ToolExecutionResult:
+    """Use when you need to inspect a single CSV file: returns columns,
+    approximate dtypes, row_count, head (first 20 data rows), and tail
+    (last 5 data rows that are not already in head). This is a SAMPLE
+    preview, not full data access. For filtering, aggregation, joins, or
+    any full-file scan, use execute_python instead — the head/tail will
+    miss rows in between."""
+    return ToolExecutionResult(ok=True, content=read_csv_preview(task, path))

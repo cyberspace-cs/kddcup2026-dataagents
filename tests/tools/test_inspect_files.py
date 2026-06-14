@@ -20,7 +20,7 @@ import pytest
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.tools import filesystem
-from agents.tools.filesystem import inspect_context_files
+from agents.tools.inspect_files import inspect_context_files
 
 
 def _make_task(tmp_path: Path) -> PublicTask:

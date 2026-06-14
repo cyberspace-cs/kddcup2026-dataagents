@@ -10,23 +10,22 @@ XOR 校验、空 columns 报错由 `tests/test_dispatcher.py` 端到端校验；
 
 from __future__ import annotations
 
-import sys
+import importlib
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-import agents.tools.defs  # noqa: F401
 from agents.benchmark.schema import (
     AnswerTable,
     PublicTask,
     TaskAssets,
     TaskRecord,
 )
-from agents.tools.defs.answer import AnswerInput
-from agents.tools.defs.answer import answer as _answer_tool
+from agents.tools.answer import AnswerInput
+from agents.tools.answer import answer as _answer_tool
 
-_answer_mod = sys.modules["agents.tools.defs.answer"]
+_answer_mod = importlib.import_module("agents.tools.answer")
 
 
 @pytest.fixture

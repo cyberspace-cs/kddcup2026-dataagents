@@ -11,12 +11,11 @@
 
 from __future__ import annotations
 
-import sys
+import importlib
 from pathlib import Path
 
 import pytest
 
-import agents.tools.defs  # noqa: F401
 from agents.agent import ReActAgent, ReActAgentConfig
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.llm.openai import ToolCallParseError
@@ -31,7 +30,7 @@ from agents.tools.registry import create_default_tool_registry
 from agents.verification.answer import AnswerVerifier
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
-_answer_mod = sys.modules["agents.tools.defs.answer"]
+_answer_mod = importlib.import_module("agents.tools.answer")
 
 
 @pytest.fixture

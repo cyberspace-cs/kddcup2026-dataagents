@@ -1,6 +1,6 @@
 """`read_json_preview` 的单元测试：锁住 inspect-style 契约。
 
-设计意图回顾（见 `filesystem.read_json_preview` docstring）：
+设计意图回顾（见 `read_json.read_json_preview` docstring）：
 - read_json 是 inspect-style 预览，输出按 top-level `kind` 分流。
 - object → keys + key_count + 浅层 value_preview（标量原值；集合给 cardinality 不展开）。
 - array → length + 前 20 项 head（单项 ≤ 2KB 走 shape stub；累计 ≤ 6KB）。
@@ -19,7 +19,7 @@ import pytest
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.tools import filesystem
-from agents.tools.filesystem import read_json_preview
+from agents.tools.read_json import read_json_preview
 from agents.tools.registry import create_default_tool_registry
 
 

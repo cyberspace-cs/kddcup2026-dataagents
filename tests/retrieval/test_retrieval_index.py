@@ -19,7 +19,7 @@ from agents.retrieval.index import (
     search_context,
 )
 from agents.runs.subprocess import run_single_task_core
-from agents.tools.filesystem import inspect_context_files
+from agents.tools.inspect_files import inspect_context_files
 from agents.tools.registry import create_default_tool_registry
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
