@@ -9,8 +9,7 @@ from typing import Any
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.explorer.runner import run_explorer
 from agents.llm.types import ModelMessage, ModelResponse, ModelToolCall
-from agents.tools.handlers import ToolExecutionResult
-from agents.tools.registry import ToolDefinition
+from agents.tools.registry import ToolDefinition, ToolExecutionResult
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
 

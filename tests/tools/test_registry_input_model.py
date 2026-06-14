@@ -9,8 +9,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from agents.tools.handlers import ToolExecutionResult
-from agents.tools.registry import ToolDefinition, ToolRegistry
+from agents.tools.registry import ToolDefinition, ToolExecutionResult, ToolRegistry
 
 
 class _EchoInput(BaseModel):

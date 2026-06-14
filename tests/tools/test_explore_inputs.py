@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agents.tools.inputs import EXPLORE_VIDEO_SCHEMA, ExploreInput, ExploreVideoInput
+from agents.tools.explore import ExploreInput
+from agents.tools.explore_video import EXPLORE_VIDEO_SCHEMA, ExploreVideoInput
 
 
 def test_explore_input_takes_no_params() -> None:

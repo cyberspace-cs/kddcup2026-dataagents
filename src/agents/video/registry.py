@@ -12,8 +12,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from agents.benchmark.schema import PublicTask
-from agents.tools.handlers import ToolExecutionResult
-from agents.tools.registry import FunctionTool, ToolRegistry
+from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
 
 # 报告序列化总量兜底（≈ schema 密集型 explorer findings 实测体量的 2 倍）：

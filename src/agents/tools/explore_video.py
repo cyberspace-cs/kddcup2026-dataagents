@@ -10,11 +10,33 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from agents.benchmark.schema import PublicTask
-from agents.tools.handlers import ToolExecutionResult
-from agents.tools.inputs import EXPLORE_VIDEO_SCHEMA, ExploreVideoInput
+from agents.tools.defs._fields import path_field
+from agents.tools.registry import ToolExecutionResult
+from agents.tools.schema_normalize import normalize_for_vllm
+
+
+class ExploreVideoInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Annotated[
+        str,
+        path_field(file_kind="video file", examples=("video.mp4", "media/demo.mov")),
+    ]
+    instructions: str = Field(
+        description=(
+            "Analysis brief for the video agent: what the task needs from this video — "
+            "which charts, tables, values, or text to transcribe, plus any IDs or labels "
+            "to look for."
+        ),
+    )
+
+
+EXPLORE_VIDEO_SCHEMA = normalize_for_vllm(ExploreVideoInput.model_json_schema())
 
 if TYPE_CHECKING:
     from agents.llm import ModelAdapter

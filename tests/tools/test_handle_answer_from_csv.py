@@ -1,4 +1,4 @@
-"""`handle_answer` 的 from_csv artifact 路径单元测试。
+"""`_answer_tool.handler` 的 from_csv artifact 路径单元测试。
 
 锁住设计契约：
 - 列级 dtype 推断与 inline 路径在 prediction.csv 字面值上对齐（int 不被悄悄变 float）
@@ -23,8 +23,8 @@ from agents.benchmark.schema import (
     TaskAssets,
     TaskRecord,
 )
-from agents.tools.handlers import handle_answer
-from agents.tools.inputs import AnswerInput
+from agents.tools.defs.answer import AnswerInput
+from agents.tools.defs.answer import answer as _answer_tool
 
 _answer_mod = sys.modules["agents.tools.defs.answer"]
 
@@ -69,7 +69,7 @@ def test_from_csv_happy_path_returns_typed_answer(task: PublicTask, tmp_path: Pa
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.ok is True
     assert result.is_terminal is True
@@ -121,7 +121,7 @@ def test_from_csv_dtype_inference(
     csv_path = _write(tmp_path / "_answer" / "data.csv", csv_text)
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.answer is not None
     _assert_rows_strict(result.answer.rows, expected_rows)
@@ -208,7 +208,7 @@ def test_from_csv_error_scenarios(
     args = AnswerInput.model_validate({"from_csv": from_csv})
 
     with pytest.raises(ValueError, match=match) as exc_info:
-        handle_answer(task, args)
+        _answer_tool.handler(task, args)
 
     if path_in_message:
         assert from_csv in str(exc_info.value)
@@ -226,7 +226,7 @@ def test_from_csv_header_only_returns_empty_answer(task: PublicTask, tmp_path: P
     csv_path = _write(tmp_path / "_answer" / "head.csv", "id,name\n")
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.ok is True
     assert result.is_terminal is True
@@ -246,7 +246,7 @@ def test_from_csv_ack_content_includes_dtypes_and_preview(task: PublicTask, tmp_
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.content["status"] == "submitted"
     assert result.content["column_count"] == 3
@@ -278,7 +278,7 @@ def test_from_csv_unlinks_artifact_after_successful_submission(
     draft_path = _write(answer_dir / "draft.csv", "tmp\n1\n")
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.ok is True
     assert not csv_path.exists()
@@ -298,7 +298,7 @@ def test_from_csv_external_path_still_clears_answer_dir(task: PublicTask, tmp_pa
     external = _write(tmp_path / "elsewhere" / "real.csv", "id\n1\n2\n")
     args = AnswerInput.model_validate({"from_csv": str(external)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.ok is True
     assert not external.exists()
@@ -324,7 +324,7 @@ def test_inline_submission_with_existing_artifact_raises(task: PublicTask, tmp_p
     args = AnswerInput.model_validate({"columns": ["id"], "rows": [[1], [2]]})
 
     with pytest.raises(ValueError, match=r"answer artifact already exists") as exc_info:
-        handle_answer(task, args)
+        _answer_tool.handler(task, args)
 
     # 错误消息要把绝对路径与 from_csv 修复方向都贴上，模型下一轮才能直接照搬
     msg = str(exc_info.value)
@@ -347,7 +347,7 @@ def test_inline_submission_with_zero_byte_artifact_passes(task: PublicTask, tmp_
     assert artifact.exists()
 
     args = AnswerInput.model_validate({"columns": ["id"], "rows": [[1], [2]]})
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.ok is True
     assert result.answer is not None

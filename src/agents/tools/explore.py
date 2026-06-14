@@ -17,10 +17,16 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from pydantic import BaseModel, ConfigDict
+
 from agents.benchmark.schema import PublicTask
-from agents.tools.handlers import ToolExecutionResult
-from agents.tools.inputs import ExploreInput
+from agents.tools.registry import ToolExecutionResult
 from agents.tools.schema_normalize import normalize_for_vllm
+
+
+class ExploreInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
 
 if TYPE_CHECKING:
     from agents.llm import ModelAdapter

@@ -32,8 +32,12 @@ from agents.llm.openai import (
 )
 from agents.llm.rate_limit import estimate_prompt_tokens
 from agents.llm.types import ModelMessage, TokenUsage
-from agents.tools.handlers import ToolExecutionResult
-from agents.tools.registry import ToolDefinition, ToolRegistry, create_default_tool_registry
+from agents.tools.registry import (
+    ToolDefinition,
+    ToolExecutionResult,
+    ToolRegistry,
+    create_default_tool_registry,
+)
 
 
 def _make_usage(

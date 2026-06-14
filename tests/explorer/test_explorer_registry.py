@@ -8,8 +8,7 @@ import pytest
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.explorer.registry import ReportInput, create_explorer_tool_registry
-from agents.tools.handlers import ToolExecutionResult
-from agents.tools.registry import ToolDefinition
+from agents.tools.registry import ToolDefinition, ToolExecutionResult
 
 
 def _make_task(tmp_path: Path) -> PublicTask:

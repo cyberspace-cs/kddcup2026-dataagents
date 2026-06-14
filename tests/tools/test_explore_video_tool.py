@@ -10,8 +10,7 @@ import pytest
 import agents.runtime.media as media_mod
 import agents.video.runner as video_runner_mod
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from agents.tools.explore_video import create_explore_video_tool_definition
-from agents.tools.inputs import ExploreVideoInput
+from agents.tools.explore_video import ExploreVideoInput, create_explore_video_tool_definition
 from agents.video.runner import VideoAgentResult
 
 
