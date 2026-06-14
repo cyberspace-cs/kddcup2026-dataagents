@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict
 from agents.benchmark.schema import PublicTask
 from agents.tools.registry import ToolExecutionResult
 from agents.tools.schema_normalize import normalize_for_vllm
+from agents.tools.units import load_conversions
 
 
 class ExploreInput(BaseModel):
@@ -50,39 +51,16 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
         return
 
     schema_map = cast(dict[str, Any], content.get("schema_map", {}) or {})
-
     top_level: list[dict[str, Any]] = []
 
     for units_path in sorted(cache_dir.glob("*_units.json")):
-        try:
-            units = json.loads(units_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        conversions = load_conversions(units_path)
+        if not conversions:
             continue
 
-        by_group: dict[tuple[str, str, float], list[str]] = {}
-        col_conversions: dict[str, str] = {}
-        for field, source_unit in units.items():
-            if field.startswith("_"):
-                continue
-            target = units.get(f"_target_{field}")
-            factor_str = units.get(f"_factor_{field}")
-            if not target or str(source_unit) == str(target) or not factor_str:
-                continue
-            try:
-                factor = float(factor_str)
-            except (ValueError, TypeError):
-                continue
-            if factor == 0 or factor == 1:
-                continue
-            col_conversions[field] = f"CONVERT: ×{factor_str} ({source_unit} → {target})"
-            by_group.setdefault((source_unit, target, factor), []).append(field)
-
-        if not col_conversions:
-            continue
-
+        col_conversions = {c.field: c.label for c in conversions}
         stem = units_path.stem.removesuffix("_units")
 
-        # 1. Inject into schema_map (match by exact key or Path stem)
         for key, raw_entry in schema_map.items():
             if not isinstance(raw_entry, dict):
                 continue
@@ -97,7 +75,9 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
             if existing:
                 entry["column_conversions"] = existing
 
-        # 2. Build top-level unit_conversion entries
+        by_group: dict[tuple[str, str, float], list[str]] = {}
+        for c in conversions:
+            by_group.setdefault((c.source, c.target, c.factor), []).append(c.field)
         for (from_unit, to_unit, factor), columns in by_group.items():
             top_level.append(
                 {
