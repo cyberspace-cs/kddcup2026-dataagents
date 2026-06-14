@@ -10,7 +10,7 @@ import agents.explorer.runner as runner_mod
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.explorer.runner import ExplorerResult
 from agents.tools.explore import ExploreInput, create_explore_tool_definition
-from agents.tools.registry import ToolDefinition, ToolExecutionResult
+from agents.tools.registry import FunctionTool, ToolExecutionResult
 
 
 class _Adapter:
@@ -18,8 +18,8 @@ class _Adapter:
         raise AssertionError("not called")
 
 
-def _video_tool() -> ToolDefinition:
-    return ToolDefinition(
+def _video_tool() -> FunctionTool:
+    return FunctionTool(
         name="explore_video",
         description="stub",
         json_schema=None,

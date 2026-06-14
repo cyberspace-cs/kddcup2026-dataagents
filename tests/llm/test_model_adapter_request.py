@@ -33,7 +33,7 @@ from agents.llm.openai import (
 from agents.llm.rate_limit import estimate_prompt_tokens
 from agents.llm.types import ModelMessage, TokenUsage
 from agents.tools.registry import (
-    ToolDefinition,
+    FunctionTool,
     ToolExecutionResult,
     ToolRegistry,
     create_default_tool_registry,
@@ -346,7 +346,7 @@ def _tiny_registry() -> ToolRegistry:
     """单工具 registry，schema 远小于默认 registry，用作 per-call override。"""
     return ToolRegistry(
         {
-            "ping": ToolDefinition(
+            "ping": FunctionTool(
                 name="ping",
                 description="tiny override tool",
                 json_schema={"type": "object", "properties": {}},

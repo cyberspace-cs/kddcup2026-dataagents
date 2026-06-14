@@ -8,7 +8,6 @@ Responsibilities:
 
 Implementation details live in sibling modules:
 - ``tools/contracts.py``        — shared constants
-- ``tools/schema_normalize.py`` — ``normalize_for_vllm``
 - ``tools/defs/``               — self-contained tool definitions (incl. descriptions)
 """
 
@@ -23,11 +22,6 @@ from typing import Any, cast
 from pydantic import BaseModel, ValidationError
 
 from agents.benchmark.schema import AnswerTable, PublicTask
-from agents.tools.contracts import EXECUTE_PYTHON_TIMEOUT_SECONDS
-from agents.tools.schema_normalize import normalize_for_vllm
-
-# Alias kept for ``tests/test_schema_normalizer.py`` historical import path.
-_normalize_for_vllm = normalize_for_vllm
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,9 +51,6 @@ class FunctionTool:
     def with_description(self, description: str) -> FunctionTool:
         """Return a copy with a different description."""
         return dataclasses.replace(self, description=description)
-
-
-ToolDefinition = FunctionTool
 
 
 def _format_validation_error(tool_name: str, error: ValidationError) -> ValueError:
@@ -178,12 +169,9 @@ def create_default_tool_registry(
 
 
 __all__ = [
-    "EXECUTE_PYTHON_TIMEOUT_SECONDS",
     "FunctionTool",
-    "ToolDefinition",
     "ToolExecutionResult",
     "ToolHandler",
     "ToolRegistry",
-    "_normalize_for_vllm",
     "create_default_tool_registry",
 ]

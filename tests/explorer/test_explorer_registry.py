@@ -8,7 +8,7 @@ import pytest
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.explorer.registry import ReportInput, create_explorer_tool_registry
-from agents.tools.registry import ToolDefinition, ToolExecutionResult
+from agents.tools.registry import FunctionTool, ToolExecutionResult
 
 
 def _make_task(tmp_path: Path) -> PublicTask:
@@ -21,8 +21,8 @@ def _make_task(tmp_path: Path) -> PublicTask:
     )
 
 
-def _stub_video_tool() -> ToolDefinition:
-    return ToolDefinition(
+def _stub_video_tool() -> FunctionTool:
+    return FunctionTool(
         name="explore_video",
         description="stub",
         json_schema=None,

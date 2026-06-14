@@ -9,7 +9,7 @@ from typing import Any
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.explorer.runner import run_explorer
 from agents.llm.types import ModelMessage, ModelResponse, ModelToolCall
-from agents.tools.registry import ToolDefinition, ToolExecutionResult
+from agents.tools.registry import FunctionTool, ToolExecutionResult
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
 
@@ -37,10 +37,10 @@ def _call(call_id: str, name: str, arguments: dict) -> ModelResponse:
     )
 
 
-def _stub_video_tool() -> ToolDefinition:
+def _stub_video_tool() -> FunctionTool:
     # json_schema 非 None：to_openai_tools 会跳过无 schema 的工具，
     # 同源断言需要 explore_video 出现在每轮请求的广告里
-    return ToolDefinition(
+    return FunctionTool(
         name="explore_video",
         description="stub",
         json_schema={"type": "object", "properties": {}},

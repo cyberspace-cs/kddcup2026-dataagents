@@ -14,7 +14,6 @@ from agents.tools.dispatcher import dispatch_tool_call
 from agents.tools.filesystem import list_context_tree
 from agents.tools.registry import (
     FunctionTool,
-    ToolDefinition,
     ToolExecutionResult,
     ToolRegistry,
     create_default_tool_registry,
@@ -22,7 +21,6 @@ from agents.tools.registry import (
 
 __all__ = [
     "FunctionTool",
-    "ToolDefinition",
     "ToolExecutionResult",
     "ToolRegistry",
     "build_answer_table_without_side_effects",
