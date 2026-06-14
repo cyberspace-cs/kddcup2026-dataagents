@@ -4,18 +4,17 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
 from agents.tools.decorator import function_tool
-from agents.tools.descriptions import GREP_CONTEXT_DESCRIPTION
 from agents.tools.filesystem.grep import grep_context as _grep_context
 from agents.tools.registry import ToolExecutionResult
 
 
-class GrepContextInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+@function_tool
+def grep_context(
+    task: PublicTask,
     pattern: Annotated[
         str,
         Field(
@@ -25,24 +24,22 @@ class GrepContextInput(BaseModel):
                 "Case-insensitive. Supports full Python regex syntax."
             ),
         ),
-    ]
+    ],
     path: Annotated[
         str | None,
         Field(
-            default=None,
             description=(
                 "Optional path substring filter. When set, only files whose "
                 "path contains this string are searched."
             ),
         ),
-    ] = None
-
-
-@function_tool(
-    name="grep_context",
-    description=GREP_CONTEXT_DESCRIPTION,
-    input_model=GrepContextInput,
-)
-def grep_context(task: PublicTask, args: GrepContextInput) -> ToolExecutionResult:
-    content = _grep_context(task, pattern=args.pattern, path_filter=args.path)
+    ] = None,
+) -> ToolExecutionResult:
+    """Use this when you need to search for a regex pattern across ALL context
+    files at once: CSV column values, JSON fields, Markdown/text content,
+    and SQLite text columns. Returns matching lines/rows with file path
+    and location. Checks whether a specific value exists in the data
+    (e.g., does province column contain '全国'?) without needing to
+    read each file individually."""
+    content = _grep_context(task, pattern=pattern, path_filter=path)
     return ToolExecutionResult(ok=True, content=content)

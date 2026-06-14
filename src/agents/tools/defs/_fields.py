@@ -19,6 +19,6 @@ def path_field(*, file_kind: str, examples: tuple[str, ...]) -> Any:
     )
 
 
-def positive_int_field(*, default: int, description: str) -> Any:
-    """Non-negative integer field with minimum=1 and a default."""
-    return Field(default=default, ge=1, description=description)
+def positive_int_field(*, description: str) -> Any:
+    """Positive integer field constraint (ge=1)."""
+    return Field(ge=1, description=description)

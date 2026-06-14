@@ -1,6 +1,6 @@
 """Video sub-agent tool registry: a single terminal `report` tool.
 
-校验经 `ToolDefinition.input_model` 在 registry 边界强制——不依赖 vLLM
+校验经 `FunctionTool.input_model` 在 registry 边界强制——不依赖 vLLM
 constrained decoding（`adapt_model_response` 的 recovered 调用路径会绕过它）。
 """
 
@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agents.benchmark.schema import PublicTask
 from agents.tools.handlers import ToolExecutionResult
-from agents.tools.registry import ToolDefinition, ToolRegistry
+from agents.tools.registry import FunctionTool, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
 
 # 报告序列化总量兜底（≈ schema 密集型 explorer findings 实测体量的 2 倍）：
@@ -79,7 +79,7 @@ def handle_video_report(_task: PublicTask, args: VideoReportInput) -> ToolExecut
 
 
 def create_video_tool_registry() -> ToolRegistry:
-    report = ToolDefinition(
+    report = FunctionTool(
         name="report",
         description=(
             "Submit your video analysis findings. This is your ONLY tool and the only "

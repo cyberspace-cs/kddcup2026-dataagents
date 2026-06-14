@@ -13,20 +13,19 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from agents.benchmark.schema import PublicTask
-from agents.tools.descriptions import EXPLORE_VIDEO_DESCRIPTION
 from agents.tools.handlers import ToolExecutionResult
 from agents.tools.inputs import EXPLORE_VIDEO_SCHEMA, ExploreVideoInput
 
 if TYPE_CHECKING:
     from agents.llm import ModelAdapter
-    from agents.tools.registry import ToolDefinition
+    from agents.tools.registry import FunctionTool
 
 logger = logging.getLogger(__name__)
 
 
-def create_explore_video_tool_definition(video_model: ModelAdapter) -> ToolDefinition:
-    """Build the ToolDefinition that runs the video sub-agent on one context video."""
-    from agents.tools.registry import ToolDefinition as _ToolDefinition
+def create_explore_video_tool_definition(video_model: ModelAdapter) -> FunctionTool:
+    """Build the FunctionTool that runs the video sub-agent on one context video."""
+    from agents.tools.registry import FunctionTool as _FunctionTool
 
     def handler(task: PublicTask, args: ExploreVideoInput) -> ToolExecutionResult:
         import agents.runtime.media as media
@@ -70,9 +69,17 @@ def create_explore_video_tool_definition(video_model: ModelAdapter) -> ToolDefin
             },
         )
 
-    return _ToolDefinition(
+    return _FunctionTool(
         name="explore_video",
-        description=EXPLORE_VIDEO_DESCRIPTION,
+        description=(
+            "Launch the video analysis sub-agent on one video file from context. Use "
+            "ONLY on video files listed by `inspect_files`. Write `instructions` as "
+            "an analysis brief tied to the task question: which charts, tables, "
+            "values, or text to transcribe. Call once per video. The findings return "
+            "to you AND pass through to the main agent verbatim — reference key facts "
+            "in your report's knowledge/value_samples but do not re-transcribe "
+            "numbers."
+        ),
         json_schema=EXPLORE_VIDEO_SCHEMA,
         handler=handler,
         input_model=ExploreVideoInput,

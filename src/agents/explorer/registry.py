@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agents.benchmark.schema import PublicTask
 from agents.tools import defs
-from agents.tools.registry import ToolDefinition, ToolExecutionResult, ToolRegistry
+from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
 
 
@@ -70,74 +70,56 @@ def handle_report(_task: PublicTask, args: Any) -> ToolExecutionResult:
 
 def create_explorer_tool_registry(
     *,
-    video_tool: ToolDefinition | None = None,
+    video_tool: FunctionTool | None = None,
 ) -> ToolRegistry:
     """Read-only tool registry for the Explorer sub-agent.
 
     Includes inspection/preview tools from ``defs/``, plus ``report``
     as the only terminal tool. Excludes ``execute_python`` and ``answer``.
     """
-    definitions: list[ToolDefinition] = [
-        defs.inspect_files.to_definition(
-            description=(
-                "One-shot summary of every file under context "
-                "(columns, dtypes, row counts, table schemas, column_conversions)."
-            ),
+    definitions: list[FunctionTool] = [
+        defs.inspect_files.with_description(
+            "One-shot summary of every file under context "
+            "(columns, dtypes, row counts, table schemas, column_conversions).",
         ),
-        defs.read_csv.to_definition(
-            description=(
-                "Preview a CSV file: columns, dtypes, row_count, "
-                "head (20 rows), tail (5 rows). Sample only."
-            ),
+        defs.read_csv.with_description(
+            "Preview a CSV file: columns, dtypes, row_count, "
+            "head (20 rows), tail (5 rows). Sample only.",
         ),
-        defs.read_doc.to_definition(
-            description=(
-                "Preview a text document (md/txt). Without keyword: paging. "
-                "With keyword: returns ALL matching paragraphs across the file."
-            ),
+        defs.read_doc.with_description(
+            "Preview a text document (md/txt). Without keyword: paging. "
+            "With keyword: returns ALL matching paragraphs across the file.",
         ),
-        defs.search_context.to_definition(
-            description=(
-                "Search the local retrieval index by entity, ID, phrase, or keyword. "
-                "Returns path, line range, score, text preview."
-            ),
+        defs.search_context.with_description(
+            "Search the local retrieval index by entity, ID, phrase, or keyword. "
+            "Returns path, line range, score, text preview.",
         ),
-        defs.lookup_field.to_definition(
-            description=(
-                "Resolve field meanings, units, code labels, aliases, thresholds "
-                "from knowledge.md and schema summaries."
-            ),
+        defs.lookup_field.with_description(
+            "Resolve field meanings, units, code labels, aliases, thresholds "
+            "from knowledge.md and schema summaries.",
         ),
-        defs.read_json.to_definition(
-            description=(
-                "Preview a JSON file: kind (array/object/scalar), length/keys, "
-                "sample values. Sample only."
-            ),
+        defs.read_json.with_description(
+            "Preview a JSON file: kind (array/object/scalar), length/keys, "
+            "sample values. Sample only.",
         ),
-        defs.inspect_sqlite_schema.to_definition(
-            description=(
-                "View SQLite database table structures (columns, row counts). "
-                "Do NOT call on .csv/.json/.md/.txt paths."
-            ),
+        defs.inspect_sqlite_schema.with_description(
+            "View SQLite database table structures (columns, row counts). "
+            "Do NOT call on .csv/.json/.md/.txt paths.",
         ),
-        defs.execute_context_sql.to_definition(
-            description=(
-                "Run read-only SQL on a SQLite database. Use for SELECT DISTINCT, "
-                "MIN/MAX, sample queries. Do NOT call on .csv/.json/.md/.txt paths."
-            ),
+        defs.execute_context_sql.with_description(
+            "Run read-only SQL on a SQLite database. Use for SELECT DISTINCT, "
+            "MIN/MAX, sample queries. Do NOT call on .csv/.json/.md/.txt paths.",
         ),
-        defs.grep_context.to_definition(
-            description=(
-                "Search for a regex pattern across ALL context files at once: "
-                "CSV values, JSON fields, Markdown text, and SQLite text columns. "
-                "Use this to check whether a value exists in any file."
-            ),
+        defs.grep_context.with_description(
+            "Search for a regex pattern across ALL context files at once: "
+            "CSV values, JSON fields, Markdown text, and SQLite text columns. "
+            "Use this to check whether a value exists in any file.",
         ),
     ]
     if video_tool is not None:
         definitions.append(video_tool)
     definitions.append(
-        ToolDefinition(
+        FunctionTool(
             name="report",
             description=(
                 "Submit your exploration findings. This is the ONLY way to complete "

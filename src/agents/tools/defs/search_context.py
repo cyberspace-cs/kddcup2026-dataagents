@@ -4,18 +4,17 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
 from agents.retrieval.index import search_context as _search_context
 from agents.tools.decorator import function_tool
-from agents.tools.descriptions import SEARCH_CONTEXT_DESCRIPTION
 from agents.tools.registry import ToolExecutionResult
 
 
-class SearchContextInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+@function_tool
+def search_context(
+    task: PublicTask,
     query: Annotated[
         str,
         Field(
@@ -25,37 +24,33 @@ class SearchContextInput(BaseModel):
                 "entity names, IDs, phrases, or evidence in long documents."
             ),
         ),
-    ]
+    ],
     path: Annotated[
         str | None,
         Field(
-            default=None,
             description=(
                 "Optional exact path filter, relative to context for source files "
                 "or the absolute ETL CSV path shown by inspect_files."
             ),
         ),
-    ] = None
+    ] = None,
     limit: Annotated[
         int | None,
         Field(
-            default=None,
             ge=1,
             description=(
                 "Optional result cap. The runtime also caps this at the configured "
                 "run.retrieval_index.max_results."
             ),
         ),
-    ] = None
-
-
-@function_tool(
-    name="search_context",
-    description=SEARCH_CONTEXT_DESCRIPTION,
-    input_model=SearchContextInput,
-)
-def search_context(task: PublicTask, args: SearchContextInput) -> ToolExecutionResult:
-    content = _search_context(task, query=args.query, path=args.path, limit=args.limit)
+    ] = None,
+) -> ToolExecutionResult:
+    """Use when the local retrieval index is enabled and you need to find
+    evidence in long local documents, knowledge files, or schema summaries
+    by entity name, ID, phrase, or keyword. Returns path, line range, score,
+    and text preview. Retrieval results are evidence pointers, not final
+    answers; use execute_python or SQL for full computation."""
+    content = _search_context(task, query=query, path=path, limit=limit)
     return ToolExecutionResult(
         ok=bool(content.get("enabled")) and "error" not in content, content=content
     )

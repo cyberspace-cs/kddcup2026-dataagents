@@ -15,9 +15,10 @@ from agents.tools.contracts import (
     INLINE_ANSWER_CELL_LIMIT,
     INLINE_ANSWER_ROW_LIMIT,
     answer_artifact_expression,
+    artifact_answer_size_phrase,
+    inline_answer_size_phrase,
 )
 from agents.tools.decorator import function_tool
-from agents.tools.descriptions import ANSWER_DESCRIPTION
 from agents.tools.filesystem import classify_dtype
 from agents.tools.registry import ToolExecutionResult
 
@@ -173,8 +174,16 @@ def _prune_null_columns(
 
 
 @function_tool(
-    name="answer",
-    description=ANSWER_DESCRIPTION,
+    description=(
+        "Use this when the final answer table is determined. This is the only "
+        "way to submit; plain text answers are ignored. "
+        f"For small answers ({inline_answer_size_phrase()}): pass inline columns/rows. "
+        f"For {artifact_answer_size_phrase()}: write CSV in execute_python first, "
+        "then pass from_csv (inline is rejected at this threshold). "
+        "IMPORTANT: for content-entity questions "
+        '("what is the comment/post/message/title"), columns must contain '
+        "the text body (Text/Body/Title), NOT a surrogate key (Id/Code)."
+    ),
     input_model=AnswerInput,
     is_terminal=True,
 )

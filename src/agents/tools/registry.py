@@ -1,20 +1,20 @@
-"""Tool registry: ``ToolDefinition`` / ``ToolRegistry`` + factory.
+"""Tool registry: ``FunctionTool`` / ``ToolRegistry`` + factory.
 
 Responsibilities:
-- ``ToolDefinition`` / ``ToolRegistry``: immutable structures
+- ``FunctionTool`` / ``ToolRegistry``: immutable structures
 - ``ToolExecutionResult`` / ``ToolHandler``: canonical return type + handler signature
 - ``create_default_tool_registry()``: builds the standard tool set from ``defs/``
-- Input validation via ``definition.input_model`` (no global lookup table)
+- Input validation via ``tool.input_model`` (no global lookup table)
 
 Implementation details live in sibling modules:
 - ``tools/contracts.py``        — shared constants
-- ``tools/descriptions.py``     — tool description text
 - ``tools/schema_normalize.py`` — ``normalize_for_vllm``
-- ``tools/defs/``               — self-contained tool definitions
+- ``tools/defs/``               — self-contained tool definitions (incl. descriptions)
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -44,8 +44,8 @@ ToolHandler = Callable[[PublicTask, Any], ToolExecutionResult]
 
 
 @dataclass(frozen=True, slots=True)
-class ToolDefinition:
-    """Full definition of a single tool: prompt-side + execution-side."""
+class FunctionTool:
+    """Complete tool definition: schema, handler, and metadata."""
 
     name: str
     description: str
@@ -53,6 +53,13 @@ class ToolDefinition:
     handler: ToolHandler
     is_terminal: bool = False
     input_model: type[BaseModel] | None = None
+
+    def with_description(self, description: str) -> FunctionTool:
+        """Return a copy with a different description."""
+        return dataclasses.replace(self, description=description)
+
+
+ToolDefinition = FunctionTool
 
 
 def _format_validation_error(tool_name: str, error: ValidationError) -> ValueError:
@@ -91,9 +98,9 @@ def _format_validation_error(tool_name: str, error: ValidationError) -> ValueErr
 
 @dataclass(frozen=True, slots=True)
 class ToolRegistry:
-    """Immutable name → ToolDefinition mapping."""
+    """Immutable name → FunctionTool mapping."""
 
-    definitions: Mapping[str, ToolDefinition]
+    definitions: Mapping[str, FunctionTool]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "definitions", MappingProxyType(dict(self.definitions)))
@@ -134,7 +141,7 @@ class ToolRegistry:
 
 def create_default_tool_registry(
     *,
-    explore_tool: ToolDefinition | None = None,
+    explore_tool: FunctionTool | None = None,
 ) -> ToolRegistry:
     """Build the default tool registry from ``defs/`` specs.
 
@@ -153,25 +160,26 @@ def create_default_tool_registry(
     """
     from agents.tools import defs
 
-    first_tool = explore_tool or defs.inspect_files.to_definition()
-    definitions: list[ToolDefinition] = [
+    first_tool = explore_tool or defs.inspect_files
+    definitions: list[FunctionTool] = [
         first_tool,
-        defs.read_csv.to_definition(),
-        defs.read_doc.to_definition(),
-        defs.search_context.to_definition(),
-        defs.lookup_field.to_definition(),
-        defs.read_json.to_definition(),
-        defs.inspect_sqlite_schema.to_definition(),
-        defs.execute_context_sql.to_definition(),
-        defs.grep_context.to_definition(),
-        defs.execute_python.to_definition(),
-        defs.answer.to_definition(),
+        defs.read_csv,
+        defs.read_doc,
+        defs.search_context,
+        defs.lookup_field,
+        defs.read_json,
+        defs.inspect_sqlite_schema,
+        defs.execute_context_sql,
+        defs.grep_context,
+        defs.execute_python,
+        defs.answer,
     ]
     return ToolRegistry(definitions={d.name: d for d in definitions})
 
 
 __all__ = [
     "EXECUTE_PYTHON_TIMEOUT_SECONDS",
+    "FunctionTool",
     "ToolDefinition",
     "ToolExecutionResult",
     "ToolHandler",

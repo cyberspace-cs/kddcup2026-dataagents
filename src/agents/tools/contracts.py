@@ -1,4 +1,4 @@
-"""Shared constants for tool schemas, handlers, and tool descriptions."""
+"""Shared constants for tool schemas and handlers."""
 
 from __future__ import annotations
 

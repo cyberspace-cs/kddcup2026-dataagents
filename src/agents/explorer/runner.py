@@ -16,7 +16,7 @@ from agents.explorer.prompt import EXPLORER_SYSTEM_PROMPT
 from agents.explorer.registry import create_explorer_tool_registry
 from agents.llm import ModelAdapter
 from agents.runtime import StepCallback
-from agents.tools.registry import ToolDefinition
+from agents.tools.registry import FunctionTool
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ def run_explorer(
     *,
     max_steps: int = EXPLORER_MAX_STEPS,
     step_callback: StepCallback | None = None,
-    video_tool: ToolDefinition | None = None,
+    video_tool: FunctionTool | None = None,
 ) -> ExplorerResult:
     """Run the Explorer sub-agent on a task and return findings.
 

@@ -13,43 +13,67 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agents.tools.defs import (
     AnswerInput,
-    ExecuteContextSqlInput,
-    ExecutePythonInput,
-    GrepContextInput,
-    InspectFilesInput,
-    InspectSqliteSchemaInput,
-    LookupFieldInput,
-    ReadCsvInput,
-    ReadDocInput,
-    ReadJsonInput,
-    SearchContextInput,
     path_field,
 )
-from agents.tools.defs.answer import answer as _answer_spec
-from agents.tools.defs.execute_python import execute_python as _execute_python_spec
-from agents.tools.defs.execute_sql import execute_context_sql as _execute_context_sql_spec
-from agents.tools.defs.grep_context import grep_context as _grep_context_spec
-from agents.tools.defs.inspect_files import inspect_files as _inspect_files_spec
-from agents.tools.defs.inspect_sqlite import inspect_sqlite_schema as _inspect_sqlite_schema_spec
-from agents.tools.defs.lookup_field import lookup_field as _lookup_field_spec
-from agents.tools.defs.read_csv import read_csv as _read_csv_spec
-from agents.tools.defs.read_doc import read_doc as _read_doc_spec
-from agents.tools.defs.read_json import read_json as _read_json_spec
-from agents.tools.defs.search_context import search_context as _search_context_spec
+from agents.tools.defs import (
+    answer as _answer_tool,
+)
+from agents.tools.defs import (
+    execute_context_sql as _execute_context_sql_tool,
+)
+from agents.tools.defs import (
+    execute_python as _execute_python_tool,
+)
+from agents.tools.defs import (
+    grep_context as _grep_context_tool,
+)
+from agents.tools.defs import (
+    inspect_files as _inspect_files_tool,
+)
+from agents.tools.defs import (
+    inspect_sqlite_schema as _inspect_sqlite_schema_tool,
+)
+from agents.tools.defs import (
+    lookup_field as _lookup_field_tool,
+)
+from agents.tools.defs import (
+    read_csv as _read_csv_tool,
+)
+from agents.tools.defs import (
+    read_doc as _read_doc_tool,
+)
+from agents.tools.defs import (
+    read_json as _read_json_tool,
+)
+from agents.tools.defs import (
+    search_context as _search_context_tool,
+)
 from agents.tools.schema_normalize import normalize_for_vllm
 
-# Schemas re-exported from their respective FunctionToolSpec.json_schema
-INSPECT_FILES_SCHEMA = _inspect_files_spec.json_schema
-READ_CSV_SCHEMA = _read_csv_spec.json_schema
-READ_JSON_SCHEMA = _read_json_spec.json_schema
-READ_DOC_SCHEMA = _read_doc_spec.json_schema
-SEARCH_CONTEXT_SCHEMA = _search_context_spec.json_schema
-LOOKUP_FIELD_SCHEMA = _lookup_field_spec.json_schema
-INSPECT_SQLITE_SCHEMA = _inspect_sqlite_schema_spec.json_schema
-EXECUTE_CONTEXT_SQL_SCHEMA = _execute_context_sql_spec.json_schema
-GREP_CONTEXT_SCHEMA = _grep_context_spec.json_schema
-EXECUTE_PYTHON_SCHEMA = _execute_python_spec.json_schema
-ANSWER_SCHEMA = _answer_spec.json_schema
+# Input models re-exported from their respective FunctionTool.input_model
+InspectFilesInput = _inspect_files_tool.input_model
+ReadCsvInput = _read_csv_tool.input_model
+ReadJsonInput = _read_json_tool.input_model
+ReadDocInput = _read_doc_tool.input_model
+SearchContextInput = _search_context_tool.input_model
+LookupFieldInput = _lookup_field_tool.input_model
+InspectSqliteSchemaInput = _inspect_sqlite_schema_tool.input_model
+ExecuteContextSqlInput = _execute_context_sql_tool.input_model
+GrepContextInput = _grep_context_tool.input_model
+ExecutePythonInput = _execute_python_tool.input_model
+
+# Schemas re-exported from their respective FunctionTool.json_schema
+INSPECT_FILES_SCHEMA = _inspect_files_tool.json_schema
+READ_CSV_SCHEMA = _read_csv_tool.json_schema
+READ_JSON_SCHEMA = _read_json_tool.json_schema
+READ_DOC_SCHEMA = _read_doc_tool.json_schema
+SEARCH_CONTEXT_SCHEMA = _search_context_tool.json_schema
+LOOKUP_FIELD_SCHEMA = _lookup_field_tool.json_schema
+INSPECT_SQLITE_SCHEMA = _inspect_sqlite_schema_tool.json_schema
+EXECUTE_CONTEXT_SQL_SCHEMA = _execute_context_sql_tool.json_schema
+GREP_CONTEXT_SCHEMA = _grep_context_tool.json_schema
+EXECUTE_PYTHON_SCHEMA = _execute_python_tool.json_schema
+ANSWER_SCHEMA = _answer_tool.json_schema
 
 
 class ExploreInput(BaseModel):

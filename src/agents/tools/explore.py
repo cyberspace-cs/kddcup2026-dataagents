@@ -18,14 +18,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from agents.benchmark.schema import PublicTask
-from agents.tools.descriptions import EXPLORE_DESCRIPTION
 from agents.tools.handlers import ToolExecutionResult
 from agents.tools.inputs import ExploreInput
 from agents.tools.schema_normalize import normalize_for_vllm
 
 if TYPE_CHECKING:
     from agents.llm import ModelAdapter
-    from agents.tools.registry import ToolDefinition
+    from agents.tools.registry import FunctionTool
 
 logger = logging.getLogger(__name__)
 
@@ -115,15 +114,15 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
 def create_explore_tool_definition(
     explorer_model: ModelAdapter,
     *,
-    video_tool: ToolDefinition | None = None,
-) -> ToolDefinition:
-    """Build a ToolDefinition that runs the Explorer sub-agent.
+    video_tool: FunctionTool | None = None,
+) -> FunctionTool:
+    """Build a FunctionTool that runs the Explorer sub-agent.
 
     `explore_video` 按任务动态注入：含视频任务把 ``video_tool`` 传给
     `run_explorer`，registry 在其内部组装一次——既是执行分发表，也是该 run
     每轮请求下推的工具广告源，广告与执行结构性同源。
     """
-    from agents.tools.registry import ToolDefinition as _ToolDefinition
+    from agents.tools.registry import FunctionTool as _FunctionTool
 
     def handler(task: PublicTask, _args: Any) -> ToolExecutionResult:
         import agents.explorer.runner as explorer_runner
@@ -153,9 +152,15 @@ def create_explore_tool_definition(
             content = result.to_tool_content()
         return ToolExecutionResult(ok=result.success, content=content)
 
-    return _ToolDefinition(
+    return _FunctionTool(
         name="explore",
-        description=EXPLORE_DESCRIPTION,
+        description=(
+            "Use first to bootstrap context exploration: launches a sub-agent that "
+            "inspects every file under context (columns, dtypes, row counts, table "
+            "schemas, unit_hint), reads knowledge.md, samples key values, and "
+            "identifies join paths — all in one call. Returns a complete data map "
+            "so you can skip manual multi-step discovery."
+        ),
         json_schema=EXPLORE_SCHEMA,
         handler=handler,
     )
