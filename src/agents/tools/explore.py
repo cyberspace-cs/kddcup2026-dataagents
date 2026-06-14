@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from agents.benchmark.schema import PublicTask
+from agents.tools.descriptions import EXPLORE_DESCRIPTION
 from agents.tools.handlers import ToolExecutionResult
 from agents.tools.inputs import ExploreInput
 from agents.tools.schema_normalize import normalize_for_vllm
@@ -154,13 +155,7 @@ def create_explore_tool_definition(
 
     return _ToolDefinition(
         name="explore",
-        description=(
-            "Use first to bootstrap context exploration: launches a sub-agent that "
-            "inspects every file under context (columns, dtypes, row counts, table "
-            "schemas, unit_hint), reads knowledge.md, samples key values, and "
-            "identifies join paths — all in one call. Returns a complete data map "
-            "so you can skip manual multi-step discovery."
-        ),
+        description=EXPLORE_DESCRIPTION,
         json_schema=EXPLORE_SCHEMA,
         handler=handler,
     )

@@ -1,16 +1,18 @@
-"""Tools 子包：ReAct Agent 可调用的工具注册表与默认工具集。
+"""Tools sub-package: ReAct agent tool registry and default tool set.
 
-`create_default_tool_registry()` 返回默认工具集（list/read/retrieval/sql/python/answer）；
-如需扩展自定义工具，按 `registry.py` 里的 `ToolDefinition` 形态对齐注册即可。
+``create_default_tool_registry()`` returns the default tools; extend with
+custom tools by building ``ToolDefinition`` instances or using
+``@function_tool`` + ``FunctionToolSpec.to_definition()``.
 """
 
-from agents.tools.dispatcher import dispatch_tool_call
-from agents.tools.filesystem import list_context_tree
-from agents.tools.handlers import (
+from agents.tools.decorator import FunctionToolSpec, function_tool
+from agents.tools.defs.answer import (
     build_answer_table_without_side_effects,
     cleanup_answer_artifacts,
     parse_answer_csv,
 )
+from agents.tools.dispatcher import dispatch_tool_call
+from agents.tools.filesystem import list_context_tree
 from agents.tools.registry import (
     ToolDefinition,
     ToolExecutionResult,
@@ -19,6 +21,7 @@ from agents.tools.registry import (
 )
 
 __all__ = [
+    "FunctionToolSpec",
     "ToolDefinition",
     "ToolExecutionResult",
     "ToolRegistry",
@@ -26,6 +29,7 @@ __all__ = [
     "cleanup_answer_artifacts",
     "create_default_tool_registry",
     "dispatch_tool_call",
+    "function_tool",
     "list_context_tree",
     "parse_answer_csv",
 ]

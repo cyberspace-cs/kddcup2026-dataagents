@@ -7,30 +7,8 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agents.benchmark.schema import PublicTask
-from agents.tools.handlers import (
-    ToolExecutionResult,
-    handle_execute_context_sql,
-    handle_grep_context,
-    handle_inspect_files,
-    handle_inspect_sqlite_schema,
-    handle_lookup_field,
-    handle_read_csv,
-    handle_read_doc,
-    handle_read_json,
-    handle_search_context,
-)
-from agents.tools.inputs import (
-    EXECUTE_CONTEXT_SQL_SCHEMA,
-    GREP_CONTEXT_SCHEMA,
-    INSPECT_FILES_SCHEMA,
-    INSPECT_SQLITE_SCHEMA,
-    LOOKUP_FIELD_SCHEMA,
-    READ_CSV_SCHEMA,
-    READ_DOC_SCHEMA,
-    READ_JSON_SCHEMA,
-    SEARCH_CONTEXT_SCHEMA,
-)
-from agents.tools.registry import ToolDefinition, ToolRegistry
+from agents.tools import defs
+from agents.tools.registry import ToolDefinition, ToolExecutionResult, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
 
 
@@ -96,93 +74,64 @@ def create_explorer_tool_registry(
 ) -> ToolRegistry:
     """Read-only tool registry for the Explorer sub-agent.
 
-    Includes all inspection/preview tools from the main registry, plus `report`
-    as the only terminal tool. Excludes `execute_python` and `answer`.
-    ``video_tool``（`create_explore_video_tool_definition` 的产物）按任务条件注入：
-    无视频任务传 None，模型完全看不到该工具（schema 仅经 tools=[...] 下推）。
+    Includes inspection/preview tools from ``defs/``, plus ``report``
+    as the only terminal tool. Excludes ``execute_python`` and ``answer``.
     """
     definitions: list[ToolDefinition] = [
-        ToolDefinition(
-            name="inspect_files",
+        defs.inspect_files.to_definition(
             description=(
                 "One-shot summary of every file under context "
                 "(columns, dtypes, row counts, table schemas, column_conversions)."
             ),
-            json_schema=INSPECT_FILES_SCHEMA,
-            handler=handle_inspect_files,
         ),
-        ToolDefinition(
-            name="read_csv",
+        defs.read_csv.to_definition(
             description=(
                 "Preview a CSV file: columns, dtypes, row_count, "
                 "head (20 rows), tail (5 rows). Sample only."
             ),
-            json_schema=READ_CSV_SCHEMA,
-            handler=handle_read_csv,
         ),
-        ToolDefinition(
-            name="read_doc",
+        defs.read_doc.to_definition(
             description=(
                 "Preview a text document (md/txt). Without keyword: paging. "
                 "With keyword: returns ALL matching paragraphs across the file."
             ),
-            json_schema=READ_DOC_SCHEMA,
-            handler=handle_read_doc,
         ),
-        ToolDefinition(
-            name="search_context",
+        defs.search_context.to_definition(
             description=(
                 "Search the local retrieval index by entity, ID, phrase, or keyword. "
                 "Returns path, line range, score, text preview."
             ),
-            json_schema=SEARCH_CONTEXT_SCHEMA,
-            handler=handle_search_context,
         ),
-        ToolDefinition(
-            name="lookup_field",
+        defs.lookup_field.to_definition(
             description=(
                 "Resolve field meanings, units, code labels, aliases, thresholds "
                 "from knowledge.md and schema summaries."
             ),
-            json_schema=LOOKUP_FIELD_SCHEMA,
-            handler=handle_lookup_field,
         ),
-        ToolDefinition(
-            name="read_json",
+        defs.read_json.to_definition(
             description=(
                 "Preview a JSON file: kind (array/object/scalar), length/keys, "
                 "sample values. Sample only."
             ),
-            json_schema=READ_JSON_SCHEMA,
-            handler=handle_read_json,
         ),
-        ToolDefinition(
-            name="inspect_sqlite_schema",
+        defs.inspect_sqlite_schema.to_definition(
             description=(
                 "View SQLite database table structures (columns, row counts). "
                 "Do NOT call on .csv/.json/.md/.txt paths."
             ),
-            json_schema=INSPECT_SQLITE_SCHEMA,
-            handler=handle_inspect_sqlite_schema,
         ),
-        ToolDefinition(
-            name="execute_context_sql",
+        defs.execute_context_sql.to_definition(
             description=(
                 "Run read-only SQL on a SQLite database. Use for SELECT DISTINCT, "
                 "MIN/MAX, sample queries. Do NOT call on .csv/.json/.md/.txt paths."
             ),
-            json_schema=EXECUTE_CONTEXT_SQL_SCHEMA,
-            handler=handle_execute_context_sql,
         ),
-        ToolDefinition(
-            name="grep_context",
+        defs.grep_context.to_definition(
             description=(
                 "Search for a regex pattern across ALL context files at once: "
                 "CSV values, JSON fields, Markdown text, and SQLite text columns. "
                 "Use this to check whether a value exists in any file."
             ),
-            json_schema=GREP_CONTEXT_SCHEMA,
-            handler=handle_grep_context,
         ),
     ]
     if video_tool is not None:

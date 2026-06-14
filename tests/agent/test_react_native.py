@@ -11,10 +11,12 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
+import agents.tools.defs  # noqa: F401
 from agents.agent import ReActAgent, ReActAgentConfig
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.llm.openai import ToolCallParseError
@@ -25,10 +27,11 @@ from agents.llm.types import (
     ModelToolCall,
     TokenUsage,
 )
-from agents.tools import handlers as _handlers
 from agents.tools.registry import create_default_tool_registry
 from agents.verification.answer import AnswerVerifier
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
+
+_answer_mod = sys.modules["agents.tools.defs.answer"]
 
 
 @pytest.fixture
@@ -547,7 +550,7 @@ def test_native_answer_verifier_fallback_from_csv_cleans_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(_handlers, "_ANSWER_SCRATCH_ROOT", tmp_path)
+    monkeypatch.setattr(_answer_mod, "_ANSWER_SCRATCH_ROOT", tmp_path)
     answer_dir = tmp_path / task.task_id / "_answer"
     csv_path = answer_dir / "answer.csv"
     draft_path = answer_dir / "draft.csv"

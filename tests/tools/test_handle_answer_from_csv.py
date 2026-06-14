@@ -10,20 +10,23 @@ XOR 校验、空 columns 报错由 `tests/test_dispatcher.py` 端到端校验；
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+import agents.tools.defs  # noqa: F401
 from agents.benchmark.schema import (
     AnswerTable,
     PublicTask,
     TaskAssets,
     TaskRecord,
 )
-from agents.tools import handlers as _handlers
 from agents.tools.handlers import handle_answer
 from agents.tools.inputs import AnswerInput
+
+_answer_mod = sys.modules["agents.tools.defs.answer"]
 
 
 @pytest.fixture
@@ -36,7 +39,7 @@ def task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PublicTask:
     # the scratch root at tmp_path keeps existing assertions (`task.task_dir /
     # "_answer"`) byte-equivalent — `_answer_dir_for(task)` collapses to
     # `tmp_path / "task_1" / "_answer"` which is exactly `task.task_dir / "_answer"`.
-    monkeypatch.setattr(_handlers, "_ANSWER_SCRATCH_ROOT", tmp_path)
+    monkeypatch.setattr(_answer_mod, "_ANSWER_SCRATCH_ROOT", tmp_path)
     return PublicTask(
         record=TaskRecord(task_id="task_1", difficulty="easy", question="?"),
         assets=TaskAssets(task_dir=task_dir, context_dir=context_dir),
@@ -198,7 +201,7 @@ def test_from_csv_error_scenarios(
 ) -> None:
     """失败一律以 ValueError 上抛（dispatcher 翻译成 ToolErrorEvent），让 ReAct 循环 retry。"""
     if size_limit is not None:
-        monkeypatch.setattr("agents.tools.handlers._FROM_CSV_SIZE_LIMIT_BYTES", size_limit)
+        monkeypatch.setattr(_answer_mod, "_FROM_CSV_SIZE_LIMIT_BYTES", size_limit)
     from_csv = make_from_csv(tmp_path)
     if size_limit is not None:
         assert Path(from_csv).stat().st_size > size_limit  # sanity
