@@ -333,6 +333,7 @@ def test_inline_submission_with_existing_artifact_raises(task: PublicTask, tmp_p
     assert artifact.exists()
     assert artifact.parent.exists()
 
+
 def test_artifact_exists_beats_inline_threshold_when_both_fire(
     task: PublicTask, tmp_path: Path
 ) -> None:
