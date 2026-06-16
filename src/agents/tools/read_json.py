@@ -1,52 +1,28 @@
-"""JSON 预览与流式 schema 抽取。"""
+"""read_json tool: structured JSON preview."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 from agents.benchmark.schema import PublicTask
-from agents.tools.filesystem import constants
-from agents.tools.filesystem.path import resolve_context_path
+from agents.tools import constants
+from agents.tools._fields import path_field
+from agents.tools.context import resolve_context_path
+from agents.tools.decorator import function_tool
+from agents.tools.registry import ToolExecutionResult
 
 
 def _truncate_string_value(text: str) -> tuple[str, bool]:
-    """对字符串型值做 200 字符上限截断；返回 (截断后字符串, 是否被截)."""
+    """Cap string preview values and report whether truncation happened."""
     if len(text) <= constants.READ_JSON_STRING_VALUE_CAP:
         return text, False
     return text[: constants.READ_JSON_STRING_VALUE_CAP], True
 
 
-def _summarize_value_for_preview(value: Any) -> Any:
-    """object.value_preview 的"浅层"摘要：标量原值；集合给 kind+基数；array 额外给 head 样本。"""
-    if isinstance(value, dict):
-        return {"kind": "object", "key_count": len(cast(dict[Any, Any], value))}
-    if isinstance(value, list):
-        value_list = cast(list[Any], value)
-        length = len(value_list)
-        head, head_truncation = _array_head_with_caps(
-            value_list,
-            item_cap=constants.READ_JSON_VALUE_PREVIEW_HEAD_CAP,
-            aggregate_bytes=constants.READ_JSON_VALUE_PREVIEW_HEAD_BYTES,
-        )
-        return {
-            "kind": "array",
-            "length": length,
-            "head": head,
-            "head_truncation": head_truncation,
-            "truncated": length > len(head) or head_truncation is not None,
-        }
-    if isinstance(value, str):
-        truncated_text, was_truncated = _truncate_string_value(value)
-        if was_truncated:
-            return {"value": truncated_text, "value_truncated": True}
-        return truncated_text
-    return value
-
-
 def _shape_stub_for_array_item(item: Any) -> dict[str, Any]:
-    """单 item > 2KB 时的占位形态：尽量保留结构线索而不携带原始内容。"""
+    """Return structure-only shape for array items that are too large to emit."""
     if isinstance(item, dict):
         keys: list[str] = list(cast(dict[str, Any], item).keys())
         return {
@@ -73,7 +49,7 @@ def _array_head_with_caps(
     item_cap: int = 0,
     aggregate_bytes: int = 0,
 ) -> tuple[list[Any], str | None]:
-    """生成 array 的前 N 项预览，二级上限：单项 + 累计字节。"""
+    """Build array head preview with per-item and aggregate byte caps."""
     if item_cap == 0:
         item_cap = constants.READ_JSON_ARRAY_HEAD_CAP
     if aggregate_bytes == 0:
@@ -107,12 +83,39 @@ def _array_head_with_caps(
     return head, truncation
 
 
+def _summarize_value_for_preview(value: Any) -> Any:
+    """Shallow object value preview: scalars as-is, containers as shape summaries."""
+    if isinstance(value, dict):
+        return {"kind": "object", "key_count": len(cast(dict[Any, Any], value))}
+    if isinstance(value, list):
+        value_list = cast(list[Any], value)
+        length = len(value_list)
+        head, head_truncation = _array_head_with_caps(
+            value_list,
+            item_cap=constants.READ_JSON_VALUE_PREVIEW_HEAD_CAP,
+            aggregate_bytes=constants.READ_JSON_VALUE_PREVIEW_HEAD_BYTES,
+        )
+        return {
+            "kind": "array",
+            "length": length,
+            "head": head,
+            "head_truncation": head_truncation,
+            "truncated": length > len(head) or head_truncation is not None,
+        }
+    if isinstance(value, str):
+        truncated_text, was_truncated = _truncate_string_value(value)
+        if was_truncated:
+            return {"value": truncated_text, "value_truncated": True}
+        return truncated_text
+    return value
+
+
 def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, Any]:
-    """ijson-based top-level shape extraction for files exceeding the load cap."""
+    """Extract top-level JSON shape for files exceeding the normal load cap."""
     import ijson  # pyright: ignore[reportMissingTypeStubs]
 
-    with path.open("rb") as f:
-        first_event = next(iter(ijson.parse(f)), None)
+    with path.open("rb") as file:
+        first_event = next(iter(ijson.parse(file)), None)
     if first_event is None:
         return {
             "path": relative_path,
@@ -125,8 +128,8 @@ def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, A
     if event == "start_map":
         keys: list[str] = []
         sample_value_kinds: dict[str, str] = {}
-        with path.open("rb") as f:
-            for key, value in ijson.kvitems(f, ""):
+        with path.open("rb") as file:
+            for key, value in ijson.kvitems(file, ""):
                 keys.append(key)
                 if len(sample_value_kinds) < constants.READ_JSON_OBJECT_VALUE_PREVIEW_CAP:
                     sample_value_kinds[key] = type(value).__name__
@@ -144,8 +147,8 @@ def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, A
     if event == "start_array":
         length = 0
         first_item_kind: str | None = None
-        with path.open("rb") as f:
-            for item in ijson.items(f, "item"):
+        with path.open("rb") as file:
+            for item in ijson.items(file, "item"):
                 if first_item_kind is None:
                     first_item_kind = type(item).__name__
                 length += 1
@@ -168,7 +171,7 @@ def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, A
 
 
 def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
-    """JSON 的 inspect-style 预览：返回结构化 `{kind, length|key_count, head|keys+value_preview}`。"""
+    """Return structured JSON preview keyed by top-level kind."""
     path = resolve_context_path(task, relative_path)
     size = path.stat().st_size
     if size > constants.READ_JSON_SIZE_LIMIT:
@@ -226,7 +229,7 @@ def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
 
 
 def summarize_json(path: Path) -> dict[str, Any]:
-    """提取 JSON top-level 形态（object/array/scalar）+ 浅层 schema。"""
+    """Extract JSON top-level shape and shallow schema for inspect_files."""
     size = path.stat().st_size
     if size > constants.INSPECT_FILES_JSON_SIZE_LIMIT:
         result = _streaming_json_schema(path, None)
@@ -257,3 +260,23 @@ def summarize_json(path: Path) -> dict[str, Any]:
         "kind": "scalar",
         "value_kind": type(payload).__name__,
     }
+
+
+@function_tool
+def read_json(
+    task: PublicTask,
+    path: Annotated[
+        str,
+        path_field(file_kind="JSON file", examples=("json/Patient.json", "zip_code.json")),
+    ],
+) -> ToolExecutionResult:
+    """Use when you need to preview a single JSON file: returns a
+    structured summary keyed by `kind` — `array` (length + first 20
+    items), `object` (key_count + first 50 keys + value_preview for
+    first 20 keys), or `scalar` (the value). This is a SAMPLE
+    preview, not full data access. For nested field extraction,
+    filtering, cross-file joins, or deep traversal, use execute_python
+    instead. Files larger than 100MB return a streamed schema
+    (`kind` + `keys` + `sample_value_kinds` for object; `length` +
+    `first_item_kind` for array) without full load."""
+    return ToolExecutionResult(ok=True, content=read_json_preview(task, path))

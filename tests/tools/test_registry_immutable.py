@@ -2,10 +2,10 @@
 
 覆盖点：
 - 默认 8 件套按规范的注册顺序排布
-- 仅 `answer` 的 ToolDefinition.is_terminal 为 True
+- 仅 `answer` 的 FunctionTool.is_terminal 为 True
 - registry.definitions 是 MappingProxyType，对其增/删/改均抛 TypeError
 - registry 自身是 frozen dataclass，重新赋值 definitions 字段也会被拒绝
-- 单个 ToolDefinition 同样 frozen，无法在构造后修改字段
+- 单个 FunctionTool 同样 frozen，无法在构造后修改字段
 - 即使外部传入普通 dict 后再去修改源 dict，也无法绕过只读视图（防御性浅拷贝）
 """
 
@@ -17,7 +17,7 @@ from types import MappingProxyType
 import pytest
 
 from agents.tools.registry import (
-    ToolDefinition,
+    FunctionTool,
     ToolExecutionResult,
     ToolRegistry,
     create_default_tool_registry,
@@ -42,8 +42,8 @@ def _noop_handler(_task, _action_input):
     return ToolExecutionResult(ok=True, content={})
 
 
-def _sample_definition(name: str = "extra") -> ToolDefinition:
-    return ToolDefinition(
+def _sample_definition(name: str = "extra") -> FunctionTool:
+    return FunctionTool(
         name=name,
         description="extra",
         json_schema=None,
@@ -104,7 +104,7 @@ def test_tool_definition_is_frozen() -> None:
 
 def test_external_dict_mutations_do_not_leak_into_registry() -> None:
     # 外部构造时持有源 dict 引用；构造完成后修改源 dict 不应影响 registry。
-    source: dict[str, ToolDefinition] = {"alpha": _sample_definition("alpha")}
+    source: dict[str, FunctionTool] = {"alpha": _sample_definition("alpha")}
     registry = ToolRegistry(definitions=source)
 
     source["beta"] = _sample_definition("beta")
@@ -117,7 +117,7 @@ def test_external_dict_mutations_do_not_leak_into_registry() -> None:
 def test_external_proxy_wrapping_mutable_dict_does_not_leak() -> None:
     # 调用方先把可变 dict 包成 MappingProxyType 再传入：
     # registry 必须对其做防御性浅拷贝，否则源 dict 的后续修改会透过 proxy 漏进来。
-    source: dict[str, ToolDefinition] = {"alpha": _sample_definition("alpha")}
+    source: dict[str, FunctionTool] = {"alpha": _sample_definition("alpha")}
     proxy = MappingProxyType(source)
     registry = ToolRegistry(definitions=proxy)
 

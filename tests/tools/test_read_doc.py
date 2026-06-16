@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from agents.tools.filesystem import read_doc_preview
+from agents.tools.read_doc import read_doc_preview
 
 
 @pytest.fixture

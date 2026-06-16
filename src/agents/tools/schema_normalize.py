@@ -1,9 +1,4 @@
-"""Pydantic JSON Schema → vLLM 端字节稳定形态的归一化器。
-
-唯一对外符号是 `normalize_for_vllm`，被 `tools/inputs.py` 在生成 8 个 `*_SCHEMA`
-模块常量时调用一次；`tools/registry.py` 顶端再以 `_normalize_for_vllm` 别名重导出，
-保持 `tests/test_schema_normalizer.py` 既有的私有符号导入路径。
-"""
+"""Pydantic JSON Schema → vLLM-compatible normalization."""
 
 from __future__ import annotations
 

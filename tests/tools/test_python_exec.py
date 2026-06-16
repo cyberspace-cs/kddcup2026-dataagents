@@ -1,4 +1,4 @@
-"""`tools/python_exec.py` 流截断契约的单元测试。
+"""`tools/execute_python.py` 流截断契约的单元测试。
 
 设计意图（详见 `_read_captured_stream` docstring）：
 - ≤ 64KB 输出原封返回，不引入任何 marker
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agents.tools.python_exec import (
+from agents.tools.execute_python import (
     _PYTHON_EXEC_STREAM_CAP_BYTES,
     _PYTHON_EXEC_STREAM_HEAD_BYTES,
     _PYTHON_EXEC_STREAM_TAIL_BYTES,

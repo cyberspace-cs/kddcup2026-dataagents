@@ -100,14 +100,11 @@ def run_single_task_core(
             )
 
         task = app.dataset.get_task(task_id)
-        try:
-            from agents.etl.extractor import run_etl_for_task
+        from agents.etl.extractor import run_etl_for_task
 
-            run_etl_for_task(task, app.model_adapter)
-        except Exception:
-            pass
+        run_etl_for_task(task, app.model_adapter)
 
-        from agents.tools.filesystem.path import build_virtual_context
+        from agents.tools.context import build_virtual_context
 
         virtual_ctx = build_virtual_context(task)
         task = PublicTask(

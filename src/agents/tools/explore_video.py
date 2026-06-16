@@ -10,27 +10,49 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from agents.benchmark.schema import PublicTask
-from agents.tools.handlers import ToolExecutionResult
-from agents.tools.inputs import EXPLORE_VIDEO_SCHEMA, ExploreVideoInput
+from agents.tools._fields import path_field
+from agents.tools.registry import ToolExecutionResult
+from agents.tools.schema_normalize import normalize_for_vllm
+
+
+class ExploreVideoInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Annotated[
+        str,
+        path_field(file_kind="video file", examples=("video.mp4", "media/demo.mov")),
+    ]
+    instructions: str = Field(
+        description=(
+            "Analysis brief for the video agent: what the task needs from this video — "
+            "which charts, tables, values, or text to transcribe, plus any IDs or labels "
+            "to look for."
+        ),
+    )
+
+
+EXPLORE_VIDEO_SCHEMA = normalize_for_vllm(ExploreVideoInput.model_json_schema())
 
 if TYPE_CHECKING:
     from agents.llm import ModelAdapter
-    from agents.tools.registry import ToolDefinition
+    from agents.tools.registry import FunctionTool
 
 logger = logging.getLogger(__name__)
 
 
-def create_explore_video_tool_definition(video_model: ModelAdapter) -> ToolDefinition:
-    """Build the ToolDefinition that runs the video sub-agent on one context video."""
-    from agents.tools.registry import ToolDefinition as _ToolDefinition
+def create_explore_video_tool_definition(video_model: ModelAdapter) -> FunctionTool:
+    """Build the FunctionTool that runs the video sub-agent on one context video."""
+    from agents.tools.registry import FunctionTool as _FunctionTool
 
     def handler(task: PublicTask, args: ExploreVideoInput) -> ToolExecutionResult:
         import agents.runtime.media as media
         import agents.video.runner as video_runner
-        from agents.tools.filesystem.path import resolve_context_path
+        from agents.tools.context import resolve_context_path
 
         try:
             video_path = resolve_context_path(task, args.path)
@@ -69,7 +91,7 @@ def create_explore_video_tool_definition(video_model: ModelAdapter) -> ToolDefin
             },
         )
 
-    return _ToolDefinition(
+    return _FunctionTool(
         name="explore_video",
         description=(
             "Launch the video analysis sub-agent on one video file from context. Use "

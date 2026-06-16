@@ -1,6 +1,6 @@
 """`read_csv_preview` 的单元测试：锁住 inspect-style 契约。
 
-设计意图回顾（见 `filesystem.read_csv_preview` docstring）：
+设计意图回顾（见 `read_csv.read_csv_preview` docstring）：
 - read_csv 是样本工具，不给模型"取数据"的错觉。
 - 固定返回 `columns + dtypes(approx) + row_count + head(20) + tail(5)`，无 max_rows 旋钮。
 - tail 与 head 不重叠：row_count <= 20 时 tail 为空，>20 时只看 head 之后的最后 5 行。
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from agents.tools.filesystem import read_csv_preview
+from agents.tools.read_csv import read_csv_preview
 
 
 def _make_task(tmp_path: Path) -> PublicTask:

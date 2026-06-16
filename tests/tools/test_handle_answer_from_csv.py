@@ -1,4 +1,4 @@
-"""`handle_answer` 的 from_csv artifact 路径单元测试。
+"""`_answer_tool.handler` 的 from_csv artifact 路径单元测试。
 
 锁住设计契约：
 - 列级 dtype 推断与 inline 路径在 prediction.csv 字面值上对齐（int 不被悄悄变 float）
@@ -10,6 +10,7 @@ XOR 校验、空 columns 报错由 `tests/test_dispatcher.py` 端到端校验；
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -21,9 +22,10 @@ from agents.benchmark.schema import (
     TaskAssets,
     TaskRecord,
 )
-from agents.tools import handlers as _handlers
-from agents.tools.handlers import handle_answer
-from agents.tools.inputs import AnswerInput
+from agents.tools.answer import AnswerInput
+from agents.tools.answer import answer as _answer_tool
+
+_answer_mod = importlib.import_module("agents.tools.answer")
 
 
 @pytest.fixture
@@ -36,7 +38,7 @@ def task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PublicTask:
     # the scratch root at tmp_path keeps existing assertions (`task.task_dir /
     # "_answer"`) byte-equivalent — `_answer_dir_for(task)` collapses to
     # `tmp_path / "task_1" / "_answer"` which is exactly `task.task_dir / "_answer"`.
-    monkeypatch.setattr(_handlers, "_ANSWER_SCRATCH_ROOT", tmp_path)
+    monkeypatch.setattr(_answer_mod, "_ANSWER_SCRATCH_ROOT", tmp_path)
     return PublicTask(
         record=TaskRecord(task_id="task_1", difficulty="easy", question="?"),
         assets=TaskAssets(task_dir=task_dir, context_dir=context_dir),
@@ -66,7 +68,7 @@ def test_from_csv_happy_path_returns_typed_answer(task: PublicTask, tmp_path: Pa
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.ok is True
     assert result.is_terminal is True
@@ -118,7 +120,7 @@ def test_from_csv_dtype_inference(
     csv_path = _write(tmp_path / "_answer" / "data.csv", csv_text)
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.answer is not None
     _assert_rows_strict(result.answer.rows, expected_rows)
@@ -198,14 +200,14 @@ def test_from_csv_error_scenarios(
 ) -> None:
     """失败一律以 ValueError 上抛（dispatcher 翻译成 ToolErrorEvent），让 ReAct 循环 retry。"""
     if size_limit is not None:
-        monkeypatch.setattr("agents.tools.handlers._FROM_CSV_SIZE_LIMIT_BYTES", size_limit)
+        monkeypatch.setattr(_answer_mod, "_FROM_CSV_SIZE_LIMIT_BYTES", size_limit)
     from_csv = make_from_csv(tmp_path)
     if size_limit is not None:
         assert Path(from_csv).stat().st_size > size_limit  # sanity
     args = AnswerInput.model_validate({"from_csv": from_csv})
 
     with pytest.raises(ValueError, match=match) as exc_info:
-        handle_answer(task, args)
+        _answer_tool.handler(task, args)
 
     if path_in_message:
         assert from_csv in str(exc_info.value)
@@ -223,7 +225,7 @@ def test_from_csv_header_only_returns_empty_answer(task: PublicTask, tmp_path: P
     csv_path = _write(tmp_path / "_answer" / "head.csv", "id,name\n")
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.ok is True
     assert result.is_terminal is True
@@ -243,7 +245,7 @@ def test_from_csv_ack_content_includes_dtypes_and_preview(task: PublicTask, tmp_
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.content["status"] == "submitted"
     assert result.content["column_count"] == 3
@@ -275,7 +277,7 @@ def test_from_csv_unlinks_artifact_after_successful_submission(
     draft_path = _write(answer_dir / "draft.csv", "tmp\n1\n")
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.ok is True
     assert not csv_path.exists()
@@ -295,7 +297,7 @@ def test_from_csv_external_path_still_clears_answer_dir(task: PublicTask, tmp_pa
     external = _write(tmp_path / "elsewhere" / "real.csv", "id\n1\n2\n")
     args = AnswerInput.model_validate({"from_csv": str(external)})
 
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.ok is True
     assert not external.exists()
@@ -321,7 +323,7 @@ def test_inline_submission_with_existing_artifact_raises(task: PublicTask, tmp_p
     args = AnswerInput.model_validate({"columns": ["id"], "rows": [[1], [2]]})
 
     with pytest.raises(ValueError, match=r"answer artifact already exists") as exc_info:
-        handle_answer(task, args)
+        _answer_tool.handler(task, args)
 
     # 错误消息要把绝对路径与 from_csv 修复方向都贴上，模型下一轮才能直接照搬
     msg = str(exc_info.value)
@@ -344,7 +346,7 @@ def test_inline_submission_with_zero_byte_artifact_passes(task: PublicTask, tmp_
     assert artifact.exists()
 
     args = AnswerInput.model_validate({"columns": ["id"], "rows": [[1], [2]]})
-    result = handle_answer(task, args)
+    result = _answer_tool.handler(task, args)
 
     assert result.ok is True
     assert result.answer is not None

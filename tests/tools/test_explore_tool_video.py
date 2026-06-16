@@ -9,10 +9,8 @@ import pytest
 import agents.explorer.runner as runner_mod
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from agents.explorer.runner import ExplorerResult
-from agents.tools.explore import create_explore_tool_definition
-from agents.tools.handlers import ToolExecutionResult
-from agents.tools.inputs import ExploreInput
-from agents.tools.registry import ToolDefinition
+from agents.tools.explore import ExploreInput, create_explore_tool_definition
+from agents.tools.registry import FunctionTool, ToolExecutionResult
 
 
 class _Adapter:
@@ -20,8 +18,8 @@ class _Adapter:
         raise AssertionError("not called")
 
 
-def _video_tool() -> ToolDefinition:
-    return ToolDefinition(
+def _video_tool() -> FunctionTool:
+    return FunctionTool(
         name="explore_video",
         description="stub",
         json_schema=None,

@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from agents.tools.filesystem.grep import grep_context
+from agents.tools.grep_context import run_grep_context
 
 
 def _make_task(tmp_path: Path) -> PublicTask:
@@ -35,7 +35,7 @@ def test_grep_context_sqlite_uses_regex_semantics(tmp_path: Path) -> None:
         )
         conn.commit()
 
-    result = grep_context(task, pattern="全国|中国", path_filter="main.sqlite")
+    result = run_grep_context(task, pattern="全国|中国", path_filter="main.sqlite")
 
     assert result["match_count"] == 1
     hit = result["results"][0]

@@ -1,27 +1,32 @@
-"""文档（markdown/txt）预览。"""
+"""read_doc tool: paged text preview with keyword search."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
-from agents.tools.filesystem import constants
-from agents.tools.filesystem.path import resolve_context_path
+from agents.tools import constants
+from agents.tools._fields import path_field, positive_int_field
+from agents.tools.context import resolve_context_path
+from agents.tools.decorator import function_tool
+from agents.tools.registry import ToolExecutionResult
 
 
 def _normalize_line_count(line_count: int) -> int:
-    """把读取行数限制在稳定的 observation 范围内。"""
+    """Keep line windows inside a stable observation range."""
     return min(300, max(1, int(line_count)))
 
 
 def _split_paragraphs(lines: list[str]) -> list[tuple[int, int, str]]:
-    """把行列表切成段落（连续非空行为一段；空行为分隔），返回 (start, end, text) 列表。"""
+    """Split lines into blank-line-delimited paragraphs."""
     paragraphs: list[tuple[int, int, str]] = []
     current: list[str] = []
     current_start = 0
-    for one_based_idx, ln in enumerate(lines, start=1):
-        if ln.strip() == "":
+    for one_based_idx, line in enumerate(lines, start=1):
+        if line.strip() == "":
             if current:
                 paragraphs.append((current_start, one_based_idx - 1, "\n".join(current)))
                 current = []
@@ -29,7 +34,7 @@ def _split_paragraphs(lines: list[str]) -> list[tuple[int, int, str]]:
         else:
             if not current:
                 current_start = one_based_idx
-            current.append(ln)
+            current.append(line)
     if current:
         paragraphs.append((current_start, len(lines), "\n".join(current)))
     return paragraphs
@@ -38,7 +43,7 @@ def _split_paragraphs(lines: list[str]) -> list[tuple[int, int, str]]:
 def _collect_keyword_matches(
     paragraphs: list[tuple[int, int, str]], keyword: str
 ) -> tuple[list[dict[str, Any]], int, bool]:
-    """从段落集合中收集所有包含 keyword 的段落（大小写不敏感子串匹配）。"""
+    """Collect all paragraphs containing keyword, with result-size caps."""
     needle = keyword.lower()
     match_count = 0
     matches: list[dict[str, Any]] = []
@@ -85,7 +90,7 @@ def read_doc_preview(
     line_count: int = 80,
     keyword: str | None = None,
 ) -> dict[str, Any]:
-    """文本文档预览。paging 模式与 keyword 模式互斥。"""
+    """Preview a text document. Paging mode and keyword mode are mutually exclusive."""
     path = resolve_context_path(task, relative_path)
     lines = path.read_text(errors="replace").splitlines()
     total_lines = len(lines)
@@ -142,9 +147,62 @@ def read_doc_preview(
 
 
 def summarize_doc(path: Path) -> dict[str, Any]:
-    """文本文档：行数 + 前 3 行预览。"""
+    """Summarize a text document for inspect_files."""
     lines = path.read_text(errors="replace").splitlines()
     return {
         "line_count": len(lines),
         "head": lines[: constants.INSPECT_FILES_DOC_HEAD_LINES],
     }
+
+
+@function_tool
+def read_doc(
+    task: PublicTask,
+    path: Annotated[
+        str,
+        path_field(
+            file_kind="text document (md/txt/...)",
+            examples=("knowledge.md", "docs/readme.txt"),
+        ),
+    ],
+    start_line: Annotated[
+        int,
+        positive_int_field(description="1-based line number to start reading from."),
+    ] = 1,
+    line_count: Annotated[
+        int,
+        positive_int_field(description="Number of lines to return in this page."),
+    ] = 100,
+    keyword: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional case-insensitive keyword. When set, returns ALL paragraphs "
+                "(blank-line-separated) containing the keyword across the whole file "
+                "(start_line / line_count are ignored), capped at 20 matches / 8KB total. "
+                "Prefer this over manual paging when searching for an ID/name/term — "
+                "one call replaces a sequential scan."
+            ),
+        ),
+    ] = None,
+) -> ToolExecutionResult:
+    """Use when you need to preview a text-like document (md/txt). Two
+    modes: (1) paging — without `keyword`, returns a fixed line window;
+    use `has_more` + next `start_line` to continue. (2) keyword search
+    — with `keyword`, returns ALL paragraphs containing the keyword
+    across the whole file (capped at 20 matches / 8KB total). Prefer
+    keyword mode when looking for an ID/name/term — one call replaces
+    a sequential scan. This is a SAMPLE preview, not full data access.
+    For full-document regex extraction, cross-paragraph aggregation,
+    or structured parsing, use execute_python instead."""
+    kw = keyword if keyword else None
+    return ToolExecutionResult(
+        ok=True,
+        content=read_doc_preview(
+            task,
+            path,
+            start_line=start_line,
+            line_count=line_count,
+            keyword=kw,
+        ),
+    )
