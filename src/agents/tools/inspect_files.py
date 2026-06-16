@@ -191,26 +191,6 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
         "file_count": len(files_summary),
         "truncated": truncated,
     }
-    try:
-        from agents.retrieval.index import load_task_index_metadata
-
-        retrieval_meta = load_task_index_metadata(task)
-    except Exception:
-        retrieval_meta = None
-    if isinstance(retrieval_meta, dict) and retrieval_meta.get("enabled"):
-        result["retrieval_index"] = {
-            "built": bool(retrieval_meta.get("built")),
-            "cache_hit": bool(retrieval_meta.get("cache_hit")),
-            "chunk_count": retrieval_meta.get("chunk_count"),
-            "field_count": retrieval_meta.get("field_count"),
-            "index_path": retrieval_meta.get("index_path"),
-            "hint": (
-                "For long documents, field meanings, units, thresholds, or entity "
-                "mentions, prefer lookup_field/search_context before paging read_doc."
-            ),
-        }
-        if retrieval_meta.get("error"):
-            result["retrieval_index"]["error"] = retrieval_meta.get("error")
     return result
 
 

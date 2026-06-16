@@ -4,7 +4,7 @@
 - 全字段缺省默认值（单测吸收所有 `*_default_is_*` 断言）
 - unknown field 拒收（load 路径 + 构造器路径）
 - 非法值拒收（数值边界 / 枚举 / 互斥组合）的参数化表
-- 非平凡归一化（大小写、0 语义、explicit null、组合字段、嵌套 retrieval_index）
+- 非平凡归一化（大小写、0 语义、explicit null、组合字段）
 - thinking + greedy decoding 的 UserWarning 触发矩阵
 - tracing 块解析（缺省 None / enabled 默认 db_path / 显式 db_path）
 """
@@ -43,10 +43,6 @@ def test_defaults_when_fields_absent(tmp_path: Path) -> None:
     assert cfg.agent.thinking_mode is None
     assert cfg.agent.reasoning_effort is None
     assert cfg.agent.enable_preact is False
-    assert cfg.run.retrieval_index.enabled is False
-    assert cfg.run.retrieval_index.max_chunk_chars == 1600
-    assert cfg.run.retrieval_index.chunk_overlap_lines == 2
-    assert cfg.run.retrieval_index.max_results == 8
     assert cfg.tracing is None
 
 
@@ -110,11 +106,6 @@ def test_config_constructors_reject_unknown_fields() -> None:
         pytest.param(
             '  reasoning_effort: "high"\n', "reasoning_effort", id="reasoning-effort-alone"
         ),
-        pytest.param(
-            "run:\n  retrieval_index:\n    max_results: 0\n",
-            r"retrieval_index\.max_results",
-            id="retrieval-max-results-zero",
-        ),
     ],
 )
 def test_load_app_config_rejects_invalid_values(tmp_path: Path, body: str, match: str) -> None:
@@ -147,25 +138,6 @@ def _dotted(cfg: Any, path: str) -> Any:
             '  thinking_mode: "enabled"\n  reasoning_effort: "max"\n',
             {"agent.thinking_mode": "enabled", "agent.reasoning_effort": "max"},
             id="thinking-mode-with-effort",
-        ),
-        pytest.param(
-            (
-                "run:\n"
-                "  retrieval_index:\n"
-                "    enabled: true\n"
-                "    cache_dir: local-indexes\n"
-                "    max_chunk_chars: 2000\n"
-                "    chunk_overlap_lines: 3\n"
-                "    max_results: 12\n"
-            ),
-            {
-                "run.retrieval_index.enabled": True,
-                "run.retrieval_index.cache_dir.name": "local-indexes",
-                "run.retrieval_index.max_chunk_chars": 2000,
-                "run.retrieval_index.chunk_overlap_lines": 3,
-                "run.retrieval_index.max_results": 12,
-            },
-            id="retrieval-index-block",
         ),
     ],
 )

@@ -51,11 +51,6 @@ def _default_run_output_dir() -> Path:
     return PROJECT_ROOT / "artifacts" / "runs"
 
 
-def _default_retrieval_cache_dir() -> Path:
-    """Local Retrieval Index 的默认缓存目录。"""
-    return PROJECT_ROOT / "artifacts" / "indexes"
-
-
 # 后端类型字面量：决定思考模式参数在 extra_body 里的位置
 # - "vllm":      enable_thinking 嵌套到 chat_template_kwargs（vLLM `--reasoning-parser qwen3` 要求）
 # - "dashscope": enable_thinking 走顶层（DashScope OpenAI 兼容模式约定）
@@ -207,46 +202,6 @@ class RateLimitConfig:
                 "agent.rate_limit.backoff_max_seconds must be >= backoff_initial_seconds."
             )
         return self
-
-
-@dataclass(frozen=True, slots=True, config=_PYDANTIC_DATACLASS_CONFIG)
-class RetrievalIndexConfig:
-    """Local Retrieval Index 配置。
-
-    默认关闭，启用后 runner 在每个 task 的 ETL 之后构建本地 SQLite FTS5 索引。
-    """
-
-    enabled: StrictBool = False
-    cache_dir: Path = field(default_factory=_default_retrieval_cache_dir)
-    max_chunk_chars: StrictInt = 1600
-    chunk_overlap_lines: StrictInt = 2
-    max_results: StrictInt = 8
-
-    @field_validator("cache_dir", mode="before")
-    @classmethod
-    def _resolve_cache_dir(cls, v: Any) -> Path:
-        return _resolve_anchor_path(v, _default_retrieval_cache_dir())
-
-    @field_validator("max_chunk_chars")
-    @classmethod
-    def _check_max_chunk_chars(cls, v: int) -> int:
-        if v < 200:
-            raise ValueError("run.retrieval_index.max_chunk_chars must be >= 200.")
-        return v
-
-    @field_validator("chunk_overlap_lines")
-    @classmethod
-    def _check_chunk_overlap_lines(cls, v: int) -> int:
-        if v < 0:
-            raise ValueError("run.retrieval_index.chunk_overlap_lines must be >= 0.")
-        return v
-
-    @field_validator("max_results")
-    @classmethod
-    def _check_max_results(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("run.retrieval_index.max_results must be >= 1.")
-        return v
 
 
 @dataclass(frozen=True, slots=True, config=_PYDANTIC_DATACLASS_CONFIG)
@@ -500,7 +455,6 @@ class RunConfig:
     run_id: str | None = None  # 显式指定的 run 子目录名；None 时按 UTC 时间戳生成
     max_workers: StrictInt = 4  # 并行线程数（ThreadPoolExecutor 大小）
     task_timeout_seconds: StrictInt = 600  # 单任务硬超时，超时会 kill 子进程
-    retrieval_index: RetrievalIndexConfig = field(default_factory=RetrievalIndexConfig)
     # 跳过名单：列出的 task_<n> 不会被实际执行，runner 直接产出失败 artifact（succeeded=False）。
     # 用途：临时屏蔽已知会卡住超时桶或正在调试的任务，避免污染整次 run 的 wall-clock 与限速预算。
     blocklist: tuple[str, ...] = ()

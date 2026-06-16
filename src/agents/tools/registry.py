@@ -140,14 +140,12 @@ def create_default_tool_registry(
     1. explore / inspect_files  — first-step exploration
     2. read_csv                 — CSV preview
     3. read_doc                 — text document preview
-    4. search_context           — retrieval index full-text search
-    5. lookup_field             — retrieval index field/unit/alias lookup
-    6. read_json                — JSON preview
-    7. inspect_sqlite_schema    — SQLite table structure
-    8. execute_context_sql      — read-only SQL
-    9. grep_context             — regex search across files
-    10. execute_python          — subprocess Python execution
-    11. answer                  — terminal: submit answer (only terminal tool)
+    4. read_json                — JSON preview
+    5. inspect_sqlite_schema    — SQLite table structure
+    6. execute_context_sql      — read-only SQL
+    7. grep_context             — regex search across files
+    8. execute_python           — subprocess Python execution
+    9. answer                   — terminal: submit answer (only terminal tool)
     """
     from agents.tools.answer import answer
     from agents.tools.execute_python import execute_python
@@ -155,19 +153,15 @@ def create_default_tool_registry(
     from agents.tools.grep_context import grep_context
     from agents.tools.inspect_files import inspect_files
     from agents.tools.inspect_sqlite import inspect_sqlite_schema
-    from agents.tools.lookup_field import lookup_field
     from agents.tools.read_csv import read_csv
     from agents.tools.read_doc import read_doc
     from agents.tools.read_json import read_json
-    from agents.tools.search_context import search_context
 
     first_tool = explore_tool or inspect_files
     definitions: list[FunctionTool] = [
         first_tool,
         read_csv,
         read_doc,
-        search_context,
-        lookup_field,
         read_json,
         inspect_sqlite_schema,
         execute_context_sql,

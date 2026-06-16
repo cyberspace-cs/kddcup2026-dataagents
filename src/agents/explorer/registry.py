@@ -11,13 +11,11 @@ from agents.tools.execute_sql import execute_context_sql
 from agents.tools.grep_context import grep_context
 from agents.tools.inspect_files import inspect_files
 from agents.tools.inspect_sqlite import inspect_sqlite_schema
-from agents.tools.lookup_field import lookup_field
 from agents.tools.read_csv import read_csv
 from agents.tools.read_doc import read_doc
 from agents.tools.read_json import read_json
 from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
-from agents.tools.search_context import search_context
 
 
 class ReportInput(BaseModel):
@@ -97,14 +95,6 @@ def create_explorer_tool_registry(
         read_doc.with_description(
             "Preview a text document (md/txt). Without keyword: paging. "
             "With keyword: returns ALL matching paragraphs across the file.",
-        ),
-        search_context.with_description(
-            "Search the local retrieval index by entity, ID, phrase, or keyword. "
-            "Returns path, line range, score, text preview.",
-        ),
-        lookup_field.with_description(
-            "Resolve field meanings, units, code labels, aliases, thresholds "
-            "from knowledge.md and schema summaries.",
         ),
         read_json.with_description(
             "Preview a JSON file: kind (array/object/scalar), length/keys, "

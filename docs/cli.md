@@ -94,12 +94,6 @@ run:
   run_id:                                 # null = auto `<UTC YYYYMMDD>-<NNN>`, e.g. 20260430-001
   max_workers: 8
   task_timeout_seconds: 600               # 0 or negative = disable
-  retrieval_index:
-    enabled: false                        # true builds a task-local SQLite FTS5 index
-    cache_dir: artifacts/indexes
-    max_chunk_chars: 1600
-    chunk_overlap_lines: 2
-    max_results: 8
 
 # Optional debug tracing. Omit the block, or leave enabled false, for normal benchmark runs.
 # tracing:
@@ -113,8 +107,6 @@ run:
   Use unquoted scalars (`false`, `16384`).
 - `api_keys` and `rate_limit` are paired: setting one without the other is rejected.
 - `agent.rate_limit.reserve_output_tokens` must be ≤ `agent.max_tokens` (when both are set).
-- `run.retrieval_index` is optional and defaults to disabled; when enabled, index cache paths
-  still resolve relative to the project root.
 - `tracing` is optional and defaults to disabled. The dashboard only shows runs that wrote
   spans to `tracing.db_path`.
 - All path fields resolve relative to the project root.

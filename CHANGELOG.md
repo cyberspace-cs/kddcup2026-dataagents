@@ -58,7 +58,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no-compiler builder stage still holds.
 - **The container entrypoint runs the full CLI task pipeline.** Each
   `agents.submission` task now goes through `run_single_task` — ETL
-  extraction, virtual context, retrieval index, subprocess hard timeout,
+  extraction, virtual context, subprocess hard timeout,
   prediction.csv writing — identical to `dabench run-benchmark`.
   Previously the container hand-assembled the agent and silently skipped
   the preprocessing stages. The per-task timeout derives from the global
@@ -138,6 +138,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `configs/react.example.yaml`; local overrides should use
   `configs/react.local.yaml`. The old config naming has been
   removed from user-facing docs and submission defaults.
+
+### Removed
+- **Local retrieval index subsystem.** The `run.retrieval_index` config
+  block and the `search_context` / `lookup_field` agent tools are gone.
+  The index was disabled by default and never used in production runs; the
+  explorer's direct file inspection covers the same ground. A config that
+  still sets `run.retrieval_index` is now rejected as an unknown field, and
+  per-task `summary.json` entries no longer carry a `retrieval_index` key.
 
 ### Fixed
 - **`answer` artifact-exists error wins over the inline-threshold error.**
