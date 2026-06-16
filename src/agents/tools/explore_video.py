@@ -99,8 +99,7 @@ def create_explore_video_tool_definition(video_model: ModelAdapter) -> FunctionT
             "an analysis brief tied to the task question: which charts, tables, "
             "values, or text to transcribe. Call once per video. The findings return "
             "to you AND pass through to the main agent verbatim — reference key facts "
-            "in your report's knowledge/value_samples but do not re-transcribe "
-            "numbers."
+            "in your report's knowledge field but do not re-transcribe numbers."
         ),
         json_schema=EXPLORE_VIDEO_SCHEMA,
         handler=handler,
