@@ -350,9 +350,7 @@ def test_artifact_exists_beats_inline_threshold_when_both_fire(
     artifact.write_text("id\n" + "\n".join(str(n) for n in range(20)) + "\n", encoding="utf-8")
 
     # 12 行 inline → 阈值条件 (n_rows >= 10) 也会成立。
-    args = AnswerInput.model_validate(
-        {"columns": ["id"], "rows": [[n] for n in range(12)]}
-    )
+    args = AnswerInput.model_validate({"columns": ["id"], "rows": [[n] for n in range(12)]})
 
     with pytest.raises(ValueError) as exc_info:
         handle_answer(task, args)
@@ -379,9 +377,7 @@ def test_inline_threshold_check_in_handler_when_no_artifact(
         for child in answer_dir.iterdir():
             child.unlink()
 
-    args = AnswerInput.model_validate(
-        {"columns": ["id"], "rows": [[n] for n in range(10)]}
-    )
+    args = AnswerInput.model_validate({"columns": ["id"], "rows": [[n] for n in range(10)]})
 
     with pytest.raises(
         ValueError,
