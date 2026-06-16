@@ -1,4 +1,4 @@
-"""ToolDefinition.input_model：registry 局部校验（不经全局 _INPUT_MODELS）。"""
+"""FunctionTool.input_model：registry 局部校验（不经全局 _INPUT_MODELS）。"""
 
 from __future__ import annotations
 
@@ -9,8 +9,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from agents.tools.handlers import ToolExecutionResult
-from agents.tools.registry import ToolDefinition, ToolRegistry
+from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistry
 
 
 class _EchoInput(BaseModel):
@@ -29,11 +28,11 @@ def _make_task(tmp_path: Path) -> PublicTask:
     )
 
 
-def _echo_tool(*, input_model: type[BaseModel] | None) -> ToolDefinition:
+def _echo_tool(*, input_model: type[BaseModel] | None) -> FunctionTool:
     def handler(_task: PublicTask, args: object) -> ToolExecutionResult:
         return ToolExecutionResult(ok=True, content={"args_type": type(args).__name__})
 
-    return ToolDefinition(
+    return FunctionTool(
         name="echo",
         description="echo",
         json_schema=None,

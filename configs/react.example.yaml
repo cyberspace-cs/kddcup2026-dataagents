@@ -5,7 +5,7 @@ agent:
   model: YOUR_MODEL_NAME                   # str (e.g. qwen3.5-35b-a3b)
   api_base: YOUR_API_BASE_URL              # str（OpenAI 兼容 chat.completions 端点）
   api_key: YOUR_API_KEY                    # str；若启用 api_keys 池则忽略此字段
-  max_steps: 32                            # int >= 1; 28 gives enough budget for complex multi-step tasks
+  max_steps: 28                            # int >= 1; 28 gives enough budget for complex multi-step tasks
   allow_parallel_tool_calls: true          # bool；个别后端不支持 parallel_tool_calls 时设 false
   max_tokens: 16384                        # int >= 0；0=不下发上限走服务端默认
   enable_thinking: true                    # bool | null；null = 不下发 extra_body
@@ -49,9 +49,9 @@ agent:
     - YOUR_API_KEY_1
     - YOUR_API_KEY_2
   rate_limit:
-    rpm_per_key: 600                       # int > 0
-    tpm_per_key: 1000000                   # int > 0
-    safety_factor: 0.85                    # float in (0, 1]
+    rpm_per_key: 2000                       # int > 0
+    tpm_per_key: 2000000                   # int > 0
+    safety_factor: 0.95                    # float in (0, 1]
     reserve_output_tokens: 16384           # int > 0；不得超过 agent.max_tokens
     max_retries: 6                         # int >= 0
     backoff_initial_seconds: 1.0           # float > 0
@@ -61,9 +61,9 @@ run:
   output_dir: artifacts/runs               # 相对路径以 PROJECT_ROOT 为基锚定
   run_id: null                             # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`
   max_workers: 4                           # int >= 1; 8 with dual-key keeps throughput high
-  task_timeout_seconds: 1200                # int；<= 0 关闭单任务超时
+  task_timeout_seconds: 480                # int；<= 0 关闭单任务超时
   retrieval_index:
-    enabled: true                          # bool；启用后 runner 在 ETL 后构建 SQLite FTS5 索引
+    enabled: false                          # bool；启用后 runner 在 ETL 后构建 SQLite FTS5 索引
     cache_dir: artifacts/indexes           # 相对路径以 PROJECT_ROOT 为基锚定
     max_chunk_chars: 3200                  # int >= 200；文本分块上限
     chunk_overlap_lines: 2                 # int >= 0；相邻 chunk 重叠行数

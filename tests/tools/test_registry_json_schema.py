@@ -1,4 +1,4 @@
-"""测试 ToolDefinition 的严格 JSON Schema 字段与 ToolRegistry.to_openai_tools 的输出。
+"""测试 FunctionTool 的严格 JSON Schema 字段与 ToolRegistry.to_openai_tools 的输出。
 
 覆盖点：
 - 所有默认工具都声明了 json_schema（native function calling 必需）
@@ -15,7 +15,7 @@ import json
 import pytest
 
 from agents.tools.registry import (
-    ToolDefinition,
+    FunctionTool,
     ToolExecutionResult,
     ToolRegistry,
     create_default_tool_registry,
@@ -108,7 +108,7 @@ def test_to_openai_tools_skips_definitions_without_json_schema() -> None:
     # 构造一个最简 registry，其中一个 definition 没有 json_schema
     registry = ToolRegistry(
         definitions={
-            "ok_tool": ToolDefinition(
+            "ok_tool": FunctionTool(
                 name="ok_tool",
                 description="ok",
                 json_schema={
@@ -119,7 +119,7 @@ def test_to_openai_tools_skips_definitions_without_json_schema() -> None:
                 },
                 handler=_noop_handler,
             ),
-            "schema_less": ToolDefinition(
+            "schema_less": FunctionTool(
                 name="schema_less",
                 description="no schema",
                 json_schema=None,

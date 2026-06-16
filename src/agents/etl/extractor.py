@@ -57,6 +57,7 @@ from agents.etl._merge import (
 )
 from agents.etl._pdf import pdf_to_markdown
 from agents.etl._types import RECORD_ID_FIELDS, RECORD_ID_KEYWORDS
+from agents.etl.knowledge import km_table_fields
 from agents.llm import ModelAdapter, ModelMessage, ModelResponse, OpenAIModelAdapter
 
 if TYPE_CHECKING:
@@ -932,73 +933,6 @@ def _repair_csv_numeric_identities(csv_path: Path) -> list[tuple[int, str, str, 
     return repairs
 
 
-_KM_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
-_KM_TABLE_SEPARATOR = re.compile(r":?-{3,}:?")
-# Column-name cells: ASCII identifiers or CJK names, optionally carrying a
-# unit suffix like "(百万元)"; anything with spaces/backticks inside is prose.
-_KM_FIELD_CELL = re.compile(r"^[\w一-鿿][\w一-鿿()（）%/·\-]{0,39}$")
-
-
-def _km_section_table_fields(lines: list[str], start: int, end: int) -> dict[str, str]:
-    """Parse ``| column | definition |`` table rows inside one km section."""
-    fields: dict[str, str] = {}
-    in_table = False
-    header_seen = False
-    col_idx = 0
-    for ln in lines[start:end]:
-        stripped = ln.strip()
-        if not stripped.startswith("|"):
-            in_table, header_seen = False, False
-            continue
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
-        if cells and all(_KM_TABLE_SEPARATOR.fullmatch(c) for c in cells if c):
-            in_table = True
-            continue
-        if not in_table and not header_seen:
-            # Header row: locate the column-name column, default first.
-            header_seen = True
-            col_idx = next(
-                (k for k, c in enumerate(cells) if re.search(r"column|field|字段|列", c, re.I)),
-                0,
-            )
-            continue
-        if not in_table or col_idx >= len(cells):
-            continue
-        cell = cells[col_idx].strip().strip("`").strip()
-        if _KM_FIELD_CELL.fullmatch(cell):
-            fields[cell] = cells[col_idx + 1].strip() if col_idx + 1 < len(cells) else ""
-    return fields
-
-
-def _km_table_fields(km_text: str, prose_stem: str) -> dict[str, str]:
-    """Deterministically parse the governance field table for ``prose_stem``.
-
-    Locates heading lines mentioning the stem (backticked or word-bounded —
-    ``\\b`` keeps "mf_netvalue" from anchoring inside
-    "mf_netvalueperformancehis"), bounds the section at the next heading of
-    the same or higher level, and parses its markdown column table.  The
-    first matching heading whose section yields fields wins.  Returns {} when
-    nothing parses — callers fall back to the LLM-only schema unchanged.
-    """
-    lines = km_text.splitlines()
-    starts: list[tuple[int, int]] = []
-    for i, ln in enumerate(lines):
-        m = _KM_HEADING.match(ln)
-        if m and re.search(rf"`{re.escape(prose_stem)}`|\b{re.escape(prose_stem)}\b", m.group(2)):
-            starts.append((i, len(m.group(1))))
-    for start, level in starts:
-        end = len(lines)
-        for j in range(start + 1, len(lines)):
-            m = _KM_HEADING.match(lines[j])
-            if m and len(m.group(1)) <= level:
-                end = j
-                break
-        fields = _km_section_table_fields(lines, start, end)
-        if fields:
-            return fields
-    return {}
-
-
 def _apply_km_schema_floor(
     columns: list[str],
     raw_defs: dict[str, str],
@@ -1118,7 +1052,7 @@ def _parse_knowledge_schema(
 
     # Deterministic field floor, parsed from the ORIGINAL governance text —
     # before the LLM pre-filter gets a chance to drop table rows.
-    km_fields = _km_table_fields(km_text, prose_stem)
+    km_fields = km_table_fields(km_text, prose_stem)
 
     filtered_km = _extract_relevant_entity(adapter, km_text, prose_stem, prose_sample or "")
     if filtered_km and prose_stem.lower() in filtered_km.lower():
@@ -1681,8 +1615,8 @@ def run_etl_for_task(
 ) -> list[ETLResult] | None:
     """Orchestrator: detect large prose files, extract each, return metadata list.
 
-    Returns None if no large prose files found. Non-fatal: callers should
-    catch exceptions and fall back to manual parsing.
+    Returns None if no large prose files found. If a selected prose file cannot
+    be materialized as CSV, raise so the task fails explicitly.
     """
     force_etl = task.difficulty.lower() in {"hard", "extreme"}
     prose_files = detect_prose_files(task, force=force_etl)
@@ -1697,6 +1631,14 @@ def run_etl_for_task(
     if km_path.is_file():
         with contextlib.suppress(OSError):
             km_text = km_path.read_text(encoding="utf-8")
+
+    # Route: select only relevant prose files for ETL.
+    if len(prose_files) >= 2:
+        from agents.etl._router import route_prose_files
+
+        prose_files = route_prose_files(adapter, task.question, prose_files, km_text)
+    if not prose_files:
+        return None
 
     # Observe once how sibling structured sources store proportions; the
     # per-subfamily verdicts deterministically override the heuristic
@@ -1738,7 +1680,7 @@ def run_etl_for_task(
                         units[f"_target_{field}"] = target_unit
                         units[f"_factor_{field}"] = str(factor)
                     logger.info("ETL: voted target units for %s: %s", pf.stem, targets)
-            governance_cols = sorted(_km_table_fields(km_text, pf.stem)) if km_text else []
+            governance_cols = sorted(km_table_fields(km_text, pf.stem)) if km_text else []
             return extract_prose_file(
                 adapter,
                 pf,
@@ -1759,7 +1701,9 @@ def run_etl_for_task(
 
     if len(prose_files) == 1:
         result = _process(prose_files[0])
-        return [result] if result else None
+        if result is None:
+            raise RuntimeError(f"ETL produced no CSV for {prose_files[0].name}")
+        return [result]
 
     results: list[ETLResult] = []
     orch_timeout = _LLM_CALL_TIMEOUT * max(4, len(prose_files))
@@ -1769,13 +1713,17 @@ def run_etl_for_task(
             for fut in as_completed(futs, timeout=orch_timeout):
                 try:
                     result = fut.result(timeout=orch_timeout)
-                    if result is not None:
-                        results.append(result)
+                    if result is None:
+                        raise RuntimeError(f"ETL produced no CSV for {futs[fut].name}")
+                    results.append(result)
                 except TimeoutError:
-                    logger.error("ETL timed out for %s", futs[fut].name)
+                    raise TimeoutError(f"ETL timed out for {futs[fut].name}") from None
                 except Exception as exc:
-                    logger.error("ETL failed for %s: %s", futs[fut].name, exc)
+                    raise RuntimeError(f"ETL failed for {futs[fut].name}: {exc}") from exc
         except TimeoutError:
-            logger.error("ETL orchestrator timed out, proceeding with partial results")
+            unfinished = [pf.name for fut, pf in futs.items() if not fut.done()]
+            raise TimeoutError(
+                f"ETL orchestrator timed out; unfinished files: {unfinished}"
+            ) from None
 
-    return results if results else None
+    return results

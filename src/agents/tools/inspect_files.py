@@ -1,23 +1,61 @@
-"""inspect_context_files：一次性扫描 context_dir 下所有文件的轻量 schema。"""
+"""inspect_files tool: one-shot context file inventory."""
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agents.benchmark.schema import PublicTask
 from agents.config import ETL_SCRATCH_ROOT
-from agents.tools.filesystem import constants
-from agents.tools.filesystem.csv_preview import profile_columns, summarize_csv
-from agents.tools.filesystem.doc_preview import summarize_doc
-from agents.tools.filesystem.json_preview import summarize_json
-from agents.tools.filesystem.pdf_preview import summarize_pdf
+from agents.tools import constants
+from agents.tools.decorator import function_tool
+from agents.tools.read_csv import profile_columns, summarize_csv
+from agents.tools.read_doc import summarize_doc
+from agents.tools.read_json import summarize_json
+from agents.tools.registry import ToolExecutionResult
+from agents.tools.units import load_conversions
+
+
+def _summarize_pdf(path: Path) -> dict[str, Any]:
+    """Summarize a PDF for inspect_files."""
+    import pymupdf  # pyright: ignore[reportMissingImports]
+
+    doc = pymupdf.open(str(path))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+    try:
+        page_count: int = len(doc)  # pyright: ignore[reportUnknownArgumentType]
+        raw_meta = cast(dict[str, str], doc.metadata or {})  # pyright: ignore[reportUnknownMemberType]
+        meta_filtered: dict[str, str] = {
+            key: value
+            for key, value in raw_meta.items()
+            if value and key in ("title", "author", "subject", "keywords")
+        }
+
+        page_char_counts: list[int] = []
+        head_texts: list[str] = []
+        for index in range(page_count):
+            text: str = cast(str, doc[index].get_text())  # pyright: ignore[reportUnknownMemberType,reportIndexIssue]
+            page_char_counts.append(len(text))
+            if index < constants.INSPECT_FILES_PDF_HEAD_PAGES:
+                preview: str = text[: constants.INSPECT_FILES_PDF_HEAD_CHARS]
+                if len(text) > constants.INSPECT_FILES_PDF_HEAD_CHARS:
+                    preview += "\n..."
+                head_texts.append(preview)
+
+        result: dict[str, Any] = {
+            "page_count": page_count,
+            "page_char_counts": page_char_counts,
+            "head": head_texts,
+        }
+        if meta_filtered:
+            result["metadata"] = meta_filtered
+        return result
+    finally:
+        doc.close()  # pyright: ignore[reportUnknownMemberType]
 
 
 def _summarize_sqlite(path: Path) -> dict[str, Any]:
-    """sqlite/db：返回每张表的 columns + row_count + 列级 profile。"""
+    """Summarize SQLite tables, row counts, dtypes, and column profiles."""
     tables: dict[str, dict[str, Any]] = {}
     uri = f"file:{path.resolve().as_posix()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
@@ -59,7 +97,7 @@ def _summarize_sqlite(path: Path) -> dict[str, Any]:
 
 
 def _format_for_inspect(rel_path: str, abs_path: Path) -> dict[str, Any]:
-    """单文件 introspection 的统一入口：按扩展名分流到具体 summarizer。"""
+    """Route one file to the appropriate inspect_files summarizer."""
     suffix = abs_path.suffix.lower()
     size = abs_path.stat().st_size
     base: dict[str, Any] = {
@@ -84,7 +122,7 @@ def _format_for_inspect(rel_path: str, abs_path: Path) -> dict[str, Any]:
     if suffix in constants.PDF_EXTS:
         base["format"] = "pdf"
         base["supported"] = True
-        base["schema"] = summarize_pdf(abs_path)
+        base["schema"] = _summarize_pdf(abs_path)
         return base
     if suffix in constants.DOC_EXTS:
         base["format"] = "markdown" if suffix == ".md" else "text"
@@ -107,7 +145,7 @@ def _format_for_inspect(rel_path: str, abs_path: Path) -> dict[str, Any]:
 
 
 def inspect_context_files(task: PublicTask) -> dict[str, Any]:
-    """一次性扫描 context_dir 下所有文件的轻量 schema。"""
+    """Scan context_dir and return lightweight schemas for supported files."""
     context_root = task.context_dir.resolve()
     files_summary: list[dict[str, Any]] = []
     unsupported_formats: set[str] = set()
@@ -132,33 +170,18 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
         if cache_dir.is_dir():
             units_path = cache_dir / f"{abs_path.stem}_units.json"
             if units_path.is_file():
-                try:
-                    units_meta = json.loads(units_path.read_text(encoding="utf-8"))
+                col_conversions = {c.field: c.label for c in load_conversions(units_path)}
+                if col_conversions:
                     schema: dict[str, Any] | None = entry.get("schema")
-                    # Build per-column conversion notes like:
-                    # {"pctbeforetran": "CONVERT: ×0.01 (% → ratio)"}
-                    col_conversions: dict[str, str] = {}
-                    for field, source_unit in units_meta.items():
-                        if field.startswith("_"):
-                            continue
-                        target = units_meta.get(f"_target_{field}")
-                        factor = units_meta.get(f"_factor_{field}")
-                        if target and factor and str(source_unit) != str(target):
-                            col_conversions[field] = (
-                                f"CONVERT: ×{factor} ({source_unit} → {target})"
-                            )
                     if isinstance(schema, dict) and "columns" in schema:
                         reordered: dict[str, Any] = {}
                         for key in schema:
                             reordered[key] = schema[key]
-                            if key == "columns" and col_conversions:
+                            if key == "columns":
                                 reordered["column_conversions"] = col_conversions
                         entry["schema"] = reordered
                     elif isinstance(schema, dict):
-                        if col_conversions:
-                            schema["column_conversions"] = col_conversions
-                except (OSError, json.JSONDecodeError):
-                    pass
+                        schema["column_conversions"] = col_conversions
         files_summary.append(entry)
 
     result: dict[str, Any] = {
@@ -189,3 +212,12 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
         if retrieval_meta.get("error"):
             result["retrieval_index"]["error"] = retrieval_meta.get("error")
     return result
+
+
+@function_tool
+def inspect_files(task: PublicTask) -> ToolExecutionResult:
+    """Use first to bootstrap context exploration: returns a one-shot summary
+    of every file under context (columns, dtypes, row counts, table schemas).
+    This replaces the usual sequence of read_csv / read_json /
+    inspect_sqlite_schema calls for initial discovery."""
+    return ToolExecutionResult(ok=True, content=inspect_context_files(task))

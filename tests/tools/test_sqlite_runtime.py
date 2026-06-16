@@ -17,16 +17,14 @@ from pathlib import Path
 
 import pytest
 
-from agents.tools.sqlite import (
-    execute_read_only_sql,
-    inspect_sqlite_schema,
-)
+from agents.tools.execute_sql import execute_read_only_sql
+from agents.tools.inspect_sqlite import inspect_sqlite_database
 
 
 @pytest.mark.parametrize(
     "invoke",
     [
-        pytest.param(inspect_sqlite_schema, id="inspect_sqlite_schema"),
+        pytest.param(inspect_sqlite_database, id="inspect_sqlite_schema"),
         # `SELECT 1` is a constant query and never reads the file, so sqlite never
         # validates the file header → no "file is not a database" → translation
         # path doesn't fire. Use a query that touches the file to mirror what real
@@ -71,7 +69,7 @@ def test_unknown_extension_falls_back_to_execute_python_hint(tmp_path: Path) -> 
     target.write_text("not a real parquet, just bytes for the test", encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
-        inspect_sqlite_schema(target)
+        inspect_sqlite_database(target)
 
     msg = str(exc_info.value)
     assert ".parquet" in msg
@@ -84,7 +82,7 @@ def test_no_extension_falls_back_to_execute_python_hint(tmp_path: Path) -> None:
     target.write_text("plain bytes\n", encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
-        inspect_sqlite_schema(target)
+        inspect_sqlite_database(target)
 
     msg = str(exc_info.value)
     assert "extension: none" in msg
@@ -100,7 +98,7 @@ def test_real_sqlite_db_still_works(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    schema = inspect_sqlite_schema(db_path)
+    schema = inspect_sqlite_database(db_path)
     assert schema["tables"] and schema["tables"][0]["name"] == "t"
 
     result = execute_read_only_sql(db_path, "SELECT id, name FROM t ORDER BY id")
