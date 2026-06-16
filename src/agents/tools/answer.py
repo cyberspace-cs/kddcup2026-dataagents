@@ -70,10 +70,6 @@ class AnswerInput(BaseModel):
 
     @model_validator(mode="after")
     def _check_payload(self) -> AnswerInput:
-        # inline 体量硬闸**不在这里**：迁到 `answer.handler`（artifact-exists 检查**之后**）。
-        # 回归 run 20260614-009/task_31：模型先写好 `_answer/answer.csv`，再发 10 行 inline。
-        # 旧顺序下 Pydantic 把不可执行的"阈值错"挤掉了 handler 那条精准的
-        # "artifact-exists, 用 from_csv 指 <path>" 提示，模型死循环耗光预算。
         if self.from_csv is not None:
             if self.columns or self.rows:
                 raise ValueError("provide either from_csv or columns+rows, not both")
@@ -167,12 +163,7 @@ def _prune_null_columns(
 
 
 def _inline_threshold_error(columns: list[str], rows: list[list[Any]]) -> str | None:
-    """超阈值时返回可执行的错误消息；否则返回 None。
-
-    handler 与 fallback 共用一份判定，避免阈值描述漂移；文案与 contracts 里
-    `answer_artifact_expression()` 同源，保留 tool description / prompt rules 里
-    现成的 retry 路径引用。
-    """
+    """Return the inline-size threshold error, or None when the payload is allowed."""
     n_rows = len(rows)
     n_cells = n_rows * len(columns)
     if n_rows >= INLINE_ANSWER_ROW_LIMIT or n_cells >= INLINE_ANSWER_CELL_LIMIT:
@@ -233,10 +224,7 @@ def answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
             is_terminal=True,
             answer=answer_table,
         )
-    # artifact-exists 检查必须排在 threshold 检查之前——run 20260614-009/task_31 回归：
-    # 模型已经把表写到 `_answer/answer.csv`、又发 10 行 inline。两个拒绝条件同时成立时
-    # 要让这条精准的 "from_csv: <path>" 提示胜出，而不是 threshold 那条"去写 csv"——
-    # 那对 model 来说不可执行，会陷入死循环。
+    # Check artifact existence before inline threshold so the retry points at from_csv.
     if artifact_path.exists() and artifact_path.stat().st_size > 0:
         raise ValueError(
             f"answer artifact already exists at {artifact_path} but inline "
