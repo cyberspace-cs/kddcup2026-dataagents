@@ -36,7 +36,6 @@ class TaskRunArtifacts:
     prediction_csv_path: Path | None  # 未提交 answer 时为 None
     succeeded: bool  # Agent 是否正常调用 answer 工具
     failure_reason: str | None  # 失败时的可读原因
-    retrieval_index: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """序列化进 summary.json 的任务条目。
@@ -52,8 +51,6 @@ class TaskRunArtifacts:
             "succeeded": self.succeeded,
             "failure_reason": self.failure_reason,
         }
-        if self.retrieval_index is not None:
-            payload["retrieval_index"] = self.retrieval_index
         return payload
 
 
@@ -289,9 +286,6 @@ def write_task_outputs(
         prediction_csv_path=prediction_csv_path,
         succeeded=bool(run_result.get("succeeded")),
         failure_reason=run_result.get("failure_reason"),
-        retrieval_index=run_result.get("retrieval_index")
-        if isinstance(run_result.get("retrieval_index"), dict)
-        else None,
     )
 
 

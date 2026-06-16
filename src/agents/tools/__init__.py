@@ -20,7 +20,6 @@ from agents.tools.execute_sql import execute_context_sql
 from agents.tools.grep_context import grep_context
 from agents.tools.inspect_files import inspect_files
 from agents.tools.inspect_sqlite import inspect_sqlite_schema
-from agents.tools.lookup_field import lookup_field
 from agents.tools.read_csv import read_csv
 from agents.tools.read_doc import read_doc
 from agents.tools.read_json import read_json
@@ -30,7 +29,6 @@ from agents.tools.registry import (
     ToolRegistry,
     create_default_tool_registry,
 )
-from agents.tools.search_context import search_context
 
 __all__ = [
     "AnswerInput",
@@ -49,12 +47,10 @@ __all__ = [
     "inspect_files",
     "inspect_sqlite_schema",
     "list_context_tree",
-    "lookup_field",
     "parse_answer_csv",
     "path_field",
     "positive_int_field",
     "read_csv",
     "read_doc",
     "read_json",
-    "search_context",
 ]
