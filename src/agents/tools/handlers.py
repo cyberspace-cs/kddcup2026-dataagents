@@ -36,6 +36,8 @@ from agents.tools.filesystem import (
 from agents.tools.filesystem.grep import grep_context
 from agents.tools.inputs import (
     EXECUTE_PYTHON_TIMEOUT_SECONDS,
+    INLINE_ANSWER_CELL_LIMIT,
+    INLINE_ANSWER_ROW_LIMIT,
     AnswerInput,
     ExecuteContextSqlInput,
     ExecutePythonInput,
@@ -291,6 +293,26 @@ def _prune_null_columns(
     return pruned_columns, pruned_rows, removed
 
 
+def _inline_threshold_error(columns: list[str], rows: list[list[Any]]) -> str | None:
+    """超阈值时返回可执行的错误消息；否则返回 None。
+
+    handler 与 fallback 共用一份判定，避免阈值描述漂移；文案与历史 Pydantic 版字节
+    一致，保留 `tools[].description` / prompt rules 里现成的 retry 路径引用。
+    """
+    n_rows = len(rows)
+    n_cells = n_rows * len(columns)
+    if n_rows >= INLINE_ANSWER_ROW_LIMIT or n_cells >= INLINE_ANSWER_CELL_LIMIT:
+        return (
+            f"inline rows payload exceeds artifact-handoff threshold "
+            f"(got {n_rows} rows, {n_cells} cells; threshold = "
+            f"{INLINE_ANSWER_ROW_LIMIT} rows or {INLINE_ANSWER_CELL_LIMIT} cells); "
+            "write the table to "
+            "os.path.join(os.environ['DABENCH_ANSWER_DIR'], 'answer.csv') from "
+            "execute_python and resubmit with from_csv (no columns/rows)"
+        )
+    return None
+
+
 def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
     """`answer`: 终止工具，提交最终答案表。
 
@@ -347,6 +369,10 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
         )
     # 残留 artifact + inline 提交：拒绝并指回 from_csv（详见 docstring 中
     # run 20260501-010/task_8 案例）。size > 0 防御 zero-byte 残留误伤。
+    # 这条检查必须排在 threshold 检查之前——run 20260614-009/task_31 回归：模型已经
+    # 把表写到 `_answer/answer.csv`、又发 10 行 inline，旧顺序（Pydantic 先跑阈值）
+    # 把不可执行的"阈值错"挤掉了下面这条精准的 "from_csv: <path>" 提示，模型死循环
+    # 耗光预算。
     if artifact_path.exists() and artifact_path.stat().st_size > 0:
         raise ValueError(
             f"answer artifact already exists at {artifact_path} but inline "
@@ -354,6 +380,9 @@ def handle_answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
             "and inline cannot override it. Resubmit as "
             f'answer({{"from_csv": "{artifact_path}"}}) with no columns/rows.'
         )
+    threshold_error = _inline_threshold_error(args.columns, list(args.rows))
+    if threshold_error is not None:
+        raise ValueError(threshold_error)
     # inline 路径：list(...) 拷贝让最终落盘的 AnswerTable 不与外部对象共享底层引用
     columns = list(args.columns)
     rows = [list(row) for row in args.rows]
@@ -406,6 +435,10 @@ def build_answer_table_without_side_effects(
         if artifact_path.exists() and artifact_path.stat().st_size > 0:
             return None
     except OSError:
+        return None
+    # 与 handle_answer 同源：阈值检查现在落在 handler，本函数也必须复用
+    # 同一份判定，否则验证器拒答的 fallback 会把超阈值 inline 当合法答案晋级。
+    if _inline_threshold_error(args.columns, list(args.rows)) is not None:
         return None
 
     columns = list(args.columns)

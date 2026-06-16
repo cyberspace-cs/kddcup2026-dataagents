@@ -202,7 +202,7 @@ def test_dispatch_answer_inline_row_threshold_is_rejected(task: PublicTask) -> N
     with pytest.raises(
         ValueError,
         match=(
-            r"^answer: inline rows payload exceeds artifact-handoff threshold "
+            r"^inline rows payload exceeds artifact-handoff threshold "
             r"\(got 10 rows, 10 cells; threshold = 10 rows or 50 cells\)"
         ),
     ):
@@ -222,7 +222,7 @@ def test_dispatch_answer_inline_cell_threshold_is_rejected(task: PublicTask) -> 
     with pytest.raises(
         ValueError,
         match=(
-            r"^answer: inline rows payload exceeds artifact-handoff threshold "
+            r"^inline rows payload exceeds artifact-handoff threshold "
             r"\(got 9 rows, 54 cells; threshold = 10 rows or 50 cells\)"
         ),
     ):

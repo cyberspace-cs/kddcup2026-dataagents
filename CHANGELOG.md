@@ -129,6 +129,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed from user-facing docs and submission defaults.
 
 ### Fixed
+- **`answer` artifact-exists error wins over the inline-threshold error.**
+  When the model has already written `_answer/answer.csv` and then submits
+  inline rows at or above the threshold, the rejection now points at the
+  existing artifact path with the exact `answer({"from_csv": "<path>"})`
+  to resubmit — instead of telling the model to "write the table to
+  answer.csv from execute_python", which it had already done.
+  Trace evidence: run 20260614-009/task_31 spent 27 `execute_python` calls
+  computing the table, finally wrote `answer.csv`, then hit the old
+  threshold error and ran the budget out without ever recognizing the fix.
+  The threshold check moved from the `AnswerInput` Pydantic validator into
+  `handle_answer` (and the verifier-fallback builder) so that artifact
+  detection runs first; standalone threshold messages stay identical for
+  the no-artifact case.
 - **Grouping batches are balanced; no more weak tail batch.** Paragraph
   grouping used fixed 40-paragraph strides, so a document's remainder
   became a sub-handful final batch whose numbered-list format anchor was

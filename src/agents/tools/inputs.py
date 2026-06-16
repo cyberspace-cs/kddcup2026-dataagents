@@ -30,6 +30,10 @@ EXECUTE_PYTHON_TIMEOUT_SECONDS = 30
 # 57 行 amount 串味）。execute_python 已写正确 CSV 时仍走 inline 是这条规则的目标。
 # 数值与 prompt `_DATA_OUTPUT_RULES` 的 "10+ rows OR 50+ cells" 文案保持一致，
 # 后续两边一起调（grep "10+ rows" 即可定位）。
+# 阈值执行点在 `handlers.handle_answer`（artifact-exists 检查**之后**），不在本文件的
+# `_check_payload`——回归参照 run 20260614-009/task_31：模型先写好 `_answer/answer.csv`、
+# 再发 10 行 inline，旧顺序下 Pydantic 把不可执行的"阈值错"挤掉了 handler 那条精准的
+# "artifact-exists, 用 from_csv 指 <path>" 提示，模型死循环耗光预算。
 INLINE_ANSWER_ROW_LIMIT = 10
 INLINE_ANSWER_CELL_LIMIT = 50
 
@@ -328,25 +332,13 @@ class AnswerInput(BaseModel):
     def _check_payload(self) -> AnswerInput:
         # answer 一旦提交即为最终产物；XOR 校验外加列数错位都会让 prediction.csv
         # 对齐崩坏，必须在边界处一次性早抛。
+        # inline 体量硬闸**不在这里**：参见模块顶 INLINE_ANSWER_ROW_LIMIT 注释。
         if self.from_csv is not None:
             if self.columns or self.rows:
                 raise ValueError("provide either from_csv or columns+rows, not both")
             return self
         if not self.columns:
             raise ValueError("columns must be non-empty when from_csv is not set")
-        # Inline 体量硬闸：超阈值时拒绝并提示走 from_csv。soft prompt rule 不够时由
-        # 此兜底——参见 INLINE_ANSWER_ROW_LIMIT 注释中的 task_8 幻觉案例。
-        n_rows = len(self.rows)
-        n_cells = n_rows * len(self.columns)
-        if n_rows >= INLINE_ANSWER_ROW_LIMIT or n_cells >= INLINE_ANSWER_CELL_LIMIT:
-            raise ValueError(
-                f"inline rows payload exceeds artifact-handoff threshold "
-                f"(got {n_rows} rows, {n_cells} cells; threshold = "
-                f"{INLINE_ANSWER_ROW_LIMIT} rows or {INLINE_ANSWER_CELL_LIMIT} cells); "
-                f"write the table to "
-                f"os.path.join(os.environ['DABENCH_ANSWER_DIR'], 'answer.csv') from "
-                f"execute_python and resubmit with from_csv (no columns/rows)"
-            )
         width = len(self.columns)
         for index, row in enumerate(self.rows):
             if len(row) != width:
