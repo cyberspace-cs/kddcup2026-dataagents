@@ -78,17 +78,6 @@ class AnswerInput(BaseModel):
             return self
         if not self.columns:
             raise ValueError("columns must be non-empty when from_csv is not set")
-        n_rows = len(self.rows)
-        n_cells = n_rows * len(self.columns)
-        if n_rows >= INLINE_ANSWER_ROW_LIMIT or n_cells >= INLINE_ANSWER_CELL_LIMIT:
-            raise ValueError(
-                f"inline rows payload exceeds artifact-handoff threshold "
-                f"(got {n_rows} rows, {n_cells} cells; threshold = "
-                f"{INLINE_ANSWER_ROW_LIMIT} rows or {INLINE_ANSWER_CELL_LIMIT} cells); "
-                f"write the table to "
-                f"{answer_artifact_expression()} from "
-                f"execute_python and resubmit with from_csv (no columns/rows)"
-            )
         width = len(self.columns)
         for index, row in enumerate(self.rows):
             if len(row) != width:
@@ -197,6 +186,22 @@ def _prune_null_columns(
     return pruned_columns, pruned_rows, removed
 
 
+def _inline_threshold_error(columns: list[str], rows: list[list[Any]]) -> str | None:
+    """Return the inline-size threshold error, or None when the payload is allowed."""
+    n_rows = len(rows)
+    n_cells = n_rows * len(columns)
+    if n_rows >= INLINE_ANSWER_ROW_LIMIT or n_cells >= INLINE_ANSWER_CELL_LIMIT:
+        return (
+            f"inline rows payload exceeds artifact-handoff threshold "
+            f"(got {n_rows} rows, {n_cells} cells; threshold = "
+            f"{INLINE_ANSWER_ROW_LIMIT} rows or {INLINE_ANSWER_CELL_LIMIT} cells); "
+            f"write the table to "
+            f"{answer_artifact_expression()} from "
+            "execute_python and resubmit with from_csv (no columns/rows)"
+        )
+    return None
+
+
 @function_tool(
     description=(
         "Use this when the final answer table is determined. This is the only "
@@ -243,6 +248,7 @@ def answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
             is_terminal=True,
             answer=answer_table,
         )
+    # Check artifact existence before inline threshold so the retry points at from_csv.
     if artifact_path.exists() and artifact_path.stat().st_size > 0:
         raise ValueError(
             f"answer artifact already exists at {artifact_path} but inline "
@@ -250,6 +256,9 @@ def answer(task: PublicTask, args: AnswerInput) -> ToolExecutionResult:
             "and inline cannot override it. Resubmit as "
             f'answer({{"from_csv": "{artifact_path}"}}) with no columns/rows.'
         )
+    threshold_error = _inline_threshold_error(args.columns, list(args.rows))
+    if threshold_error is not None:
+        raise ValueError(threshold_error)
     columns = list(args.columns)
     rows = [list(row) for row in args.rows]
     columns, rows, pruned_cols = _prune_null_columns(columns, rows)
@@ -296,6 +305,10 @@ def build_answer_table_without_side_effects(
         if artifact_path.exists() and artifact_path.stat().st_size > 0:
             return None
     except OSError:
+        return None
+    # 与 `answer.handler` 同源：阈值检查现在落在 handler，本函数也必须复用
+    # 同一份判定，否则验证器拒答的 fallback 会把超阈值 inline 当合法答案晋级。
+    if _inline_threshold_error(args.columns, list(args.rows)) is not None:
         return None
 
     columns = list(args.columns)

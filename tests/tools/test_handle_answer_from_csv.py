@@ -334,6 +334,76 @@ def test_inline_submission_with_existing_artifact_raises(task: PublicTask, tmp_p
     assert artifact.parent.exists()
 
 
+def test_artifact_exists_beats_inline_threshold_when_both_fire(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """两个拒绝条件同时成立时，handler 必须先抛 artifact-exists（含具体路径），
+    而不是把模型导回去重写一遍它早已写好的 CSV。
+
+    回归参照 run 20260614-009/task_31：execute_python 已经把表写到
+    `_answer/answer.csv`，模型却又发了 10 行 inline。旧顺序下 Pydantic 先按"阈值"
+    拒了 inline，错误信息是"write the table to ... answer.csv from execute_python and
+    resubmit with from_csv"——模型读完只会再算一遍同一份表，从未反应过来应改 from_csv。
+    新顺序让 handler 的 artifact-exists 错误胜出，里头直接给出可照搬的
+    `answer({"from_csv": "<artifact path>"})`。
+    """
+    artifact = task.task_dir / "_answer" / "answer.csv"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("id\n" + "\n".join(str(n) for n in range(20)) + "\n", encoding="utf-8")
+
+    # 12 行 inline → 阈值条件 (n_rows >= 10) 也会成立。
+    args = AnswerInput.model_validate({"columns": ["id"], "rows": [[n] for n in range(12)]})
+
+    with pytest.raises(ValueError) as exc_info:
+        _answer_tool.handler(task, args)
+
+    msg = str(exc_info.value)
+    assert "answer artifact already exists" in msg
+    assert str(artifact) in msg
+    # threshold 文案绝不能在 artifact-exists 路径上出现，否则模型会把它当首要指令
+    assert "inline rows payload exceeds" not in msg
+    # artifact 保留：下一轮模型才能照搬 from_csv 路径
+    assert artifact.exists()
+
+
+def test_inline_threshold_check_in_handler_when_no_artifact(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """没有 artifact 时，handler 内的阈值检查仍然兜底（错误信息与历史 Pydantic 版一致）。
+
+    阈值检查从 Pydantic 搬到 handler 后必须有 happy path 之外的兜底覆盖，
+    防止后续重构把这条规则误删。
+    """
+    answer_dir = task.task_dir / "_answer"
+    if answer_dir.exists():
+        for child in answer_dir.iterdir():
+            child.unlink()
+
+    args = AnswerInput.model_validate({"columns": ["id"], "rows": [[n] for n in range(10)]})
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^inline rows payload exceeds artifact-handoff threshold "
+            r"\(got 10 rows, 10 cells; threshold = 10 rows or 50 cells\)"
+        ),
+    ):
+        _answer_tool.handler(task, args)
+
+
+def test_fallback_builder_rejects_inline_over_threshold(task: PublicTask) -> None:
+    """`build_answer_table_without_side_effects` 必须与 handler 同源拒掉超阈值 inline。
+
+    旧设计里 Pydantic 把超阈值挡在最外层，所以 fallback 函数不用再判一次；
+    阈值检查迁到 handler 之后，如果 fallback 不同步，verifier 拒答路径会把
+    超阈值 inline 当合法答案晋级——破坏阈值规则的不变量。
+    """
+    from agents.tools.answer import build_answer_table_without_side_effects
+
+    arguments = {"columns": ["id"], "rows": [[n] for n in range(10)]}
+    assert build_answer_table_without_side_effects(task, arguments) is None
+
+
 def test_from_csv_rejects_wide_rows_with_rewrite_hint(task: PublicTask, tmp_path: Path) -> None:
     """数据行比 header 更宽时拒绝提交，并提示模型重写 CSV。
 
