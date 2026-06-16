@@ -52,26 +52,10 @@ DEFAULT_INPUT = Path("/input")
 DEFAULT_OUTPUT = Path("/output")
 DEFAULT_LOGS = Path("/logs")
 DEFAULT_CONFIG = Path("/app/configs/react.example.yaml")
-DEFAULT_GLOBAL_BUDGET_SECONDS = 42_000.0  # ~11.7 h, fits a 50-task batch with headroom
+# A榜是 2h；B榜前改成 43_200.0（12h）再提交。
+DEFAULT_GLOBAL_BUDGET_SECONDS = 7_200.0
 
 _LOG_LOCK = threading.Lock()
-
-
-def derive_task_timeout(
-    configured: int, *, global_budget: float, workers: int, task_count: int
-) -> int:
-    """Per-task hard timeout for the container run.
-
-    The configured value is tuned for warm-cache CLI runs; a container run
-    pays cold ETL on every task, so cap each task at its fair share of the
-    global wall budget instead — at least the configured floor, but never
-    above the budget itself (the budget cap wins when the floor exceeds it).
-    `configured <= 0` keeps timeouts disabled.
-    """
-    if configured <= 0 or task_count <= 0:
-        return configured
-    fair_share = global_budget * workers / task_count
-    return int(min(global_budget, max(float(configured), fair_share)))
 
 
 def _log(logs_dir: Path, line: str) -> None:
@@ -205,17 +189,11 @@ def main() -> int:
     config = _build_config(input_root)
     tasks = DABenchPublicDataset(config.dataset.root_path).iter_tasks()
     workers = max(1, int(os.environ.get("MAX_WORKERS", config.run.max_workers)))
-    task_timeout = derive_task_timeout(
-        config.run.task_timeout_seconds,
-        global_budget=global_budget,
-        workers=workers,
-        task_count=len(tasks),
-    )
-    config = replace(config, run=replace(config.run, task_timeout_seconds=task_timeout))
     _log(
         logs_root,
         f"start input={input_root} output={output_root} budget={global_budget:.0f}s "
-        f"tasks={len(tasks)} workers={workers} task_timeout={task_timeout}s",
+        f"tasks={len(tasks)} workers={workers} "
+        f"task_timeout={config.run.task_timeout_seconds}s",
     )
 
     started = time.monotonic()

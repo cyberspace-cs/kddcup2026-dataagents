@@ -41,6 +41,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   video report.
 
 ### Changed
+- **Explorer `value_samples` field description disallows non-tabular keys.**
+  The schema (`{file.col: [v1, v2]}`) already required column-suffixed keys,
+  but the laconic field description left room for the explorer to use a
+  video file path (`video/briefing.mp4`) as a key, paired with a dict of
+  scraped values instead of the required flat list of strings — every
+  occurrence wasted a `report` turn on Pydantic rejection plus a retry.
+  Description now states keys MUST be `file.column`, values MUST be flat
+  lists of strings, and video findings reach the caller via the
+  `explore_video` observation rather than this field. Observed on video
+  task runs 20260614-002/003 (task_7 explorer report rejected on
+  `value_samples.video/briefing.mp4`).
 - **Submission image upgraded to Python 3.14.** Aligns the container with
   the dev interpreter. All locked dependencies resolve to cp314 manylinux
   wheels (verified via `uv pip install --dry-run --no-build`), so the
@@ -139,9 +150,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   computing the table, finally wrote `answer.csv`, then hit the old
   threshold error and ran the budget out without ever recognizing the fix.
   The threshold check moved from the `AnswerInput` Pydantic validator into
-  `handle_answer` (and the verifier-fallback builder) so that artifact
-  detection runs first; standalone threshold messages stay identical for
-  the no-artifact case.
+  `answer` (and the verifier-fallback builder) so that artifact detection
+  runs first; standalone threshold guidance stays the same for the
+  no-artifact case.
+- **`from_csv` rejects malformed answer CSVs with rewrite guidance.**
+  The answer parser now uses pandas CSV parsing so quoted commas and
+  embedded newlines are handled consistently, while malformed files whose
+  data rows do not match the header width are rejected with guidance to
+  rewrite the artifact via `DataFrame.to_csv(..., index=False)` and proper
+  text quoting. This keeps terminal answer submission from silently
+  guessing extra columns for structurally invalid CSV files.
 - **Grouping batches are balanced; no more weak tail batch.** Paragraph
   grouping used fixed 40-paragraph strides, so a document's remainder
   became a sub-handful final batch whose numbered-list format anchor was

@@ -51,7 +51,7 @@ Call `report` with these **separate parameters** (NOT a single JSON string):
   Example: `{{"foo": {{"columns": {{...}}, "column_conversions": {{...}}}}}}`
 - `knowledge`: extracted mappings, formulas, units, thresholds from docs.
 - `join_paths`: discovered relationships. Example: `[{{"left": "a.col", "right": "b.col"}}]`
-- `value_samples`: sampled distinct values for filter-relevant columns. Example: `{{"file.col": ["v1", "v2"]}}`
+- `value_samples`: sampled distinct values for filter-relevant TABULAR columns. Keys MUST be `file.column`; values MUST be flat `list[str]`. NEVER use video paths or bare file paths as keys. Example: `{{"foo.csv.region": ["北京", "上海"]}}`.
 - `warnings`: objective data-quality observations ONLY — unit mismatches, ambiguous column names, missing/NULL values in specific columns, inconsistent date formats, duplicate rows. Each warning must be ONE atomic fact. Do not chain multiple observations with semicolons; write separate warnings instead. Do not append any inference, implication, or suggestion after the fact. In the `warnings` field specifically, never use hedge words (可能/might/possibly/perhaps/likely/也许/或许) — if you cannot state something as a verified fact, omit it.
   GOOD: "province column has 36 unique values"
   GOOD: "no '全国' entry exists in the province column"

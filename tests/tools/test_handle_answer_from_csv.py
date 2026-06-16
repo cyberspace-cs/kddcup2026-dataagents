@@ -159,7 +159,7 @@ def test_from_csv_dtype_inference(
                 _write(tmp_path / "_answer" / "ragged.csv", "id,name,extra\n1,alpha\n")
             ),
             None,
-            r"from_csv row 0 has 2 cells but header has 3",
+            r"from_csv rows must have the same number of cells as the header row",
             False,
             id="row-width-mismatch",
         ),
@@ -333,7 +333,6 @@ def test_inline_submission_with_existing_artifact_raises(task: PublicTask, tmp_p
     assert artifact.exists()
     assert artifact.parent.exists()
 
-
 def test_artifact_exists_beats_inline_threshold_when_both_fire(
     task: PublicTask, tmp_path: Path
 ) -> None:
@@ -402,6 +401,46 @@ def test_fallback_builder_rejects_inline_over_threshold(task: PublicTask) -> Non
 
     arguments = {"columns": ["id"], "rows": [[n] for n in range(10)]}
     assert build_answer_table_without_side_effects(task, arguments) is None
+
+
+def test_from_csv_rejects_wide_rows_with_rewrite_hint(task: PublicTask, tmp_path: Path) -> None:
+    """数据行比 header 更宽时拒绝提交，并提示模型重写 CSV。
+
+    这类 CSV 往往来自手写 header 漏列、忘记 `index=False` 附近的拼接错误，
+    或文本字段含逗号但没有 quote。`answer` 是 terminal tool，不能静默补
+    `col_<i>` 猜测修复，否则会把坏表直接提交成终局答案。
+    """
+    csv_path = _write(
+        tmp_path / "_answer" / "wide_rows.csv",
+        "fund_name\n中融煤炭,48.706\n富国煤炭A,48.706\n平安新能源汽车ETF,42.881\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    with pytest.raises(
+        ValueError,
+        match=r"from_csv rows must have the same number of cells as the header row",
+    ) as exc_info:
+        _answer_tool.handler(task, args)
+
+    msg = str(exc_info.value)
+    assert "pandas.DataFrame.to_csv(..., index=False)" in msg
+    assert "quote text fields" in msg
+
+
+def test_from_csv_accepts_quoted_commas(task: PublicTask, tmp_path: Path) -> None:
+    """合法 CSV quote 仍由 pandas 正确处理，逗号文本不会被误判为宽行。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "quoted_commas.csv",
+        'comment\n"alpha,beta"\n"gamma,delta"\n',
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["comment"]
+    assert result.answer.rows == [["alpha,beta"], ["gamma,delta"]]
 
 
 def test_inline_submission_with_zero_byte_artifact_passes(task: PublicTask, tmp_path: Path) -> None:
