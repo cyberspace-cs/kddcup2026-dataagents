@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_ROUTER_SAMPLE_BUDGET = 2000
+_ROUTER_SAMPLE_TOKEN_BUDGET = 2000
 _MAX_FIELDS_PER_FILE = 15
 _MAX_SAMPLE_CHARS = 500
 _MAX_DESC_CHARS = 200
@@ -91,7 +91,7 @@ def build_file_profile(
     path: Path, km_text: str, question: str, adapter: ModelAdapter | None = None
 ) -> FileProfile:
     text = read_prose_text(path)
-    sample = sample_paragraphs_by_section(text, token_limit=_ROUTER_SAMPLE_BUDGET)
+    sample = sample_paragraphs_by_section(text, token_limit=_ROUTER_SAMPLE_TOKEN_BUDGET)
     km_fields = km_table_fields(km_text, path.stem) if km_text else {}
 
     schema_fields: list[str] = list(km_fields.keys())

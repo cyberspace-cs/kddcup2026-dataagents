@@ -10,37 +10,11 @@ from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
 from agents.tools._fields import positive_int_field
+from agents.tools._sqlite_common import connect_read_only, maybe_raise_non_sqlite_path_error
 from agents.tools.context import resolve_context_path
 from agents.tools.contracts import PATH_CONVENTION_NOTE
 from agents.tools.decorator import function_tool
 from agents.tools.registry import ToolExecutionResult
-
-_NON_SQLITE_PATH_REDIRECT: dict[str, str] = {
-    ".csv": "`read_csv` (preview) or `execute_python` (full scan with pandas)",
-    ".json": "`read_json` (preview) or `execute_python` (nested extraction)",
-    ".md": "`read_doc`",
-    ".txt": "`read_doc`",
-}
-
-
-def _maybe_raise_non_sqlite_path_error(path: Path, exc: sqlite3.DatabaseError) -> None:
-    """Translate sqlite's opaque non-database error into an actionable tool hint."""
-    if "file is not a database" not in str(exc).lower():
-        return
-    ext = path.suffix.lower()
-    redirect = _NON_SQLITE_PATH_REDIRECT.get(ext, "`execute_python`")
-    raise ValueError(
-        f"Path '{path.name}' is not a sqlite database "
-        f"(extension: {ext or 'none'}). "
-        f"For this file type, use {redirect} instead of "
-        f"inspect_sqlite_schema / execute_context_sql."
-    ) from exc
-
-
-def _connect_read_only(path: Path) -> sqlite3.Connection:
-    """Connect to a SQLite file in URI read-only mode."""
-    uri = f"file:{path.resolve().as_posix()}?mode=ro"
-    return sqlite3.connect(uri, uri=True)
 
 
 def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str, Any]:
@@ -50,12 +24,12 @@ def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str
         raise ValueError("Only read-only SQL statements are allowed.")
 
     try:
-        with _connect_read_only(path) as conn:
+        with connect_read_only(path) as conn:
             cursor = conn.execute(sql)
             column_names = [item[0] for item in cursor.description or []]
             rows = cursor.fetchmany(limit + 1)
     except sqlite3.DatabaseError as exc:
-        _maybe_raise_non_sqlite_path_error(path, exc)
+        maybe_raise_non_sqlite_path_error(path, exc)
         raise
 
     truncated = len(rows) > limit
