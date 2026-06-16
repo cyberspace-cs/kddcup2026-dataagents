@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import csv
 import pathlib
 import shutil
+import warnings
 from contextlib import suppress
 from typing import Annotated, Any
 
+import pandas as pd
+from pandas.errors import EmptyDataError, ParserError, ParserWarning
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from agents.benchmark.schema import AnswerTable, PublicTask
@@ -110,6 +112,18 @@ def _coerce_row(row: list[str], dtypes: list[str]) -> list[Any]:
     return out
 
 
+def _from_csv_shape_error(detail: str | None = None) -> str:
+    msg = (
+        "from_csv rows must have the same number of cells as the header row. "
+        "Rewrite the answer CSV with a complete header row, use "
+        "pandas.DataFrame.to_csv(..., index=False), and quote text fields that "
+        "contain commas or newlines."
+    )
+    if detail:
+        msg += f" Parser detail: {detail}"
+    return msg
+
+
 def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], list[str]]:
     """Read and type-cast an answer artifact CSV.
 
@@ -121,24 +135,34 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
     if path.stat().st_size > _FROM_CSV_SIZE_LIMIT_BYTES:
         raise ValueError("from_csv exceeds 5MB; split the table or use inline columns/rows")
     try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            raw = list(csv.reader(handle))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ParserWarning)
+            df = pd.read_csv(
+                path,
+                dtype=str,
+                engine="python",
+                index_col=False,
+                keep_default_na=False,
+                na_filter=False,
+            )
     except UnicodeDecodeError as exc:
         raise ValueError(f"from_csv is not valid UTF-8: {exc}") from exc
-    except csv.Error as exc:
+    except EmptyDataError as exc:
+        raise ValueError("from_csv is empty; expected header row + data rows") from exc
+    except ParserWarning as exc:
+        raise ValueError(_from_csv_shape_error(str(exc))) from exc
+    except ParserError as exc:
         raise ValueError(f"failed to parse from_csv: {exc}") from exc
-    if not raw:
-        raise ValueError("from_csv is empty; expected header row + data rows")
-    header, *data = raw
+    header = [str(column) for column in df.columns]
     if not header:
         raise ValueError("from_csv header row is empty")
     width = len(header)
-    for index, row in enumerate(data):
-        if len(row) != width:
-            raise ValueError(f"from_csv row {index} has {len(row)} cells but header has {width}")
+    if df.isna().to_numpy().any():
+        raise ValueError(_from_csv_shape_error("one or more rows have fewer cells than the header"))
+    data = df.astype(str).values.tolist()
     dtypes: list[str] = []
     for col_idx in range(width):
-        column_values = [row[col_idx] for row in data]
+        column_values = df.iloc[:, col_idx].astype(str).tolist()
         dtypes.append(classify_dtype(column_values))
     typed = [_coerce_row(row, dtypes) for row in data]
     return header, typed, dtypes

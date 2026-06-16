@@ -129,6 +129,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed from user-facing docs and submission defaults.
 
 ### Fixed
+- **`from_csv` rejects malformed answer CSVs with rewrite guidance.**
+  The answer parser now uses pandas CSV parsing so quoted commas and
+  embedded newlines are handled consistently, while malformed files whose
+  data rows do not match the header width are rejected with guidance to
+  rewrite the artifact via `DataFrame.to_csv(..., index=False)` and proper
+  text quoting. This keeps terminal answer submission from silently
+  guessing extra columns for structurally invalid CSV files.
 - **Grouping batches are balanced; no more weak tail batch.** Paragraph
   grouping used fixed 40-paragraph strides, so a document's remainder
   became a sub-handful final batch whose numbered-list format anchor was
