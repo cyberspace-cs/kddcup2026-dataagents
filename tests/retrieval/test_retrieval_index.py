@@ -24,7 +24,7 @@ from agents.tools.registry import create_default_tool_registry
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
 
 
-def _make_task(tmp_path: Path, task_id: str | None = None) -> PublicTask:
+def _make_task(tmp_path: Path, task_id: str | None = None, difficulty: str = "hard") -> PublicTask:
     if task_id is None:
         task_id = "task_" + tmp_path.name.replace("-", "_")
     task_dir = tmp_path / "input" / task_id
@@ -34,13 +34,13 @@ def _make_task(tmp_path: Path, task_id: str | None = None) -> PublicTask:
         json.dumps(
             {
                 "task_id": task_id,
-                "difficulty": "hard",
+                "difficulty": difficulty,
                 "question": "What is Angela Sanders's major?",
             }
         )
     )
     return PublicTask(
-        record=TaskRecord(task_id=task_id, difficulty="hard", question="?"),
+        record=TaskRecord(task_id=task_id, difficulty=difficulty, question="?"),
         assets=TaskAssets(task_dir=task_dir, context_dir=context_dir),
     )
 
@@ -146,7 +146,7 @@ def test_retrieval_tools_return_recoverable_disabled_error(tmp_path: Path) -> No
 
 
 def test_runner_attaches_retrieval_index_payload(tmp_path: Path) -> None:
-    task = _make_task(tmp_path, task_id="task_1")
+    task = _make_task(tmp_path, task_id="task_1", difficulty="easy")
     _populate_context(task)
     cfg = AppConfig(
         dataset=DatasetConfig(root_path=tmp_path / "input"),

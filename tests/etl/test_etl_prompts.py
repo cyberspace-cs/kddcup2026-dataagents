@@ -251,9 +251,9 @@ No field table here, only prose.
 
 
 def test_km_table_fields_parses_backticked_table() -> None:
-    from agents.etl.extractor import _km_table_fields
+    from agents.etl.knowledge import km_table_fields
 
-    fields = _km_table_fields(_KM_FIXTURE, "ed_bs")
+    fields = km_table_fields(_KM_FIXTURE, "ed_bs")
     assert fields == {
         "totalassets": "Aggregate assets",
         "totalliabilities": "Aggregate liabilities",
@@ -261,7 +261,7 @@ def test_km_table_fields_parses_backticked_table() -> None:
 
 
 def test_km_table_fields_parses_chinese_table() -> None:
-    from agents.etl.extractor import _km_table_fields
+    from agents.etl.knowledge import km_table_fields
 
     km = (
         "### 2.2 国内生产总值 (Gross Domestic Product)\n\n"
@@ -270,14 +270,14 @@ def test_km_table_fields_parses_chinese_table() -> None:
         "| 国内生产总值(百万元) | China's GDP in millions of RMB. |\n"
         "| 人均国内生产总值(元/人) | Per capita GDP. |\n"
     )
-    fields = _km_table_fields(km, "国内生产总值")
+    fields = km_table_fields(km, "国内生产总值")
     assert "国内生产总值(百万元)" in fields
     assert "人均国内生产总值(元/人)" in fields
 
 
 def test_km_table_fields_rejects_substring_stem_anchor() -> None:
     """`mf_netvalue` must not anchor inside `mf_netvalueperformancehis`."""
-    from agents.etl.extractor import _km_table_fields
+    from agents.etl.knowledge import km_table_fields
 
     km = (
         "### 2.8 Net Value Performance History (`mf_netvalueperformancehis`)\n\n"
@@ -285,16 +285,16 @@ def test_km_table_fields_rejects_substring_stem_anchor() -> None:
         "|---|---|\n"
         "| `nvdailygrowthrate` | Daily growth rate |\n"
     )
-    assert _km_table_fields(km, "mf_netvalue") == {}
+    assert km_table_fields(km, "mf_netvalue") == {}
 
 
 def test_km_table_fields_retries_next_heading_and_skips_junk_cells() -> None:
     """A table-less heading falls through to the next matching one; prose-like
     cells (`a` vs `b`) never become columns."""
-    from agents.etl.extractor import _km_table_fields
+    from agents.etl.knowledge import km_table_fields
 
     km = "### 1.1 Overview of `ed_bs`\n\nProse only here.\n\n" + _KM_FIXTURE
-    fields = _km_table_fields(km, "ed_bs")
+    fields = km_table_fields(km, "ed_bs")
     assert sorted(fields) == ["totalassets", "totalliabilities"]
     # the disambiguation table's "`totalassets` vs `netabroadassets`" cell
     # must never parse as a column even if that section were matched

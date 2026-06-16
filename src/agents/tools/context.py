@@ -31,18 +31,10 @@ def build_virtual_context(task: PublicTask) -> Path:
     real_context = task.context_dir.resolve()
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
 
-    etl_stems: set[str] = set()
-    if etl_dir.is_dir():
-        etl_stems = {f.stem for f in etl_dir.iterdir() if f.suffix == ".csv"}
-
     for child in real_context.rglob("*"):
         if not child.is_file():
             continue
-        if (
-            child.suffix.lower() in {".md", ".pdf"}
-            and child.name.lower() != "knowledge.md"
-            and child.stem in etl_stems
-        ):
+        if child.suffix.lower() in {".md", ".pdf"} and child.name.lower() != "knowledge.md":
             continue
         rel = child.relative_to(real_context)
         dest = virtual_dir / rel
