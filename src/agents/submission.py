@@ -2,8 +2,8 @@
 
 Each task goes through `agents.runs.runner.run_single_task` — the exact same
 path the on-laptop CLI (`dabench run-task` / `run-benchmark`) uses. That path
-owns the full pre-agent sequence (ETL extraction → virtual context →
-retrieval index), subprocess hard timeout, and prediction.csv writing; routing
+owns the full pre-agent sequence (ETL extraction → virtual context),
+subprocess hard timeout, and prediction.csv writing; routing
 the container through it guarantees the judged run behaves like the local
 rehearsal instead of silently skipping the preprocessing stages.
 
@@ -133,7 +133,7 @@ def _build_config(input_root: Path) -> AppConfig:
 def _run_one_task(config: AppConfig, task_id: str, output_root: Path, logs_root: Path) -> bool:
     """Run a single task through the shared runner; return True if prediction.csv landed.
 
-    `run_single_task` owns ETL → virtual context → retrieval index →
+    `run_single_task` owns ETL → virtual context →
     subprocess hard timeout → prediction.csv, identical to the CLI path.
     """
     task_started = time.monotonic()

@@ -26,8 +26,6 @@ EXPECTED_REQUIRED: dict[str, set[str]] = {
     "read_csv": {"path"},
     "read_json": {"path"},
     "read_doc": {"path"},
-    "search_context": {"query"},
-    "lookup_field": {"term"},
     "inspect_sqlite_schema": {"path"},
     "execute_context_sql": {"path", "sql"},
     "execute_python": {"code"},

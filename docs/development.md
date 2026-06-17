@@ -72,8 +72,7 @@ src/agents/
 ├── runs/                        # Runner, subprocess isolation, artifact writing
 ├── tracing/                     # Trace/span capture and SQLite store
 ├── dashboard/                   # FastAPI traces dashboard backend
-├── etl/                         # Optional prose-to-CSV ETL helpers
-└── retrieval/                   # Task-local retrieval index
+└── etl/                         # Optional prose-to-CSV ETL helpers
 ```
 
 The dashboard frontend source lives outside the Python package under

@@ -99,8 +99,6 @@ The agent calls into the default tool inventory (registered in `src/agents/tools
 | `read_csv` | `path` |
 | `read_json` | `path` |
 | `read_doc` | `path`, `start_line`, `line_count`, `keyword` |
-| `search_context` | `query`, `path`, `limit` |
-| `lookup_field` | `term`, `limit` |
 | `inspect_sqlite_schema` | `path` |
 | `execute_context_sql` | `path`, `sql`, `limit` |
 | `execute_python` | `code` |

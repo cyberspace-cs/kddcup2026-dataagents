@@ -39,6 +39,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Sub-agent `report` payloads are now validated at the registry boundary**
   (`ToolDefinition.input_model`), with a 64 KB serialized-size backstop for the
   video report.
+- **ETL LLM calls cap output tokens and reserve a smaller rate-limit budget.**
+  The ETL text adapter (`_make_text_adapter`) now sets a dedicated `max_tokens`
+  ceiling and, when rate limiting is on, pre-deducts a smaller
+  `reserve_output_tokens` than the global agent budget. ETL outputs (compressed
+  entity lines, schema) are far smaller than the ReAct
+  loop's; the global reserve (8192/16384) inflated per-call TPM pre-deductions,
+  so several concurrent ETL workers throttled each other against the shared
+  per-key token bucket for tokens they never used. Output above the smaller
+  reserve is reconciled against actual usage inside `complete()`, so no quota is
+  lost. `direct_extract` CSVs (which can exceed the ceiling) are out of scope
+  for this pass.
 
 ### Changed
 - **Explorer `value_samples` field description disallows non-tabular keys.**
@@ -58,7 +69,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no-compiler builder stage still holds.
 - **The container entrypoint runs the full CLI task pipeline.** Each
   `agents.submission` task now goes through `run_single_task` — ETL
-  extraction, virtual context, retrieval index, subprocess hard timeout,
+  extraction, virtual context, subprocess hard timeout,
   prediction.csv writing — identical to `dabench run-benchmark`.
   Previously the container hand-assembled the agent and silently skipped
   the preprocessing stages. The per-task timeout derives from the global
@@ -140,6 +151,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed from user-facing docs and submission defaults.
 
 ### Removed
+- **Local retrieval index subsystem.** The `run.retrieval_index` config
+  block and the `search_context` / `lookup_field` agent tools are gone.
+  The index was disabled by default and never used in production runs; the
+  explorer's direct file inspection covers the same ground. A config that
+  still sets `run.retrieval_index` is now rejected as an unknown field, and
+  per-task `summary.json` entries no longer carry a `retrieval_index` key.
 - **ETL code-generation fallback.** When deterministic and direct-LLM
   extraction both fail — or the compressed text exceeds the
   direct-extraction size limit — prose ETL now yields no CSV for that

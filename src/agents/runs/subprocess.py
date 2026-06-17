@@ -112,21 +112,6 @@ def run_single_task_core(
             assets=TaskAssets(task_dir=task.task_dir, context_dir=virtual_ctx),
         )
 
-        retrieval_index: dict[str, Any] | None = None
-        try:
-            from agents.retrieval.index import prepare_task_retrieval_index
-
-            retrieval_index = prepare_task_retrieval_index(task, config.run.retrieval_index)
-        except Exception as exc:
-            if config.run.retrieval_index.enabled:
-                retrieval_index = {
-                    "enabled": True,
-                    "built": False,
-                    "cache_hit": False,
-                    "task_id": task.task_id,
-                    "error": str(exc),
-                }
-
         _agent_span = None
         if _trace_ctx is not None:
             from agents.tracing.create import agent_span as _create_agent_span
@@ -151,8 +136,6 @@ def run_single_task_core(
 
             shutil.rmtree(ETL_SCRATCH_ROOT / task_id / "context", ignore_errors=True)
 
-        if retrieval_index is not None:
-            result["retrieval_index"] = retrieval_index
         return result
     finally:
         if _trace_ctx is not None:
@@ -162,23 +145,6 @@ def run_single_task_core(
 
             _gtp().unregister_processor(_processor)
             _processor.shutdown()
-
-
-def _attach_retrieval_index_payload(
-    payload: dict[str, Any], *, task_id: str, config: AppConfig
-) -> dict[str, Any]:
-    """Attach retrieval metadata to timeout/crash payloads when retrieval was enabled."""
-    if not config.run.retrieval_index.enabled or "retrieval_index" in payload:
-        return payload
-    try:
-        from agents.retrieval.index import load_task_index_metadata_by_id
-
-        metadata = load_task_index_metadata_by_id(task_id)
-    except Exception:
-        metadata = None
-    if isinstance(metadata, dict) and metadata.get("enabled"):
-        payload["retrieval_index"] = metadata
-    return payload
 
 
 def _mark_running_trace_error(task_id: str, config: AppConfig, failure_reason: str) -> None:
@@ -289,13 +255,9 @@ def run_single_task_with_timeout(
         if result.get("ok"):
             # dict(...) 拷贝一次，脱离 Queue 的底层 pickle 壳
             return dict(result["run_result"])
-        return _attach_retrieval_index_payload(
-            crash_payload(
-                task_id,
-                f"Task failed with uncaught error: {result['error']}",
-            ),
-            task_id=task_id,
-            config=config,
+        return crash_payload(
+            task_id,
+            f"Task failed with uncaught error: {result['error']}",
         )
 
     # Case 1: 超时 —— 先 SIGTERM 给清理机会，1 秒仍不退就 SIGKILL
@@ -307,11 +269,7 @@ def run_single_task_with_timeout(
             process.join()
         payload = timeout_payload(task_id, timeout_seconds)
         _mark_running_trace_error(task_id, config, payload["failure_reason"])
-        return _attach_retrieval_index_payload(
-            payload,
-            task_id=task_id,
-            config=config,
-        )
+        return payload
 
     # Case 2: 进程已退出但没 put 任何结果
     exit_code = process.exitcode
@@ -321,16 +279,8 @@ def run_single_task_with_timeout(
             f"Task exited unexpectedly with exit code {exit_code}.",
         )
         _mark_running_trace_error(task_id, config, payload["failure_reason"])
-        return _attach_retrieval_index_payload(
-            payload,
-            task_id=task_id,
-            config=config,
-        )
+        return payload
     # 退出码 0 但 Queue 空：逻辑异常（理论上不会发生，留个明确错误信息）
     payload = crash_payload(task_id, "Task exited without returning a result.")
     _mark_running_trace_error(task_id, config, payload["failure_reason"])
-    return _attach_retrieval_index_payload(
-        payload,
-        task_id=task_id,
-        config=config,
-    )
+    return payload

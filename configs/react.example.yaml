@@ -62,12 +62,6 @@ run:
   run_id: null                             # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`
   max_workers: 4                           # int >= 1; 8 with dual-key keeps throughput high
   task_timeout_seconds: 600                # int；<= 0 关闭单任务超时
-  retrieval_index:
-    enabled: false                          # bool；启用后 runner 在 ETL 后构建 SQLite FTS5 索引
-    cache_dir: artifacts/indexes           # 相对路径以 PROJECT_ROOT 为基锚定
-    max_chunk_chars: 3200                  # int >= 200；文本分块上限
-    chunk_overlap_lines: 2                 # int >= 0；相邻 chunk 重叠行数
-    max_results: 16                         # int >= 1；search_context / lookup_field 返回上限
 
   # 跳过名单：问题歧义 / gold 错误 / 数据缺失的题，提交时移除不影响评分。
   blocklist:
