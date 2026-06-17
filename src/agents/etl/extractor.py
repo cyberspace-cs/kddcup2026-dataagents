@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import dataclasses
 import json
 import logging
 import math
@@ -68,6 +69,12 @@ logger = logging.getLogger(__name__)
 _MAX_WORKERS = 4
 _LLM_CALL_TIMEOUT = 180
 _ETL_HTTP_TIMEOUT = 300.0
+# ETL 输出都是结构化结果（压缩实体行 / schema / 抽取脚本），远小于 ReAct 主循环的
+# 输出预算：用 ETL 专属上限收紧生成，并让限流预扣按此量级（而非全局
+# reserve_output_tokens）计费，降低并发时的 TPM 虚占。direct_extract 的大 CSV 暂不
+# 在此范围内（reserve 偏小时由 complete() 的实际 usage 对账补扣，不会丢配额）。
+_ETL_MAX_OUTPUT_TOKENS = 4096
+_ETL_RESERVE_OUTPUT_TOKENS = 2048
 _DIRECT_EXTRACT_CHAR_LIMIT = 60_000
 _LOCAL_RECORD_ID_RE = re.compile(
     rf"(?:{RECORD_ID_KEYWORDS})\s*[：:#-]?\s*(\d{{1,8}})",
@@ -1384,6 +1391,7 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
         api_base=api_base,
         api_key=api_key,
         temperature=0.1,
+        max_tokens=_ETL_MAX_OUTPUT_TOKENS,
         enable_thinking=None if is_deepseek else False,
         thinking_mode="disabled" if is_deepseek else None,
         backend_kind=backend_kind,
@@ -1398,7 +1406,10 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
         inner = RateLimitedAdapter(
             inner=inner,
             api_key=rate_limit_key,
-            rate_limit=rate_limit_cfg,
+            # ETL 用更小的 reserve 预扣；少数超出的输出靠 complete() 的 usage 对账补扣。
+            rate_limit=dataclasses.replace(
+                rate_limit_cfg, reserve_output_tokens=_ETL_RESERVE_OUTPUT_TOKENS
+            ),
         )
 
     if traced:
