@@ -9,7 +9,7 @@ Pipeline (when knowledge.md schema is available):
   4. **Deterministic CSV** — Python parses normalized KV lines into CSV
      (no LLM needed).
 
-Fallback (no schema): LLM direct extraction → code-generation.
+Fallback (no schema): LLM direct extraction.
 """
 
 from __future__ import annotations
@@ -28,14 +28,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agents.config import ETL_SCRATCH_ROOT
-from agents.etl._codegen import (
-    MAX_RETRIES,
-    build_codegen_prompt,
-    build_retry_prompt,
-    call_llm,
-    exec_code,
-    extract_code_block,
-)
 from agents.etl._compress import (
     compress_prose,
     direct_extract_csv,
@@ -1434,7 +1426,7 @@ def extract_prose_file(
     """Extract structured data from a prose file.
 
     Pipeline: compress → pre-merge → normalize → deterministic CSV.
-    Fallback: LLM direct extraction → code-gen.
+    Fallback: LLM direct extraction.
     """
     primary_key = anchor_keys[0] if anchor_keys else None
 
@@ -1581,43 +1573,14 @@ def extract_prose_file(
             result = _finalize("direct")
             if result:
                 return result
-        logger.warning("ETL direct extraction failed, falling back to code-gen")
-
-    # ---- Phase 2c: code-generation fallback (on compressed file) ----
-    entity_lines = [
-        ln.strip() for ln in compressed.splitlines() if ln.strip() and not ln.startswith("#")
-    ]
-    sample_text = "\n".join(entity_lines[:5] + (["..."] if len(entity_lines) > 5 else []))
-
-    prompt = build_codegen_prompt(
-        compressed_path,
-        csv_path,
-        sample_text,
-        len(entity_lines),
-        schema_columns,
-        task.question,
-    )
-
-    code = ""
-    for attempt in range(MAX_RETRIES + 1):
-        raw = call_llm(adapter, prompt)
-        code = extract_code_block(raw)
-        ok, output = exec_code(code)
-        if ok:
-            logger.info("ETL code exec succeeded (attempt %d): %s", attempt + 1, output[:200])
-            break
-        logger.warning("ETL code exec failed (attempt %d): %s", attempt + 1, output[:300])
-        if attempt < MAX_RETRIES:
-            prompt = build_retry_prompt(code, output)
+        logger.warning("ETL direct extraction failed")
     else:
-        logger.error("ETL code generation failed after %d attempts", MAX_RETRIES + 1)
-        return None
-
-    result = _finalize("codegen")
-    if not result:
-        logger.error("ETL code ran but CSV is empty or missing: %s", csv_path)
-        return None
-    return result
+        logger.warning(
+            "ETL direct extraction skipped: compressed text too large (%d > %d chars)",
+            len(compressed),
+            _DIRECT_EXTRACT_CHAR_LIMIT,
+        )
+    return None
 
 
 def run_etl_for_task(

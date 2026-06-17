@@ -43,7 +43,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The ETL text adapter (`_make_text_adapter`) now sets a dedicated `max_tokens`
   ceiling and, when rate limiting is on, pre-deducts a smaller
   `reserve_output_tokens` than the global agent budget. ETL outputs (compressed
-  entity lines, schema, extraction scripts) are far smaller than the ReAct
+  entity lines, schema) are far smaller than the ReAct
   loop's; the global reserve (8192/16384) inflated per-call TPM pre-deductions,
   so several concurrent ETL workers throttled each other against the shared
   per-key token bucket for tokens they never used. Output above the smaller
@@ -157,6 +157,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   explorer's direct file inspection covers the same ground. A config that
   still sets `run.retrieval_index` is now rejected as an unknown field, and
   per-task `summary.json` entries no longer carry a `retrieval_index` key.
+- **ETL code-generation fallback.** When deterministic and direct-LLM
+  extraction both fail — or the compressed text exceeds the
+  direct-extraction size limit — prose ETL now yields no CSV for that
+  file instead of prompting the model to write a Python extraction
+  script and executing it in a subprocess. Drops an unsandboxed
+  code-execution path and up to three extra LLM calls (one attempt plus
+  two retries) per failing file.
 
 ### Fixed
 - **`answer` artifact-exists error wins over the inline-threshold error.**
