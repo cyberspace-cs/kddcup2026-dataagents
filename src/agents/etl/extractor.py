@@ -8,8 +8,6 @@ Pipeline (when knowledge.md schema is available):
   3. **Normalize** — reorder fields to match schema, drop unknowns.
   4. **Deterministic CSV** — Python parses normalized KV lines into CSV
      (no LLM needed).
-
-Fallback (no schema): LLM direct extraction.
 """
 
 from __future__ import annotations
@@ -30,7 +28,6 @@ from typing import TYPE_CHECKING, Any
 from agents.config import ETL_SCRATCH_ROOT
 from agents.etl._compress import (
     compress_prose,
-    direct_extract_csv,
     sample_paragraphs_by_section,
 )
 from agents.etl._detect import (
@@ -61,13 +58,12 @@ logger = logging.getLogger(__name__)
 _MAX_WORKERS = 4
 _LLM_CALL_TIMEOUT = 180
 _ETL_HTTP_TIMEOUT = 300.0
-# ETL 输出都是结构化结果（压缩实体行 / schema / 抽取脚本），远小于 ReAct 主循环的
-# 输出预算：用 ETL 专属上限收紧生成，并让限流预扣按此量级（而非全局
-# reserve_output_tokens）计费，降低并发时的 TPM 虚占。direct_extract 的大 CSV 暂不
-# 在此范围内（reserve 偏小时由 complete() 的实际 usage 对账补扣，不会丢配额）。
+# ETL 输出都是结构化结果（压缩实体行 / schema），远小于 ReAct 主循环的输出预算：
+# 用 ETL 专属上限收紧生成，并让限流预扣按此量级（而非全局 reserve_output_tokens）
+# 计费，降低并发时的 TPM 虚占。reserve 偏小时由 complete() 的实际 usage 对账补扣，
+# 不会丢配额。
 _ETL_MAX_OUTPUT_TOKENS = 4096
 _ETL_RESERVE_OUTPUT_TOKENS = 2048
-_DIRECT_EXTRACT_CHAR_LIMIT = 60_000
 _LOCAL_RECORD_ID_RE = re.compile(
     rf"(?:{RECORD_ID_KEYWORDS})\s*[：:#-]?\s*(\d{{1,8}})",
     re.IGNORECASE,
@@ -1426,7 +1422,6 @@ def extract_prose_file(
     """Extract structured data from a prose file.
 
     Pipeline: compress → pre-merge → normalize → deterministic CSV.
-    Fallback: LLM direct extraction.
     """
     primary_key = anchor_keys[0] if anchor_keys else None
 
@@ -1555,31 +1550,7 @@ def extract_prose_file(
             result = _finalize("deterministic")
             if result:
                 return result
-            logger.warning("ETL deterministic extraction produced invalid CSV, falling back")
-
-    # ---- Phase 2b: LLM extraction (if compressed text is small enough) ----
-    if len(compressed) <= _DIRECT_EXTRACT_CHAR_LIMIT:
-        logger.info("ETL: attempting LLM CSV extraction from compressed text")
-        csv_text = direct_extract_csv(
-            adapter,
-            compressed,
-            schema_columns,
-            task.question,
-            primary_key=primary_key,
-            schema_field_types=schema_field_types,
-        )
-        if csv_text:
-            csv_path.write_text(csv_text, encoding="utf-8")
-            result = _finalize("direct")
-            if result:
-                return result
-        logger.warning("ETL direct extraction failed")
-    else:
-        logger.warning(
-            "ETL direct extraction skipped: compressed text too large (%d > %d chars)",
-            len(compressed),
-            _DIRECT_EXTRACT_CHAR_LIMIT,
-        )
+            logger.warning("ETL deterministic extraction produced invalid CSV")
     return None
 
 
