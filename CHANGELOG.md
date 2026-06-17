@@ -139,6 +139,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `configs/react.local.yaml`. The old config naming has been
   removed from user-facing docs and submission defaults.
 
+### Removed
+- **ETL code-generation fallback.** When deterministic and direct-LLM
+  extraction both fail — or the compressed text exceeds the
+  direct-extraction size limit — prose ETL now yields no CSV for that
+  file instead of prompting the model to write a Python extraction
+  script and executing it in a subprocess. Drops an unsandboxed
+  code-execution path and up to three extra LLM calls (one attempt plus
+  two retries) per failing file.
+
 ### Fixed
 - **`answer` artifact-exists error wins over the inline-threshold error.**
   When the model has already written `_answer/answer.csv` and then submits
