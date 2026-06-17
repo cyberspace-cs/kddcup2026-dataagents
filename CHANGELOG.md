@@ -48,8 +48,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so several concurrent ETL workers throttled each other against the shared
   per-key token bucket for tokens they never used. Output above the smaller
   reserve is reconciled against actual usage inside `complete()`, so no quota is
-  lost. `direct_extract` CSVs (which can exceed the ceiling) are out of scope
-  for this pass.
+  lost.
 
 ### Changed
 - **Explorer `value_samples` field description disallows non-tabular keys.**

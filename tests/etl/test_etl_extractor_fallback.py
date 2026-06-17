@@ -9,11 +9,11 @@ from agents.etl import extractor
 from agents.llm import ModelMessage, ModelResponse
 
 
-class NoGeneratedCodeAdapter:
+class NoFallbackAdapter:
     def complete(
         self, messages: list[ModelMessage], *, tools: object | None = None
     ) -> ModelResponse:
-        raise AssertionError("ETL should not fall back to generated Python code")
+        raise AssertionError("ETL should not make any post-compression LLM CSV calls")
 
 
 def _make_task(tmp_path: Path) -> PublicTask:
@@ -26,7 +26,7 @@ def _make_task(tmp_path: Path) -> PublicTask:
     )
 
 
-def test_extract_prose_file_stops_after_direct_extraction_failure(
+def test_extract_prose_file_stops_when_deterministic_csv_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     task = _make_task(tmp_path)
@@ -37,13 +37,12 @@ def test_extract_prose_file_stops_after_direct_extraction_failure(
         lambda *_args, **_kwargs: "id: 1 | value: source",
     )
     monkeypatch.setattr(extractor, "deterministic_kv_to_csv", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(extractor, "direct_extract_csv", lambda *_args, **_kwargs: None)
 
     prose_path = task.context_dir / "patient.md"
     prose_path.write_text("ID 1 has value source.", encoding="utf-8")
 
     result = extractor.extract_prose_file(
-        NoGeneratedCodeAdapter(),
+        NoFallbackAdapter(),
         prose_path,
         task,
         prose_path.read_text(encoding="utf-8"),
