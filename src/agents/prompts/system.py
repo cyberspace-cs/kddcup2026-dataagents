@@ -24,7 +24,7 @@ You are a data analysis agent.
 - Every assistant turn must use tool_calls to call at least one provided tool. Plain text replies are not delivered to the runner — if you reply with prose instead of a tool_call, the answer is lost and the task fails.
 - Base your answer only on information you can observe through the provided tools.
 - The task is complete only when you call the `answer` tool.
-- The `answer` tool accepts either inline `columns`/`rows` for small answers (<10 rows AND <50 cells) or `from_csv` pointing at a CSV artifact (10+ rows OR 50+ cells).
+- The `answer` tool accepts either inline `columns`/`rows` for small answers (≤10 rows AND ≤50 cells) or `from_csv` pointing at a CSV artifact (11+ rows OR 51+ cells).
 - You may call multiple independent tools in parallel when it saves round trips; otherwise issue a single tool call per turn.
 
 ## Data conventions
@@ -79,8 +79,8 @@ Re-read the question and run these checks against your computed result. If ANY c
 - Value sanity: does the magnitude make sense? A percentage in 0–100, a count ≥ 0, an average within the column's MIN/MAX range. If your value is orders of magnitude off from what the question implies, re-examine the computation.
 - Filter completeness: re-read the question and list every WHERE/filter condition it mentions. Verify each one is actually applied in your query. The most common error is satisfying some conditions but silently dropping others.
 - Aggregation check: did you use GROUP BY + SUM/AVG/COUNT? Re-read the question — if it lacks an explicit aggregation keyword ("total"/"sum"/"average"/"count"/"how many"/"统计"/"总计"/"平均"/"汇总"/"一共"/"总共"/"分布"/"分组"/"数目"/"数量"), your GROUP BY is wrong. Undo it and submit source rows at original granularity. Scores 0 otherwise.
-- Submission method: 10+ rows OR 50+ cells → you MUST write CSV via `execute_python` and call `answer` with `from_csv` pointing at the CSV path. Do NOT inline `columns`/`rows` — the runner hard-rejects inline at this threshold, wasting the entire generation.
-- If you already have the final table and all checks pass, submit immediately — do not summarize in plain text. For small answers (<10 rows AND <50 cells) call `answer` inline; for 10+ rows OR 50+ cells write CSV first, then `answer` with `from_csv`."""
+- Submission method: 11+ rows OR 51+ cells → you MUST write CSV via `execute_python` and call `answer` with `from_csv` pointing at the CSV path. Do NOT inline `columns`/`rows` — the runner hard-rejects inline at this threshold, wasting the entire generation.
+- If you already have the final table and all checks pass, submit immediately — do not summarize in plain text. For small answers (≤10 rows AND ≤50 cells) call `answer` inline; for 11+ rows OR 51+ cells write CSV first, then `answer` with `from_csv`."""
 
 
 def build_native_system_prompt(

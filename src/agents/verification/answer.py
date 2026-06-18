@@ -33,8 +33,9 @@ Run these checks IN ORDER and report the FIRST failure found:
 
 Check 1 — EXTRA columns:
 Is any column NOT requested by the question?  Common mistakes:
-- Row-ID / primary-key columns (id, CustomerID, PostId, …) when the
-  question does not ask for identifiers.
+- Row-ID / primary-key / code / rank columns (id, CustomerID, PostId,
+  基金代码, fund_code, ticker, stock_code, 排名, rank, 序号, …) when
+  the question does not ask for identifiers or rankings.
 - Filter / WHERE columns whose value is constant across all rows.
 - Join-key columns needed for computation but not for the answer.
 - Source-table dimension columns (Province, Date, EndDate, Year, Region,
@@ -113,10 +114,21 @@ rebuild keeping NULL rows; filter only on identity/key columns.
 NULL filters on non-submitted columns and inside aggregates
 (AVG/SUM/COUNT...) are fine — say "ok".
 
+Check 6 — UNIT SUFFIX in cell values:
+Scan the SAMPLE ROWS for numeric cells that carry a unit suffix —
+common suffixes: %, 万, 亿, 元, USD, kg, km, m², etc.  A cell like
+"48.706%" or "3.5万" is WRONG — the column name may contain the unit
+indicator (e.g., "收益率(%)"), but every cell value MUST be a bare
+number (e.g., 48.706).  The grader compares normalized numeric values;
+a trailing suffix causes a hash mismatch and scores 0.
+If ANY numeric cell in the sample contains a unit suffix, reject with
+check="unit_suffix" and instruct: "Strip the unit suffix from cell
+values — column names keep the unit, cells must be bare numbers."
+
 Reply with a JSON object (no markdown fence):
 {"verdict": "ok"} — all checks pass.
-{"verdict": "reject", "check": "extra|missing|row_count|value|null_filter", \
-"reason": "one-sentence diagnosis with concrete fix instruction"}
+{"verdict": "reject", "check": "extra|missing|row_count|value|null_filter|unit_suffix", \
+"reason": "<25 words: name the bad columns/values and the fix, no reasoning>"}
 
 Be conservative: when in doubt, say "ok".  Only reject when you are
 confident the answer violates one of the checks above: extra/missing

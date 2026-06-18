@@ -190,27 +190,27 @@ def test_dispatch_answer_xor_violation_is_rejected(task: PublicTask) -> None:
 
 
 def test_dispatch_answer_inline_row_threshold_is_rejected(task: PublicTask) -> None:
-    """10 行 inline rows → 触发硬闸；模型必须改走 from_csv。
+    """11 行 inline rows → 触发硬闸；模型必须改走 from_csv。
 
     回归 run 20260430-015 task_8：execute_python 已写出正确的 140 行 CSV，但模型
     在 answer 工具调用里把 rows 自抄了一遍，长结构化生成出现 attention drift，
     多吐 3 行幻觉 + 57 行 amount 串味。INLINE_ANSWER_ROW_LIMIT 切断这条退路。
     """
     registry = create_default_tool_registry()
-    call = _call("answer", columns=["x"], rows=[[i] for i in range(10)])
+    call = _call("answer", columns=["x"], rows=[[i] for i in range(11)])
 
     with pytest.raises(
         ValueError,
         match=(
             r"^inline rows payload exceeds artifact-handoff threshold "
-            r"\(got 10 rows, 10 cells; threshold = 10 rows or 50 cells\)"
+            r"\(got 11 rows, 11 cells; threshold = 11 rows or 51 cells\)"
         ),
     ):
         dispatch_tool_call(task, call, registry)
 
 
 def test_dispatch_answer_inline_cell_threshold_is_rejected(task: PublicTask) -> None:
-    """9 行 × 6 列 = 54 cells → 即使行数没到 10，单元格量超阈值同样硬闸。
+    """9 行 × 6 列 = 54 cells → 即使行数没到 11，单元格量超阈值同样硬闸。
 
     覆盖宽表场景（如 task_4 风格的 schema dump）：少行多列同样会触发幻觉。
     """
@@ -223,7 +223,7 @@ def test_dispatch_answer_inline_cell_threshold_is_rejected(task: PublicTask) -> 
         ValueError,
         match=(
             r"^inline rows payload exceeds artifact-handoff threshold "
-            r"\(got 9 rows, 54 cells; threshold = 10 rows or 50 cells\)"
+            r"\(got 9 rows, 54 cells; threshold = 11 rows or 51 cells\)"
         ),
     ):
         dispatch_tool_call(task, call, registry)
