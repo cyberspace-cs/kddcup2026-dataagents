@@ -62,6 +62,15 @@ def test_system_prompts_use_runtime_clock_for_current_year() -> None:
     assert "do not infer the current year from the latest date in the dataset" in lower
 
 
+def test_sqlite_index_prompt_matches_sqlite_plan_output() -> None:
+    prompt = build_native_system_prompt()
+
+    assert "SCAN <table>" in prompt
+    assert "SCAN TABLE" not in prompt
+    assert "idx_<table>_<col>" in prompt
+    assert "idx_<col>" not in prompt
+
+
 # ---------- build_observation_prompt: ok parameter & recovery hints ----------
 
 

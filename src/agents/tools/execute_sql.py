@@ -63,6 +63,13 @@ def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str
     try:
         with connect_read_only(path) as conn:
             warnings = _validate_columns(conn, sql)
+            if warnings:
+                raise ValueError(
+                    "Unsafe SQL subquery column reference: "
+                    + " | ".join(warnings)
+                    + " Re-check the schema and select a column that exists in the "
+                    "subquery table before running this query."
+                )
             cursor = conn.execute(sql)
             column_names = [item[0] for item in cursor.description or []]
             rows = cursor.fetchmany(limit + 1)
@@ -145,7 +152,8 @@ def execute_context_sql(
     can be answered with SQL queries or aggregations. Call
     inspect_sqlite_schema first for an unknown database.
     For large tables (>5000 rows), run EXPLAIN QUERY PLAN to check for full
-    scans, then CREATE INDEX on filter/join columns before querying.
+    scans, then CREATE INDEX IF NOT EXISTS idx_<table>_<col> on filter/join
+    columns before querying.
     do NOT call on `.csv` / `.json` / `.md` / `.txt` paths."""
     resolved = resolve_context_path(task, path)
     content = execute_read_only_sql(resolved, sql, limit=limit)

@@ -331,23 +331,30 @@ def test_validate_subquery_columns_unknown_table_ignored() -> None:
     assert warnings == []
 
 
-def test_column_validation_integrated_in_execute(tmp_path: Path) -> None:
-    """Column validation warnings appear in execute_read_only_sql results."""
+def test_column_validation_blocks_query_before_execution(tmp_path: Path) -> None:
+    """Invalid subquery columns fail hard before SQLite returns poisoned rows."""
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount REAL)")
+    conn.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER)")
     conn.execute("CREATE TABLE customers (id INTEGER, name TEXT)")
-    conn.execute("INSERT INTO orders VALUES (1, 10, 99.9)")
+    conn.execute("INSERT INTO orders VALUES (1, 10)")
+    conn.execute("INSERT INTO orders VALUES (2, 999)")
     conn.execute("INSERT INTO customers VALUES (10, 'Alice')")
     conn.commit()
     conn.close()
 
-    result = execute_read_only_sql(
-        db_path,
-        "SELECT * FROM orders WHERE customer_id IN (SELECT customer_id FROM customers)",
-    )
-    assert "warning" in result
-    assert "customer_id" in result["warning"]
+    with pytest.raises(ValueError) as exc_info:
+        execute_read_only_sql(
+            db_path,
+            "SELECT id FROM orders "
+            "WHERE customer_id IN (SELECT customer_id FROM customers) "
+            "ORDER BY id",
+        )
+
+    msg = str(exc_info.value)
+    assert "Unsafe SQL subquery column reference" in msg
+    assert "customer_id" in msg
+    assert "customers" in msg
 
 
 # ---------------------------------------------------------------------------
