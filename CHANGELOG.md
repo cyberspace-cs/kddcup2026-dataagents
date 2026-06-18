@@ -51,6 +51,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lost.
 
 ### Changed
+- **`parse_answer_csv` rescues narrow headers caused by full-width commas.**
+  When `pd.read_csv` reports a header/data width mismatch, the parser retries
+  once after replacing unquoted full-width commas `，` in the header row only.
+  Data cells and other full-width punctuation are not rewritten.
+- **`execute_python` subprocess stdout/stderr hardcoded to UTF-8.**
+  Previously inherited the parent process's encoding (GBK on Windows), making
+  Chinese output unreadable to the model. Now the model can see what it wrote
+  and self-correct encoding issues.
+- **Prompt: CSV artifact rule bans hand-written CSV and full-width commas.**
+  Adds `NEVER hand-write CSV with string concatenation — use DataFrame.to_csv`
+  to the artifact handoff rule in `DATA_OUTPUT_RULES`.
 - **`inspect_files` points video files at `explore_video`, not `execute_python`.**
   The `UNSUPPORTED_HINT_BY_EXT` table now maps every extension in
   `agents.runtime.media.VIDEO_EXTENSIONS` (`.mp4`/`.m4v`/`.avi`/`.mov`/`.mkv`/

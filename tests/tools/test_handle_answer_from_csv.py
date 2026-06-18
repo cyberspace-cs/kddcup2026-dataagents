@@ -404,28 +404,91 @@ def test_fallback_builder_rejects_inline_over_threshold(task: PublicTask) -> Non
     assert build_answer_table_without_side_effects(task, arguments) is None
 
 
-def test_from_csv_rejects_wide_rows_with_rewrite_hint(task: PublicTask, tmp_path: Path) -> None:
-    """数据行比 header 更宽时拒绝提交，并提示模型重写 CSV。
+def test_from_csv_normalizes_fullwidth_comma_in_header(task: PublicTask, tmp_path: Path) -> None:
+    """Header 含全角逗号 `，` → 归一化为半角后正常解析，列名保持原样。
 
-    这类 CSV 往往来自手写 header 漏列、忘记 `index=False` 附近的拼接错误，
-    或文本字段含逗号但没有 quote。`answer` 是 terminal tool，不能静默补
-    `col_<i>` 猜测修复，否则会把坏表直接提交成终局答案。
+    回归参照 run 20260614-011/task_39：模型 header 行用全角逗号、数据行用半角。
     """
     csv_path = _write(
-        tmp_path / "_answer" / "wide_rows.csv",
-        "fund_name\n中融煤炭,48.706\n富国煤炭A,48.706\n平安新能源汽车ETF,42.881\n",
+        tmp_path / "_answer" / "fullwidth.csv",
+        "fund_name，value\n中融煤炭,48.706\n富国煤炭A,48.706\n平安新能源汽车ETF,42.881\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["fund_name", "value"]
+    assert result.answer.rows == [
+        ["中融煤炭", 48.706],
+        ["富国煤炭A", 48.706],
+        ["平安新能源汽车ETF", 42.881],
+    ]
+
+
+def test_from_csv_preserves_unquoted_fullwidth_comma_cells(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """未加 quote 的数据单元格可合法包含全角逗号，不能把它当分隔符改写。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "fullwidth_data.csv",
+        "text\n你好，世界\n再见，朋友\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["text"]
+    assert result.answer.rows == [["你好，世界"], ["再见，朋友"]]
+
+
+def test_from_csv_preserves_other_fullwidth_punctuation(task: PublicTask, tmp_path: Path) -> None:
+    """本救援只处理 header 全角逗号，不碰数据里的其他全角标点。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "fullwidth_punctuation.csv",
+        "text\n你好；世界\nA｜B\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["text"]
+    assert result.answer.rows == [["你好；世界"], ["A｜B"]]
+
+
+def test_from_csv_preserves_fullwidth_inside_quoted_cells(task: PublicTask, tmp_path: Path) -> None:
+    """Quoted cell 内的全角逗号保持原样，不被归一化。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "quoted_fw.csv",
+        'name,desc\nAlice,"你好，世界"\nBob,"再见，朋友"\n',
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["name", "desc"]
+    assert result.answer.rows == [["Alice", "你好，世界"], ["Bob", "再见，朋友"]]
+
+
+def test_from_csv_rejects_wide_rows_after_normalization(task: PublicTask, tmp_path: Path) -> None:
+    """归一化后数据行仍比 header 宽 → raise shape error。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "still_wide.csv",
+        "label\nA,1,10\nB,2,20\n",
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
     with pytest.raises(
-        ValueError,
-        match=r"from_csv rows must have the same number of cells as the header row",
-    ) as exc_info:
+        ValueError, match=r"from_csv rows must have the same number of cells as the header row"
+    ):
         _answer_tool.handler(task, args)
-
-    msg = str(exc_info.value)
-    assert "pandas.DataFrame.to_csv(..., index=False)" in msg
-    assert "quote text fields" in msg
 
 
 def test_from_csv_accepts_quoted_commas(task: PublicTask, tmp_path: Path) -> None:

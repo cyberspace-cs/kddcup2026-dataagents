@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import pathlib
 import shutil
 import warnings
@@ -26,6 +27,8 @@ from agents.tools.registry import ToolExecutionResult
 
 _ANSWER_SCRATCH_ROOT = pathlib.Path("/tmp/dabench")
 _FROM_CSV_SIZE_LIMIT_BYTES = 5 * 1024 * 1024
+
+_FULLWIDTH_COMMA = "，"
 
 
 def _answer_dir_for(task: PublicTask) -> pathlib.Path:
@@ -101,6 +104,62 @@ def _coerce_row(row: list[str], dtypes: list[str]) -> list[Any]:
     return out
 
 
+def _normalize_header_fullwidth_commas(text: str) -> str | None:
+    """Return a copy with unquoted full-width commas fixed in the header only.
+
+    The known recovery case is a hand-written header using `，` while data rows
+    use ASCII commas.  Cell values may legitimately contain `，`, so the fallback
+    is limited to the first CSV record and only runs after pandas reports a
+    header/data width mismatch.
+    """
+    if _FULLWIDTH_COMMA not in text:
+        return None
+    header: list[str] = []
+    rest_start = len(text)
+    in_quotes = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            if in_quotes and i + 1 < n and text[i + 1] == '"':
+                header.append('""')
+                i += 2
+                continue
+            in_quotes = not in_quotes
+            header.append(ch)
+        elif not in_quotes and ch == _FULLWIDTH_COMMA:
+            header.append(",")
+        elif not in_quotes and ch in {"\n", "\r"}:
+            if ch == "\r" and i + 1 < n and text[i + 1] == "\n":
+                header.append("\r\n")
+                rest_start = i + 2
+            else:
+                header.append(ch)
+                rest_start = i + 1
+            break
+        else:
+            header.append(ch)
+        i += 1
+    normalized_header = "".join(header)
+    if normalized_header == text[:rest_start]:
+        return None
+    return normalized_header + text[rest_start:]
+
+
+def _typecast_string_table(
+    header: list[str], data: list[list[str]]
+) -> tuple[list[str], list[list[Any]], list[str]]:
+    """共享的 dtype 推断 + 强转入口：常规路径与 header 救援路径都走这条。"""
+    width = len(header)
+    dtypes: list[str] = []
+    for col_idx in range(width):
+        column_values = [row[col_idx] for row in data]
+        dtypes.append(classify_dtype(column_values))
+    typed = [_coerce_row(row, dtypes) for row in data]
+    return header, typed, dtypes
+
+
 def _from_csv_shape_error(detail: str | None = None) -> str:
     msg = (
         "from_csv rows must have the same number of cells as the header row. "
@@ -124,37 +183,53 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
     if path.stat().st_size > _FROM_CSV_SIZE_LIMIT_BYTES:
         raise ValueError("from_csv exceeds 5MB; split the table or use inline columns/rows")
     try:
+        raw = path.read_text("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"from_csv is not valid UTF-8: {exc}") from exc
+    try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", ParserWarning)
             df = pd.read_csv(
-                path,
+                io.StringIO(raw),
                 dtype=str,
                 engine="python",
                 index_col=False,
                 keep_default_na=False,
                 na_filter=False,
             )
-    except UnicodeDecodeError as exc:
-        raise ValueError(f"from_csv is not valid UTF-8: {exc}") from exc
     except EmptyDataError as exc:
         raise ValueError("from_csv is empty; expected header row + data rows") from exc
     except ParserWarning as exc:
+        normalized = _normalize_header_fullwidth_commas(raw)
+        if normalized is not None:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", ParserWarning)
+                    df = pd.read_csv(
+                        io.StringIO(normalized),
+                        dtype=str,
+                        engine="python",
+                        index_col=False,
+                        keep_default_na=False,
+                        na_filter=False,
+                    )
+            except (EmptyDataError, ParserError, ParserWarning):
+                pass
+            else:
+                header = [str(column) for column in df.columns]
+                if header and not df.isna().to_numpy().any():
+                    data = df.astype(str).values.tolist()
+                    return _typecast_string_table(header, data)
         raise ValueError(_from_csv_shape_error(str(exc))) from exc
     except ParserError as exc:
         raise ValueError(f"failed to parse from_csv: {exc}") from exc
     header = [str(column) for column in df.columns]
     if not header:
         raise ValueError("from_csv header row is empty")
-    width = len(header)
     if df.isna().to_numpy().any():
         raise ValueError(_from_csv_shape_error("one or more rows have fewer cells than the header"))
     data = df.astype(str).values.tolist()
-    dtypes: list[str] = []
-    for col_idx in range(width):
-        column_values = df.iloc[:, col_idx].astype(str).tolist()
-        dtypes.append(classify_dtype(column_values))
-    typed = [_coerce_row(row, dtypes) for row in data]
-    return header, typed, dtypes
+    return _typecast_string_table(header, data)
 
 
 def _prune_null_columns(
