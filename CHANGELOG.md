@@ -51,6 +51,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lost.
 
 ### Changed
+- **`inspect_files` points video files at `explore_video`, not `execute_python`.**
+  The `UNSUPPORTED_HINT_BY_EXT` table now maps every extension in
+  `agents.runtime.media.VIDEO_EXTENSIONS` (`.mp4`/`.m4v`/`.avi`/`.mov`/`.mkv`/
+  `.webm`/`.flv`/`.wmv`) to "Use explore_video to analyze video content."
+  Previously these fell through to the default "use execute_python or another
+  preview tool" reason — explorer would try pandas / csv on the video file,
+  fail, and burn 1–3 ReAct steps before switching to `explore_video`.
+  Explorer system prompt already directs models to `explore_video` for
+  video-task workflows; this aligns the per-file tool observation so it
+  stops contradicting the system prompt.
 - **Explorer `value_samples` field description disallows non-tabular keys.**
   The schema (`{file.col: [v1, v2]}`) already required column-suffixed keys,
   but the laconic field description left room for the explorer to use a
