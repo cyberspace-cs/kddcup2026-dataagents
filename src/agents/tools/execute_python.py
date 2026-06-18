@@ -46,19 +46,16 @@ def _capture_process_streams(stdout_path: Path, stderr_path: Path):
             os.dup2(stdout_file.fileno(), 1)
             os.dup2(stderr_file.fileno(), 2)
 
-            stdout_encoding = getattr(original_stdout, "encoding", None) or "utf-8"
-            stderr_encoding = getattr(original_stderr, "encoding", None) or "utf-8"
-
             sys.stdout = io.TextIOWrapper(
                 os.fdopen(os.dup(1), "wb"),
-                encoding=stdout_encoding,
+                encoding="utf-8",
                 errors="replace",
                 line_buffering=True,
                 write_through=True,
             )
             sys.stderr = io.TextIOWrapper(
                 os.fdopen(os.dup(2), "wb"),
-                encoding=stderr_encoding,
+                encoding="utf-8",
                 errors="replace",
                 line_buffering=True,
                 write_through=True,

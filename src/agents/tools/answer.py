@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import csv
 import pathlib
+import re
 import shutil
 import warnings
 from contextlib import suppress
@@ -27,13 +27,8 @@ from agents.tools.registry import ToolExecutionResult
 
 _ANSWER_SCRATCH_ROOT = pathlib.Path("/tmp/dabench")
 _FROM_CSV_SIZE_LIMIT_BYTES = 5 * 1024 * 1024
-# header < 数据列宽时自动补 `col_<i>` 占位的硬上限。
-# grader 不看列名（仅按列值指纹匹配），补占位列不会造成误匹配；但差距过大表明
-# 模型把无关文件写进了 answer.csv 或数据严重损坏，宁可 raise 让模型自查。
-# 实测见 PR #27 commit message：task_39 0.00 → 0.95 由"差 1 列自动补"直接救回，
-# 30 题集 +1.05/30 分；护栏阈值 = 5 是经验上界，覆盖常见手抖（漏 1-2 列、忘
-# `index=False` 加 1 列）同时挡掉 "header 1 列、数据 50 列" 这类灾难。
-_MAX_AUTO_EXTEND_EXTRA_COLS = 5
+
+_FULLWIDTH_PUNCT_RE = re.compile("[，；｜]")
 
 
 def _answer_dir_for(task: PublicTask) -> pathlib.Path:
@@ -109,38 +104,20 @@ def _coerce_row(row: list[str], dtypes: list[str]) -> list[Any]:
     return out
 
 
-def _try_extend_narrow_header(
-    path: pathlib.Path,
-) -> tuple[list[str], list[list[str]]] | None:
-    """ParserWarning 兜底：header 比数据窄但**每行数据列宽一致** + 差距 ≤ 阈值 → 补 col_<i>。
+def _normalize_fullwidth_delimiters(path: pathlib.Path) -> bool:
+    """Replace CJK full-width commas/semicolons/pipes with ASCII equivalents in-place.
 
-    回归参照 run 20260614-011/task_39：模型 header 行用全角逗号 `，`、数据行用半角
-    逗号 `,` → header 1 列、数据每行 2 列。grader 不看列名，扩展列名不影响判分；
-    PR #27 bench 实测 task_39 0.00 → 0.95，30 题集 +1.05 分。
-
-    返回 None 表示不安全（数据行宽度不一致、超过阈值差距、或 csv 本身读不出），
-    上层仍走 shape-error raise 路径，让模型自己重写。
+    Returns True if any replacement was made.
     """
     try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            rows = list(csv.reader(handle))
-    except (UnicodeDecodeError, csv.Error, OSError):
-        return None
-    if not rows:
-        return None
-    header, *data = rows
-    if not header or not data:
-        return None
-    widths = {len(row) for row in data}
-    if len(widths) != 1:
-        # 数据行宽度不一致：被截断 / quote 错位 / 真实结构混乱，不救
-        return None
-    (data_width,) = widths
-    extra = data_width - len(header)
-    if extra <= 0 or extra > _MAX_AUTO_EXTEND_EXTRA_COLS:
-        return None
-    extended = list(header) + [f"col_{i}" for i in range(len(header) + 1, data_width + 1)]
-    return extended, data
+        text = path.read_text("utf-8")
+    except (UnicodeDecodeError, OSError):
+        return False
+    if not _FULLWIDTH_PUNCT_RE.search(text):
+        return False
+    normalized = text.replace("，", ",").replace("；", ";").replace("｜", "|")
+    path.write_text(normalized, "utf-8")
+    return True
 
 
 def _typecast_string_table(
@@ -178,6 +155,7 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
         raise ValueError(f"from_csv file not found: {path}")
     if path.stat().st_size > _FROM_CSV_SIZE_LIMIT_BYTES:
         raise ValueError("from_csv exceeds 5MB; split the table or use inline columns/rows")
+    _normalize_fullwidth_delimiters(path)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", ParserWarning)
@@ -194,12 +172,7 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
     except EmptyDataError as exc:
         raise ValueError("from_csv is empty; expected header row + data rows") from exc
     except ParserWarning as exc:
-        # header 比数据窄 + 数据行宽度一致 + 差距在阈值内 → 自动补 col_<i> 救回。
-        # 详见 `_try_extend_narrow_header` 的 docstring 与 task_39 回归参照。
-        recovered = _try_extend_narrow_header(path)
-        if recovered is None:
-            raise ValueError(_from_csv_shape_error(str(exc))) from exc
-        return _typecast_string_table(*recovered)
+        raise ValueError(_from_csv_shape_error(str(exc))) from exc
     except ParserError as exc:
         raise ValueError(f"failed to parse from_csv: {exc}") from exc
     header = [str(column) for column in df.columns]

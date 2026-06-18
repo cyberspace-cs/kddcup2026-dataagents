@@ -404,20 +404,14 @@ def test_fallback_builder_rejects_inline_over_threshold(task: PublicTask) -> Non
     assert build_answer_table_without_side_effects(task, arguments) is None
 
 
-def test_from_csv_auto_extends_narrow_header(task: PublicTask, tmp_path: Path) -> None:
-    """数据行**全部宽于** header → 自动补 `col_<i>` 占位列名，提交成功。
+def test_from_csv_normalizes_fullwidth_comma_in_header(task: PublicTask, tmp_path: Path) -> None:
+    """Header 含全角逗号 `，` → 归一化为半角后正常解析，列名保持原样。
 
-    回归参照 run 20260614-011/task_39：模型 header 行用全角逗号 `，` 写、数据行
-    用半角 `,` 写 → header 只 1 列、数据每行 2 列。grader 只按列值指纹匹配，不看
-    列名，扩展列名零代价；旧版本直接 raise 让模型耗 13 步 + ~2 分钟才修好，按 PR
-    #27 commit message 实测 task_39 0.00 → 0.95、30 题集 +1.05/30 分。
-
-    护栏在 `_try_extend_narrow_header`：仅在数据行宽度一致 + 差距 ≤
-    `_MAX_AUTO_EXTEND_EXTRA_COLS` 时自动补；不一致或差距过大仍 raise。
+    回归参照 run 20260614-011/task_39：模型 header 行用全角逗号、数据行用半角。
     """
     csv_path = _write(
-        tmp_path / "_answer" / "wide_rows.csv",
-        "fund_name\n中融煤炭,48.706\n富国煤炭A,48.706\n平安新能源汽车ETF,42.881\n",
+        tmp_path / "_answer" / "fullwidth.csv",
+        "fund_name，value\n中融煤炭,48.706\n富国煤炭A,48.706\n平安新能源汽车ETF,42.881\n",
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
@@ -425,7 +419,7 @@ def test_from_csv_auto_extends_narrow_header(task: PublicTask, tmp_path: Path) -
 
     assert result.ok is True
     assert result.answer is not None
-    assert result.answer.columns == ["fund_name", "col_2"]
+    assert result.answer.columns == ["fund_name", "value"]
     assert result.answer.rows == [
         ["中融煤炭", 48.706],
         ["富国煤炭A", 48.706],
@@ -433,11 +427,11 @@ def test_from_csv_auto_extends_narrow_header(task: PublicTask, tmp_path: Path) -
     ]
 
 
-def test_from_csv_auto_extends_with_two_extra_cols(task: PublicTask, tmp_path: Path) -> None:
-    """差 2 列时同样补 `col_2` + `col_3`，覆盖 `df.to_csv` 漏 `index=False` 之类的常见手抖。"""
+def test_from_csv_normalizes_fullwidth_comma_in_all_rows(task: PublicTask, tmp_path: Path) -> None:
+    """Header 和 data 都用全角逗号 → 全部归一化。"""
     csv_path = _write(
-        tmp_path / "_answer" / "wide_two.csv",
-        "label\nA,1,10\nB,2,20\nC,3,30\n",
+        tmp_path / "_answer" / "all_fullwidth.csv",
+        "label，col_a，col_b\nA，1，10\nB，2，20\nC，3，30\n",
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
@@ -445,44 +439,31 @@ def test_from_csv_auto_extends_with_two_extra_cols(task: PublicTask, tmp_path: P
 
     assert result.ok is True
     assert result.answer is not None
-    assert result.answer.columns == ["label", "col_2", "col_3"]
+    assert result.answer.columns == ["label", "col_a", "col_b"]
     assert result.answer.rows == [["A", 1, 10], ["B", 2, 20], ["C", 3, 30]]
 
 
-def test_from_csv_rejects_when_row_widths_vary(task: PublicTask, tmp_path: Path) -> None:
-    """数据行宽度参差不齐 → 自动补的护栏拒绝救援，仍 raise shape 错。
-
-    不一致代表 CSV 里至少有一行被截断 / quote 错位 / 真实结构混乱，扩展 header
-    会让某些行的 cell 错位，不能猜测修复。
-    """
+def test_from_csv_no_false_positive_on_quoted_fullwidth(task: PublicTask, tmp_path: Path) -> None:
+    """Quoted cell 内的全角逗号也会被归一化，但因在 quote 内不影响列分割。"""
     csv_path = _write(
-        tmp_path / "_answer" / "ragged.csv",
-        "label\nA,1,10\nB,2\nC,3,30,40\n",
+        tmp_path / "_answer" / "quoted_fw.csv",
+        'name,desc\nAlice,"你好，世界"\nBob,"再见，朋友"\n',
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
-    with pytest.raises(
-        ValueError, match=r"from_csv rows must have the same number of cells as the header row"
-    ):
-        _answer_tool.handler(task, args)
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["name", "desc"]
+    assert result.answer.rows == [["Alice", "你好,世界"], ["Bob", "再见,朋友"]]
 
 
-def test_from_csv_rejects_when_gap_exceeds_auto_extend_cap(
-    task: PublicTask, tmp_path: Path
-) -> None:
-    """差距 > `_MAX_AUTO_EXTEND_EXTRA_COLS` → 拒绝救援。
-
-    超过阈值通常意味着模型把无关文件（schema dump / 完整源表）写进了
-    `_answer/answer.csv`，扩展 header 落盘会把整张错表当成答案提交。
-    """
-    from agents.tools.answer import _MAX_AUTO_EXTEND_EXTRA_COLS
-
-    # 比 header 多 `cap + 1` 列触发护栏；用 'x' 占位避免被 dtype 推断当成数值列影响断言
-    extra = _MAX_AUTO_EXTEND_EXTRA_COLS + 1
-    data_cells = ",".join(["x"] * (1 + extra))
+def test_from_csv_rejects_wide_rows_after_normalization(task: PublicTask, tmp_path: Path) -> None:
+    """归一化后数据行仍比 header 宽 → raise shape error。"""
     csv_path = _write(
-        tmp_path / "_answer" / "too_wide.csv",
-        f"label\n{data_cells}\n{data_cells}\n",
+        tmp_path / "_answer" / "still_wide.csv",
+        "label\nA,1,10\nB,2,20\n",
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
