@@ -25,6 +25,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the byte-stable cached payload; overrides render fresh.
 
 ### Behavior changes (intentional tightening)
+- **Video report `extracted_data` has a fixed rules/sample shape.** The
+  video `report` tool now normalizes missing extracted data to
+  `{"rules": {}, "displayed_samples": {}}` and rejects flat legacy
+  payloads, so downstream agents can reliably distinguish query
+  instructions from on-screen preview values.
 - **`run.blocklist` never reaches the judged container.** The submission
   entrypoint force-clears the blocklist baked into the image config: a
   skip-list entry kept from local debugging would otherwise silently

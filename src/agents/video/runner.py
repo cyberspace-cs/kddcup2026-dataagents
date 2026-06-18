@@ -6,7 +6,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from agents.agent import ReActAgent, ReActAgentConfig
 from agents.benchmark.schema import PublicTask
@@ -14,7 +14,7 @@ from agents.llm import ModelAdapter
 from agents.runtime import StepCallback
 from agents.runtime.media import build_video_user_content
 from agents.video.prompt import VIDEO_AGENT_SYSTEM_PROMPT, build_video_task_text
-from agents.video.registry import create_video_tool_registry
+from agents.video.registry import VideoReportInput, create_video_tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +62,9 @@ def _extract_report(steps: list[Any]) -> str | None:
         if getattr(step, "action", None) != "report" or not getattr(step, "ok", False):
             continue
         raw: Any = getattr(step, "action_input", None)
-        if isinstance(raw, dict) and "summary" in raw:
-            d = cast(dict[str, Any], raw)
-            assembled = {
-                "summary": d.get("summary", ""),
-                "timeline": d.get("timeline", []),
-                "extracted_data": d.get("extracted_data", {}),
-                "coverage": d.get("coverage", []),
-                "warnings": d.get("warnings", []),
-            }
-            return json.dumps(assembled, ensure_ascii=False)
+        if isinstance(raw, dict):
+            report = VideoReportInput.model_validate(raw)
+            return json.dumps(report.model_dump(), ensure_ascii=False)
     return None
 
 

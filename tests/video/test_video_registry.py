@@ -36,13 +36,42 @@ def test_valid_report_roundtrips_findings(tmp_path: Path) -> None:
         {
             "summary": "dashboard recording",
             "timeline": [{"time": "00:42", "event": "bar chart"}],
-            "extracted_data": {"q3_revenue": {"A": 10, "B": 20}},
+            "extracted_data": {
+                "rules": {"filters": [{"field": "quarter", "op": "=", "value": "Q3"}]},
+                "displayed_samples": {"q3_revenue": {"A": 10, "B": 20}},
+            },
         },
     )
     assert result.ok is True and result.is_terminal is True
     findings = json.loads(result.content["findings"])
     assert findings["summary"] == "dashboard recording"
+    assert findings["extracted_data"] == {
+        "rules": {"filters": [{"field": "quarter", "op": "=", "value": "Q3"}]},
+        "displayed_samples": {"q3_revenue": {"A": 10, "B": 20}},
+    }
     assert findings["coverage"] == [] and findings["warnings"] == []
+
+
+def test_missing_extracted_data_defaults_to_empty_contract(tmp_path: Path) -> None:
+    registry = create_video_tool_registry()
+    result = registry.execute(_make_task(tmp_path), "report", {"summary": "dashboard"})
+
+    assert result.ok is True
+    findings = json.loads(result.content["findings"])
+    assert findings["extracted_data"] == {"rules": {}, "displayed_samples": {}}
+
+
+def test_flat_extracted_data_rejected(tmp_path: Path) -> None:
+    registry = create_video_tool_registry()
+    with pytest.raises(
+        ValueError,
+        match=r"report: extra field 'extracted_data\.kpi' is not permitted",
+    ):
+        registry.execute(
+            _make_task(tmp_path),
+            "report",
+            {"summary": "dashboard", "extracted_data": {"kpi": 42}},
+        )
 
 
 def test_missing_summary_raises_single_line_error(tmp_path: Path) -> None:
@@ -57,7 +86,7 @@ def test_oversized_report_rejected_not_terminal(tmp_path: Path) -> None:
     result = registry.execute(
         _make_task(tmp_path),
         "report",
-        {"summary": "s", "extracted_data": {"blob": big}},
+        {"summary": "s", "extracted_data": {"rules": {"blob": big}}},
     )
     assert result.ok is False
     assert "exceeds" in result.content["error"]

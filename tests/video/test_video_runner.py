@@ -42,14 +42,38 @@ def _report_response(arguments: dict) -> ModelResponse:
 def test_successful_report_extracted_despite_failure_reason_trap(tmp_path: Path) -> None:
     task, video = _make_task(tmp_path)
     adapter = ScriptedNativeModelAdapter(
-        [_report_response({"summary": "a chart video", "extracted_data": {"kpi": 42}})]
+        [
+            _report_response(
+                {
+                    "summary": "a chart video",
+                    "extracted_data": {
+                        "rules": {"filters": [{"field": "quarter", "op": "=", "value": "Q3"}]},
+                        "displayed_samples": {"kpi": 42},
+                    },
+                }
+            )
+        ]
     )
     result = run_video_agent(task, video, "transcribe the KPI", adapter)
     # report 不产生 answer，AgentRunResult.failure_reason 会被误填——runner 必须从 steps 判定成功
     assert result.success is True
     findings = json.loads(result.findings)
     assert findings["summary"] == "a chart video"
-    assert findings["extracted_data"] == {"kpi": 42}
+    assert findings["extracted_data"] == {
+        "rules": {"filters": [{"field": "quarter", "op": "=", "value": "Q3"}]},
+        "displayed_samples": {"kpi": 42},
+    }
+
+
+def test_report_without_extracted_data_gets_empty_contract(tmp_path: Path) -> None:
+    task, video = _make_task(tmp_path)
+    adapter = ScriptedNativeModelAdapter([_report_response({"summary": "a chart video"})])
+
+    result = run_video_agent(task, video, "transcribe the KPI", adapter)
+
+    assert result.success is True
+    findings = json.loads(result.findings)
+    assert findings["extracted_data"] == {"rules": {}, "displayed_samples": {}}
 
 
 def test_no_report_returns_failure(tmp_path: Path) -> None:

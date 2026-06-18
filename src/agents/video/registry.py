@@ -20,6 +20,26 @@ from agents.tools.schema_normalize import normalize_for_vllm
 VIDEO_REPORT_MAX_BYTES = 64 * 1024
 
 
+class VideoExtractedData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rules: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Configuration the video defines: field/column names, thresholds with "
+            "operator and value, group-by / sort-by / top-N directives, scheme or "
+            "batch IDs, statistical periods, and table names."
+        ),
+    )
+    displayed_samples: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Numbers, distribution snapshots, TOP-N panels, preview rows, and other "
+            "values the screen merely shows. These are not direct answer values."
+        ),
+    )
+
+
 class VideoReportInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -34,8 +54,8 @@ class VideoReportInput(BaseModel):
             'revenue by category"}]. Cover the whole video.'
         ),
     )
-    extracted_data: dict[str, Any] = Field(
-        default_factory=dict,
+    extracted_data: VideoExtractedData = Field(
+        default_factory=VideoExtractedData,
         description=(
             "Two top-level keys REQUIRED, even if one is empty: "
             "`rules` = the configuration the video defines (field/column names, "
