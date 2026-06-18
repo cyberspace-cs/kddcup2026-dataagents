@@ -385,7 +385,8 @@ def test_inline_threshold_check_in_handler_when_no_artifact(
         ValueError,
         match=(
             r"^inline rows payload exceeds artifact-handoff threshold "
-            r"\(got 11 rows, 11 cells; threshold = 10 rows or 50 cells\)"
+            r"\(got 11 rows, 11 cells; inline is allowed only for <= 10 rows AND "
+            r"<= 50 cells; if either limit is exceeded, use from_csv\)"
         ),
     ):
         _answer_tool.handler(task, args)

@@ -203,7 +203,8 @@ def test_dispatch_answer_inline_row_threshold_is_rejected(task: PublicTask) -> N
         ValueError,
         match=(
             r"^inline rows payload exceeds artifact-handoff threshold "
-            r"\(got 11 rows, 11 cells; threshold = 10 rows or 50 cells\)"
+            r"\(got 11 rows, 11 cells; inline is allowed only for <= 10 rows AND "
+            r"<= 50 cells; if either limit is exceeded, use from_csv\)"
         ),
     ):
         dispatch_tool_call(task, call, registry)
@@ -223,7 +224,8 @@ def test_dispatch_answer_inline_cell_threshold_is_rejected(task: PublicTask) -> 
         ValueError,
         match=(
             r"^inline rows payload exceeds artifact-handoff threshold "
-            r"\(got 9 rows, 54 cells; threshold = 10 rows or 50 cells\)"
+            r"\(got 9 rows, 54 cells; inline is allowed only for <= 10 rows AND "
+            r"<= 50 cells; if either limit is exceeded, use from_csv\)"
         ),
     ):
         dispatch_tool_call(task, call, registry)

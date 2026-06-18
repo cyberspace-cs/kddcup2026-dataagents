@@ -268,8 +268,9 @@ def _inline_threshold_error(columns: list[str], rows: list[list[Any]]) -> str | 
     if n_rows > INLINE_ANSWER_ROW_LIMIT or n_cells > INLINE_ANSWER_CELL_LIMIT:
         return (
             f"inline rows payload exceeds artifact-handoff threshold "
-            f"(got {n_rows} rows, {n_cells} cells; threshold = "
-            f"{INLINE_ANSWER_ROW_LIMIT} rows or {INLINE_ANSWER_CELL_LIMIT} cells); "
+            f"(got {n_rows} rows, {n_cells} cells; inline is allowed only for "
+            f"<= {INLINE_ANSWER_ROW_LIMIT} rows AND <= {INLINE_ANSWER_CELL_LIMIT} cells; "
+            "if either limit is exceeded, use from_csv); "
             f"write the table with DataFrame.to_csv to "
             f"{answer_artifact_expression()} in "
             "execute_python, then resubmit with from_csv (no columns/rows)"
