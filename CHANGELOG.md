@@ -51,14 +51,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lost.
 
 ### Changed
-- **`parse_answer_csv` normalizes CJK full-width delimiters before parsing.**
-  Full-width commas `，`, semicolons `；`, and pipes `｜` are replaced with ASCII
-  equivalents in-place before `pd.read_csv`. Root cause: run 20260614-011 /
-  task_39 — the model wrote the header with full-width `，` and data rows with
-  half-width `,`, making the header appear as 1 column vs 2 in data. The model
-  then looped 13 `execute_python` calls unable to self-correct because the
-  Windows subprocess rendered Chinese as mojibake (GBK console). Normalization
-  fixes the bytes at source; no `col_<i>` guessing needed.
+- **`parse_answer_csv` rescues narrow headers caused by full-width commas.**
+  When `pd.read_csv` reports a header/data width mismatch, the parser retries
+  once after replacing unquoted full-width commas `，` in the header row only.
+  It does not rewrite data cells or other full-width punctuation. Root cause:
+  run 20260614-011 / task_39 — the model wrote the header with full-width `，`
+  and data rows with half-width `,`, making the header appear as 1 column vs 2
+  in data. The model then looped 13 `execute_python` calls unable to
+  self-correct because the Windows subprocess rendered Chinese as mojibake
+  (GBK console). The retry fixes the known header bytes without `col_<i>`
+  guessing.
 - **`execute_python` subprocess stdout/stderr hardcoded to UTF-8.**
   Previously inherited the parent process's encoding (GBK on Windows), making
   Chinese output unreadable to the model. Now the model can see what it wrote

@@ -427,11 +427,13 @@ def test_from_csv_normalizes_fullwidth_comma_in_header(task: PublicTask, tmp_pat
     ]
 
 
-def test_from_csv_normalizes_fullwidth_comma_in_all_rows(task: PublicTask, tmp_path: Path) -> None:
-    """Header 和 data 都用全角逗号 → 全部归一化。"""
+def test_from_csv_preserves_unquoted_fullwidth_comma_cells(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """未加 quote 的数据单元格可合法包含全角逗号，不能把它当分隔符改写。"""
     csv_path = _write(
-        tmp_path / "_answer" / "all_fullwidth.csv",
-        "label，col_a，col_b\nA，1，10\nB，2，20\nC，3，30\n",
+        tmp_path / "_answer" / "fullwidth_data.csv",
+        "text\n你好，世界\n再见，朋友\n",
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
@@ -439,11 +441,27 @@ def test_from_csv_normalizes_fullwidth_comma_in_all_rows(task: PublicTask, tmp_p
 
     assert result.ok is True
     assert result.answer is not None
-    assert result.answer.columns == ["label", "col_a", "col_b"]
-    assert result.answer.rows == [["A", 1, 10], ["B", 2, 20], ["C", 3, 30]]
+    assert result.answer.columns == ["text"]
+    assert result.answer.rows == [["你好，世界"], ["再见，朋友"]]
 
 
-def test_from_csv_no_false_positive_on_quoted_fullwidth(task: PublicTask, tmp_path: Path) -> None:
+def test_from_csv_preserves_other_fullwidth_punctuation(task: PublicTask, tmp_path: Path) -> None:
+    """本救援只处理 header 全角逗号，不碰数据里的其他全角标点。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "fullwidth_punctuation.csv",
+        "text\n你好；世界\nA｜B\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["text"]
+    assert result.answer.rows == [["你好；世界"], ["A｜B"]]
+
+
+def test_from_csv_preserves_fullwidth_inside_quoted_cells(task: PublicTask, tmp_path: Path) -> None:
     """Quoted cell 内的全角逗号保持原样，不被归一化。"""
     csv_path = _write(
         tmp_path / "_answer" / "quoted_fw.csv",
