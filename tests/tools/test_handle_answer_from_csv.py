@@ -404,12 +404,16 @@ def test_fallback_builder_rejects_inline_over_threshold(task: PublicTask) -> Non
     assert build_answer_table_without_side_effects(task, arguments) is None
 
 
-def test_from_csv_rejects_wide_rows_with_rewrite_hint(task: PublicTask, tmp_path: Path) -> None:
-    """数据行比 header 更宽时拒绝提交，并提示模型重写 CSV。
+def test_from_csv_auto_extends_narrow_header(task: PublicTask, tmp_path: Path) -> None:
+    """数据行**全部宽于** header → 自动补 `col_<i>` 占位列名，提交成功。
 
-    这类 CSV 往往来自手写 header 漏列、忘记 `index=False` 附近的拼接错误，
-    或文本字段含逗号但没有 quote。`answer` 是 terminal tool，不能静默补
-    `col_<i>` 猜测修复，否则会把坏表直接提交成终局答案。
+    回归参照 run 20260614-011/task_39：模型 header 行用全角逗号 `，` 写、数据行
+    用半角 `,` 写 → header 只 1 列、数据每行 2 列。grader 只按列值指纹匹配，不看
+    列名，扩展列名零代价；旧版本直接 raise 让模型耗 13 步 + ~2 分钟才修好，按 PR
+    #27 commit message 实测 task_39 0.00 → 0.95、30 题集 +1.05/30 分。
+
+    护栏在 `_try_extend_narrow_header`：仅在数据行宽度一致 + 差距 ≤
+    `_MAX_AUTO_EXTEND_EXTRA_COLS` 时自动补；不一致或差距过大仍 raise。
     """
     csv_path = _write(
         tmp_path / "_answer" / "wide_rows.csv",
@@ -417,15 +421,75 @@ def test_from_csv_rejects_wide_rows_with_rewrite_hint(task: PublicTask, tmp_path
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["fund_name", "col_2"]
+    assert result.answer.rows == [
+        ["中融煤炭", 48.706],
+        ["富国煤炭A", 48.706],
+        ["平安新能源汽车ETF", 42.881],
+    ]
+
+
+def test_from_csv_auto_extends_with_two_extra_cols(task: PublicTask, tmp_path: Path) -> None:
+    """差 2 列时同样补 `col_2` + `col_3`，覆盖 `df.to_csv` 漏 `index=False` 之类的常见手抖。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "wide_two.csv",
+        "label\nA,1,10\nB,2,20\nC,3,30\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["label", "col_2", "col_3"]
+    assert result.answer.rows == [["A", 1, 10], ["B", 2, 20], ["C", 3, 30]]
+
+
+def test_from_csv_rejects_when_row_widths_vary(task: PublicTask, tmp_path: Path) -> None:
+    """数据行宽度参差不齐 → 自动补的护栏拒绝救援，仍 raise shape 错。
+
+    不一致代表 CSV 里至少有一行被截断 / quote 错位 / 真实结构混乱，扩展 header
+    会让某些行的 cell 错位，不能猜测修复。
+    """
+    csv_path = _write(
+        tmp_path / "_answer" / "ragged.csv",
+        "label\nA,1,10\nB,2\nC,3,30,40\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
     with pytest.raises(
-        ValueError,
-        match=r"from_csv rows must have the same number of cells as the header row",
-    ) as exc_info:
+        ValueError, match=r"from_csv rows must have the same number of cells as the header row"
+    ):
         _answer_tool.handler(task, args)
 
-    msg = str(exc_info.value)
-    assert "pandas.DataFrame.to_csv(..., index=False)" in msg
-    assert "quote text fields" in msg
+
+def test_from_csv_rejects_when_gap_exceeds_auto_extend_cap(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """差距 > `_MAX_AUTO_EXTEND_EXTRA_COLS` → 拒绝救援。
+
+    超过阈值通常意味着模型把无关文件（schema dump / 完整源表）写进了
+    `_answer/answer.csv`，扩展 header 落盘会把整张错表当成答案提交。
+    """
+    from agents.tools.answer import _MAX_AUTO_EXTEND_EXTRA_COLS
+
+    # 比 header 多 `cap + 1` 列触发护栏；用 'x' 占位避免被 dtype 推断当成数值列影响断言
+    extra = _MAX_AUTO_EXTEND_EXTRA_COLS + 1
+    data_cells = ",".join(["x"] * (1 + extra))
+    csv_path = _write(
+        tmp_path / "_answer" / "too_wide.csv",
+        f"label\n{data_cells}\n{data_cells}\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    with pytest.raises(
+        ValueError, match=r"from_csv rows must have the same number of cells as the header row"
+    ):
+        _answer_tool.handler(task, args)
 
 
 def test_from_csv_accepts_quoted_commas(task: PublicTask, tmp_path: Path) -> None:

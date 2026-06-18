@@ -51,6 +51,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lost.
 
 ### Changed
+- **`parse_answer_csv` auto-extends a narrow header with `col_<i>` placeholders.**
+  When `pd.read_csv` raises `ParserWarning` because the header has fewer cells
+  than the data rows, `parse_answer_csv` now falls back to `csv.reader`, and if
+  every data row agrees on a single width strictly greater than the header by
+  at most `_MAX_AUTO_EXTEND_EXTRA_COLS = 5`, it synthesizes `col_<i>` names for
+  the missing columns and returns the typed answer. Trace evidence: run
+  20260614-011 / task_39 — the model wrote the header line with a full-width
+  comma `，` (1 column after csv parsing) and data rows with half-width commas
+  (2 columns each), then burned 13 `execute_python` calls / ~2 min recovering
+  before submitting via `from_csv`. The grader fingerprints columns by value,
+  not by name, so the synthesized header column-name has no scoring cost; PR
+  #27's earlier bench showed task_39 0.00 → 0.95 directly attributable to this
+  rescue. Heterogeneous row widths and gaps above the cap still raise the
+  shape error so genuinely corrupt CSVs (truncated rows, schema dumps written
+  to `answer.csv` by mistake) cannot silently submit.
 - **Explorer `value_samples` field description disallows non-tabular keys.**
   The schema (`{file.col: [v1, v2]}`) already required column-suffixed keys,
   but the laconic field description left room for the explorer to use a
