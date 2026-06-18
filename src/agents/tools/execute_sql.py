@@ -45,7 +45,7 @@ def _get_schema_map(conn: sqlite3.Connection) -> dict[str, list[str]]:
     return schema
 
 
-def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str, Any]:
+def execute_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str, Any]:
     """Execute SELECT/WITH/PRAGMA/EXPLAIN/CREATE INDEX against a SQLite database."""
     guard_non_sqlite_path(path)
     normalized = sql.strip()
@@ -170,7 +170,7 @@ def execute_context_sql(
     columns before querying.
     do NOT call on `.csv` / `.json` / `.md` / `.txt` paths."""
     resolved = resolve_context_path(task, path)
-    content = execute_read_only_sql(resolved, sql, limit=limit)
+    content = execute_sql(resolved, sql, limit=limit)
     if content.get("row_count", -1) == 0:
         content.setdefault(
             "warning",

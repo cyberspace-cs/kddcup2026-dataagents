@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from agents.tools._sqlite_common import validate_subquery_columns
-from agents.tools.execute_sql import execute_read_only_sql
+from agents.tools.execute_sql import execute_sql
 from agents.tools.inspect_sqlite import inspect_sqlite_database
 
 # ---------------------------------------------------------------------------
@@ -31,8 +31,8 @@ from agents.tools.inspect_sqlite import inspect_sqlite_database
     [
         pytest.param(inspect_sqlite_database, id="inspect_sqlite_schema"),
         pytest.param(
-            lambda path: execute_read_only_sql(path, "SELECT * FROM sqlite_master"),
-            id="execute_read_only_sql",
+            lambda path: execute_sql(path, "SELECT * FROM sqlite_master"),
+            id="execute_sql",
         ),
     ],
 )
@@ -101,7 +101,7 @@ def test_real_sqlite_db_still_works(tmp_path: Path) -> None:
     schema = inspect_sqlite_database(db_path)
     assert schema["tables"] and schema["tables"][0]["name"] == "t"
 
-    result = execute_read_only_sql(db_path, "SELECT id, name FROM t ORDER BY id")
+    result = execute_sql(db_path, "SELECT id, name FROM t ORDER BY id")
     assert result["columns"] == ["id", "name"]
     assert result["rows"] == [[1, "a"], [2, "b"]]
 
@@ -116,7 +116,7 @@ def test_other_database_errors_pass_through(tmp_path: Path) -> None:
     conn.close()
 
     with pytest.raises(sqlite3.OperationalError) as exc_info:
-        execute_read_only_sql(db_path, "SELECT * FROM nonexistent_table")
+        execute_sql(db_path, "SELECT * FROM nonexistent_table")
     assert "no such table" in str(exc_info.value).lower()
 
 
@@ -129,7 +129,7 @@ def test_empty_result_returns_zero_row_count(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    result = execute_read_only_sql(db_path, "SELECT * FROM items WHERE id = 999")
+    result = execute_sql(db_path, "SELECT * FROM items WHERE id = 999")
     assert result["row_count"] == 0
     assert result["rows"] == []
 
@@ -146,7 +146,7 @@ def test_create_index(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    result = execute_read_only_sql(db_path, "CREATE INDEX idx_customer ON orders(customer)")
+    result = execute_sql(db_path, "CREATE INDEX idx_customer ON orders(customer)")
     assert result["ok"] is True
     assert "created" in result["message"].lower()
 
@@ -167,7 +167,7 @@ def test_create_index_already_exists_surfaces_sqlite_error(tmp_path: Path) -> No
     conn.close()
 
     with pytest.raises(sqlite3.OperationalError, match="already exists"):
-        execute_read_only_sql(db_path, "CREATE INDEX idx_id ON t(id)")
+        execute_sql(db_path, "CREATE INDEX idx_id ON t(id)")
 
 
 def test_create_index_name_conflict_on_other_table_surfaces_error(tmp_path: Path) -> None:
@@ -180,7 +180,7 @@ def test_create_index_name_conflict_on_other_table_surfaces_error(tmp_path: Path
     conn.close()
 
     with pytest.raises(sqlite3.OperationalError, match="already exists"):
-        execute_read_only_sql(db_path, "CREATE INDEX idx_id ON b(id)")
+        execute_sql(db_path, "CREATE INDEX idx_id ON b(id)")
 
 
 def test_create_index_if_not_exists(tmp_path: Path) -> None:
@@ -191,7 +191,7 @@ def test_create_index_if_not_exists(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    result = execute_read_only_sql(db_path, "CREATE INDEX IF NOT EXISTS idx_id ON t(id)")
+    result = execute_sql(db_path, "CREATE INDEX IF NOT EXISTS idx_id ON t(id)")
     assert result["ok"] is True
 
 
@@ -208,7 +208,7 @@ def test_explain_query_plan(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    result = execute_read_only_sql(db_path, "EXPLAIN QUERY PLAN SELECT * FROM items WHERE id = 1")
+    result = execute_sql(db_path, "EXPLAIN QUERY PLAN SELECT * FROM items WHERE id = 1")
     assert result["ok"] is True
     assert "plan" in result
 
@@ -236,7 +236,7 @@ def test_write_operations_blocked(tmp_path: Path, sql: str) -> None:
     conn.close()
 
     with pytest.raises(ValueError, match="Only SELECT"):
-        execute_read_only_sql(db_path, sql)
+        execute_sql(db_path, sql)
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +265,7 @@ def test_query_timeout_fires(tmp_path: Path) -> None:
 
 
 def test_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
-    """execute_read_only_sql translates 'interrupted' into a ValueError with hints."""
+    """execute_sql translates 'interrupted' into a ValueError with hints."""
     from unittest.mock import patch
 
     from agents.tools._sqlite_common import _install_query_timeout
@@ -290,7 +290,7 @@ def test_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
         patch("agents.tools.execute_sql.connect_read_only", connect_with_tiny_timeout),
         pytest.raises(ValueError, match="timed out"),
     ):
-        execute_read_only_sql(
+        execute_sql(
             db_path,
             "SELECT COUNT(*) FROM a AS t1 CROSS JOIN a AS t2 CROSS JOIN a AS t3",
         )
@@ -315,7 +315,7 @@ def test_explain_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
         patch("agents.tools.execute_sql.connect_read_only", return_value=mock_conn),
         pytest.raises(ValueError, match="timed out"),
     ):
-        execute_read_only_sql(db_path, "EXPLAIN QUERY PLAN SELECT * FROM a")
+        execute_sql(db_path, "EXPLAIN QUERY PLAN SELECT * FROM a")
 
 
 def test_create_index_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
@@ -337,7 +337,7 @@ def test_create_index_timeout_translated_to_actionable_error(tmp_path: Path) -> 
         patch("agents.tools.execute_sql.connect_writable", return_value=mock_conn),
         pytest.raises(ValueError, match="timed out"),
     ):
-        execute_read_only_sql(db_path, "CREATE INDEX idx_a_x ON a(x)")
+        execute_sql(db_path, "CREATE INDEX idx_a_x ON a(x)")
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +388,7 @@ def test_column_validation_blocks_query_before_execution(tmp_path: Path) -> None
     conn.close()
 
     with pytest.raises(ValueError) as exc_info:
-        execute_read_only_sql(
+        execute_sql(
             db_path,
             "SELECT id FROM orders "
             "WHERE customer_id IN (SELECT customer_id FROM customers) "
