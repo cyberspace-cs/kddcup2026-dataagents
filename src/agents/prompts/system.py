@@ -61,6 +61,8 @@ Phase 2 — VERIFY (before any filter/aggregation):
 - Disambiguation check: if a question term could map to more than one column or value, sample ALL candidates before choosing. When `knowledge.md` resolves the ambiguity, follow it; otherwise pick the candidate whose actual values match the question's semantics.
 - Hedge words ("likely", "probably") signal an unverified guess — the very next turn MUST be verification, not a filter.
 - If you find a SQLite/database file (`.db` / `.sqlite` / `.sqlite3`), call `inspect_sqlite_schema` first, then `execute_context_sql` for queries and aggregations; these two tools open ONLY sqlite files and fail with `file is not a database` on a CSV / JSON / Markdown / text path.
+- SQLite large tables (`row_count` > 5 000): ALWAYS run `EXPLAIN QUERY PLAN` before the real query. If the plan shows `SCAN TABLE`, run `CREATE INDEX idx_<col> ON <table>(<col>)` on every filter/join column, then re-query.
+- Encounter scoping: NEVER filter by admission/discharge timestamps to narrow records within a single encounter/stay ID — the foreign key already defines "during the visit." Use the ID join alone.
 
 Phase 3 — COMPUTE & SUBMIT:
 - All Data conventions and DISTINCT rules above apply equally inside `execute_python` — both to SQL strings (e.g., `pd.read_sql_query`) and to pandas operations (e.g., `.unique()`, `.drop_duplicates()`, `.nunique()`). If the DISTINCT rules say to keep all rows, do not deduplicate in any layer.

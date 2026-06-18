@@ -24,6 +24,8 @@ ANSWER_ARTIFACT_FILENAME: Final = "answer.csv"
 SQLITE_ONLY_EXTENSIONS: Final = (".db", ".sqlite", ".sqlite3")
 NON_SQLITE_PATH_WARNING: Final = "do NOT call on `.csv` / `.json` / `.md` / `.txt` paths."
 
+SQLITE_QUERY_TIMEOUT_SECONDS: Final = 30
+
 
 def inline_answer_size_phrase() -> str:
     """Human-readable size contract for inline answer payloads."""

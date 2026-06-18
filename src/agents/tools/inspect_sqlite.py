@@ -26,17 +26,22 @@ def inspect_sqlite_database(path: Path) -> dict[str, Any]:
                 ORDER BY name
                 """
             ).fetchall()
+            tables: list[dict[str, Any]] = []
+            for name, create_sql in rows:
+                try:
+                    (count,) = conn.execute(f"SELECT COUNT(*) FROM [{name}]").fetchone()
+                except sqlite3.DatabaseError:
+                    count = None
+                tables.append(
+                    {
+                        "name": name,
+                        "create_sql": create_sql,
+                        "row_count": count,
+                    }
+                )
     except sqlite3.DatabaseError as exc:
         maybe_raise_non_sqlite_path_error(path, exc)
         raise
-    tables: list[dict[str, Any]] = []
-    for name, create_sql in rows:
-        tables.append(
-            {
-                "name": name,
-                "create_sql": create_sql,
-            }
-        )
     return {
         "path": str(path),
         "tables": tables,
