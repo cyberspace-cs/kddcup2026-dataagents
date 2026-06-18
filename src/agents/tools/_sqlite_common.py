@@ -31,6 +31,19 @@ def maybe_raise_non_sqlite_path_error(path: Path, exc: sqlite3.DatabaseError) ->
     ) from exc
 
 
+def guard_non_sqlite_path(path: Path) -> None:
+    """Reject known non-SQLite extensions before opening a connection."""
+    ext = path.suffix.lower()
+    redirect = _NON_SQLITE_PATH_REDIRECT.get(ext)
+    if redirect is not None:
+        raise ValueError(
+            f"Path '{path.name}' is not a sqlite database "
+            f"(extension: {ext}). "
+            f"For this file type, use {redirect} instead of "
+            f"inspect_sqlite_schema / execute_context_sql."
+        ) from None
+
+
 def _install_query_timeout(
     conn: sqlite3.Connection, timeout: float = SQLITE_QUERY_TIMEOUT_SECONDS
 ) -> None:

@@ -318,6 +318,28 @@ def test_explain_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
         execute_read_only_sql(db_path, "EXPLAIN QUERY PLAN SELECT * FROM a")
 
 
+def test_create_index_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
+    """CREATE INDEX path translates 'interrupted' into a ValueError with hints."""
+    from unittest.mock import MagicMock, patch
+
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE a (x INTEGER)")
+    conn.commit()
+    conn.close()
+
+    mock_conn = MagicMock()
+    mock_conn.execute.side_effect = sqlite3.OperationalError("interrupted")
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch("agents.tools.execute_sql.connect_writable", return_value=mock_conn),
+        pytest.raises(ValueError, match="timed out"),
+    ):
+        execute_read_only_sql(db_path, "CREATE INDEX idx_a_x ON a(x)")
+
+
 # ---------------------------------------------------------------------------
 # Subquery column validation
 # ---------------------------------------------------------------------------

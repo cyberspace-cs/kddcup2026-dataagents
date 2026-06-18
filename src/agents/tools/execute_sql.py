@@ -13,6 +13,7 @@ from agents.tools._fields import positive_int_field
 from agents.tools._sqlite_common import (
     connect_read_only,
     connect_writable,
+    guard_non_sqlite_path,
     maybe_raise_non_sqlite_path_error,
     validate_subquery_columns,
 )
@@ -46,6 +47,7 @@ def _get_schema_map(conn: sqlite3.Connection) -> dict[str, list[str]]:
 
 def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str, Any]:
     """Execute SELECT/WITH/PRAGMA/EXPLAIN/CREATE INDEX against a SQLite database."""
+    guard_non_sqlite_path(path)
     normalized = sql.strip()
     normalized_lower = normalized.lower()
 
@@ -91,8 +93,6 @@ def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str
         "row_count": len(limited_rows),
         "truncated": truncated,
     }
-    if warnings:
-        result["warning"] = " | ".join(warnings)
     return result
 
 
@@ -101,6 +101,11 @@ def _handle_create_index(path: Path, sql: str) -> dict[str, Any]:
     try:
         with connect_writable(path) as conn:
             conn.execute(sql)
+    except sqlite3.OperationalError as exc:
+        if "interrupted" in str(exc).lower():
+            raise ValueError(_TIMEOUT_HINT) from exc
+        maybe_raise_non_sqlite_path_error(path, exc)
+        raise
     except sqlite3.DatabaseError as exc:
         maybe_raise_non_sqlite_path_error(path, exc)
         raise
