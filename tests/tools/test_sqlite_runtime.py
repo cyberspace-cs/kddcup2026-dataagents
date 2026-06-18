@@ -296,6 +296,28 @@ def test_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
         )
 
 
+def test_explain_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
+    """EXPLAIN path translates 'interrupted' into a ValueError with hints."""
+    from unittest.mock import MagicMock, patch
+
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE a (x INTEGER)")
+    conn.commit()
+    conn.close()
+
+    mock_conn = MagicMock()
+    mock_conn.execute.side_effect = sqlite3.OperationalError("interrupted")
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch("agents.tools.execute_sql.connect_read_only", return_value=mock_conn),
+        pytest.raises(ValueError, match="timed out"),
+    ):
+        execute_read_only_sql(db_path, "EXPLAIN QUERY PLAN SELECT * FROM a")
+
+
 # ---------------------------------------------------------------------------
 # Subquery column validation
 # ---------------------------------------------------------------------------

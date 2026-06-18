@@ -98,8 +98,12 @@ def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str
 
 def _handle_create_index(path: Path, sql: str) -> dict[str, Any]:
     """Execute CREATE INDEX on a writable connection."""
-    with connect_writable(path) as conn:
-        conn.execute(sql)
+    try:
+        with connect_writable(path) as conn:
+            conn.execute(sql)
+    except sqlite3.DatabaseError as exc:
+        maybe_raise_non_sqlite_path_error(path, exc)
+        raise
     return {"ok": True, "message": "Index created."}
 
 
@@ -109,6 +113,11 @@ def _handle_explain(path: Path, sql: str) -> dict[str, Any]:
         with connect_read_only(path) as conn:
             cursor = conn.execute(sql)
             rows = cursor.fetchall()
+    except sqlite3.OperationalError as exc:
+        if "interrupted" in str(exc).lower():
+            raise ValueError(_TIMEOUT_HINT) from exc
+        maybe_raise_non_sqlite_path_error(path, exc)
+        raise
     except sqlite3.DatabaseError as exc:
         maybe_raise_non_sqlite_path_error(path, exc)
         raise
