@@ -37,8 +37,15 @@ class VideoReportInput(BaseModel):
     extracted_data: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Exact transcriptions keyed by name: tables (columns + rows), chart series "
-            "values, KPIs, on-screen text. Transcribe numbers exactly as shown."
+            "Two top-level keys REQUIRED, even if one is empty: "
+            "`rules` = the configuration the video defines (field/column names, "
+            "thresholds with operator and value, group-by / sort-by / top-N, scheme or "
+            "batch IDs, statistical periods, table names) — the QUERY to apply against "
+            "real data; "
+            "`displayed_samples` = numbers, distribution snapshots, TOP-N panels, "
+            "preview rows the screen merely SHOWS — NOT the answer. "
+            "Transcribe all numbers exactly as shown. Same value may appear in BOTH "
+            "keys with a `warnings` note if you cannot tell which it is."
         ),
     )
     coverage: list[str] = Field(
