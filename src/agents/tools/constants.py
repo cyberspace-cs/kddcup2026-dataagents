@@ -49,6 +49,12 @@ JSON_EXTS = frozenset({".json"})
 DOC_EXTS = frozenset({".md", ".txt"})
 PDF_EXTS = frozenset({".pdf"})
 
+# 视频扩展名必须与 `agents.runtime.media.VIDEO_EXTENSIONS` 同步——`inspect_files` 把
+# `.mp4`/`.mov`/... 标成 `supported=false` 之后，explorer 拿到的 reason 必须明确指向
+# 唯一正确的工具 `explore_video`；旧默认文案是 "use execute_python or another preview
+# tool"，模型读完会试着 pandas/csv 读视频文件，必然失败、烧 1–3 步预算才反应过来。
+_VIDEO_HINT = "Use explore_video to analyze video content."
+
 UNSUPPORTED_HINT_BY_EXT: dict[str, str] = {
     ".xlsx": "Use execute_python with pandas/openpyxl to read .xlsx.",
     ".xls": "Use execute_python with pandas/xlrd to read legacy .xls.",
@@ -57,4 +63,12 @@ UNSUPPORTED_HINT_BY_EXT: dict[str, str] = {
     ".jsonl": "Use execute_python or read_doc to stream JSON Lines.",
     ".ndjson": "Use execute_python or read_doc to stream NDJSON.",
     ".tsv": "Use execute_python with pandas to read .tsv.",
+    ".mp4": _VIDEO_HINT,
+    ".m4v": _VIDEO_HINT,
+    ".avi": _VIDEO_HINT,
+    ".mov": _VIDEO_HINT,
+    ".mkv": _VIDEO_HINT,
+    ".webm": _VIDEO_HINT,
+    ".flv": _VIDEO_HINT,
+    ".wmv": _VIDEO_HINT,
 }

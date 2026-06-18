@@ -147,6 +147,48 @@ def test_inspect_files_xlsx_marked_unsupported(task_with_mixed_context: PublicTa
     assert "xlsx" in result["unsupported_formats"]
 
 
+def test_inspect_files_video_hints_explore_video(tmp_path: Path) -> None:
+    """视频文件的 reason 必须明确指向 `explore_video`，绝不能误导走 execute_python。
+
+    旧默认文案 "use execute_python or another preview tool" 让模型试着 pandas/csv 读视频
+    必然失败，至少烧 1 步、最坏 2–3 步才换工具。explorer 的工具集里只有 `explore_video`
+    能处理视频，hint 必须直接点名。
+
+    覆盖全部 `agents.runtime.media.VIDEO_EXTENSIONS` 也是同步契约——任何新加的扩展名都
+    要在 constants 里登记 hint，否则该视频会回落到默认文案上。
+    """
+    from agents.runtime.media import VIDEO_EXTENSIONS
+
+    task = _make_task(tmp_path)
+    for ext in sorted(VIDEO_EXTENSIONS):
+        (task.context_dir / f"clip{ext}").write_bytes(b"\x00")
+
+    result = inspect_context_files(task)
+
+    by_path = {entry["path"]: entry for entry in result["files"]}
+    for ext in VIDEO_EXTENSIONS:
+        entry = by_path[f"clip{ext}"]
+        assert entry["supported"] is False, ext
+        assert entry["format"] == ext.lstrip("."), ext
+        # 关键：不能让模型读到任何引导它走 execute_python 的字眼
+        assert "execute_python" not in entry["reason"], ext
+        assert "explore_video" in entry["reason"], ext
+
+
+def test_unsupported_hint_covers_every_video_extension() -> None:
+    """`UNSUPPORTED_HINT_BY_EXT` 必须覆盖 `media.VIDEO_EXTENSIONS` 的全集。
+
+    单测两份常量的同步契约——任何一方增减扩展名，本断言会立刻提醒另一方。
+    防止下次有人在 `media.py` 加 `.ogv` 但忘了在 `constants.py` 登记 hint。
+    """
+    from agents.runtime.media import VIDEO_EXTENSIONS
+
+    missing = VIDEO_EXTENSIONS - set(constants.UNSUPPORTED_HINT_BY_EXT)
+    assert not missing, f"video extensions without inspect_files hint: {sorted(missing)}"
+    for ext in VIDEO_EXTENSIONS:
+        assert "explore_video" in constants.UNSUPPORTED_HINT_BY_EXT[ext], ext
+
+
 def test_inspect_files_unknown_extension_marked_unsupported(
     task_with_mixed_context: PublicTask,
 ) -> None:
