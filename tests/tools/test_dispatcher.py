@@ -203,14 +203,14 @@ def test_dispatch_answer_inline_row_threshold_is_rejected(task: PublicTask) -> N
         ValueError,
         match=(
             r"^inline rows payload exceeds artifact-handoff threshold "
-            r"\(got 11 rows, 11 cells; threshold = 11 rows or 51 cells\)"
+            r"\(got 11 rows, 11 cells; threshold = 10 rows or 50 cells\)"
         ),
     ):
         dispatch_tool_call(task, call, registry)
 
 
 def test_dispatch_answer_inline_cell_threshold_is_rejected(task: PublicTask) -> None:
-    """9 行 × 6 列 = 54 cells → 即使行数没到 11，单元格量超阈值同样硬闸。
+    """9 行 × 6 列 = 54 cells → 即使行数没超过 10，单元格量超阈值同样硬闸。
 
     覆盖宽表场景（如 task_4 风格的 schema dump）：少行多列同样会触发幻觉。
     """
@@ -223,10 +223,42 @@ def test_dispatch_answer_inline_cell_threshold_is_rejected(task: PublicTask) -> 
         ValueError,
         match=(
             r"^inline rows payload exceeds artifact-handoff threshold "
-            r"\(got 9 rows, 54 cells; threshold = 11 rows or 51 cells\)"
+            r"\(got 9 rows, 54 cells; threshold = 10 rows or 50 cells\)"
         ),
     ):
         dispatch_tool_call(task, call, registry)
+
+
+def test_dispatch_answer_inline_at_row_threshold_succeeds(task: PublicTask) -> None:
+    """10 行 × 1 列 = 10 cells → 正好行数阈值，仍允许 inline。"""
+    registry = create_default_tool_registry()
+    call = _call("answer", columns=["x"], rows=[[i] for i in range(10)])
+
+    result, should_terminate = dispatch_tool_call(task, call, registry)
+
+    assert result.ok is True
+    assert should_terminate is True
+    assert result.answer is not None
+    assert len(result.answer.rows) == 10
+    assert result.content["row_count"] == 10
+    assert result.content["column_count"] == 1
+
+
+def test_dispatch_answer_inline_at_cell_threshold_succeeds(task: PublicTask) -> None:
+    """5 行 × 10 列 = 50 cells → 正好单元格阈值，仍允许 inline。"""
+    registry = create_default_tool_registry()
+    cols = [f"c{i}" for i in range(10)]
+    rows = [[i] * 10 for i in range(5)]
+    call = _call("answer", columns=cols, rows=rows)
+
+    result, should_terminate = dispatch_tool_call(task, call, registry)
+
+    assert result.ok is True
+    assert should_terminate is True
+    assert result.answer is not None
+    assert len(result.answer.rows) == 5
+    assert result.content["row_count"] == 5
+    assert result.content["column_count"] == 10
 
 
 def test_dispatch_answer_inline_just_below_threshold_succeeds(task: PublicTask) -> None:

@@ -44,7 +44,7 @@ class AnswerInput(BaseModel):
             default_factory=list,
             description=(
                 "Column header names. Leave empty when using from_csv. "
-                "Inline is rejected for 11+ rows — use from_csv instead."
+                "Inline is rejected above 10 rows or 50 cells — use from_csv instead."
             ),
         ),
     ]
@@ -55,7 +55,7 @@ class AnswerInput(BaseModel):
             description=(
                 "Answer rows; each row's length must match the columns array. "
                 "Leave empty when using from_csv. "
-                "Inline is rejected for 11+ rows — use from_csv instead."
+                "Inline is rejected above 10 rows or 50 cells — use from_csv instead."
             ),
         ),
     ]
@@ -65,8 +65,8 @@ class AnswerInput(BaseModel):
             default=None,
             description=(
                 "Absolute path to a CSV file containing the answer table "
-                "(header row + data rows). REQUIRED for 11+ rows or 51+ cells "
-                "(inline is rejected above this threshold). When set, `columns` "
+                "(header row + data rows). REQUIRED when the answer exceeds "
+                "10 rows or 50 cells. When set, `columns` "
                 "and `rows` MUST be empty. Convention: write the CSV from "
                 "`execute_python` under `os.environ['DABENCH_ANSWER_DIR']`."
             ),
@@ -265,7 +265,7 @@ def _inline_threshold_error(columns: list[str], rows: list[list[Any]]) -> str | 
     """Return the inline-size threshold error, or None when the payload is allowed."""
     n_rows = len(rows)
     n_cells = n_rows * len(columns)
-    if n_rows >= INLINE_ANSWER_ROW_LIMIT or n_cells >= INLINE_ANSWER_CELL_LIMIT:
+    if n_rows > INLINE_ANSWER_ROW_LIMIT or n_cells > INLINE_ANSWER_CELL_LIMIT:
         return (
             f"inline rows payload exceeds artifact-handoff threshold "
             f"(got {n_rows} rows, {n_cells} cells; threshold = "

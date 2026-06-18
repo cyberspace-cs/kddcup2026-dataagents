@@ -51,6 +51,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lost.
 
 ### Changed
+- **Answer submission guidance and verifier checks updated.** Inline
+  answers now consistently allow up to 10 rows and 50 cells, with larger
+  payloads directed to `from_csv`; error text points models to
+  `DataFrame.to_csv`. Prompt and verifier guidance now reject unit suffixes
+  only on numeric measure cells while preserving requested text, code, and
+  unit-label columns verbatim.
 - **`parse_answer_csv` rescues narrow headers caused by full-width commas.**
   When `pd.read_csv` reports a header/data width mismatch, the parser retries
   once after replacing unquoted full-width commas `，` in the header row only.

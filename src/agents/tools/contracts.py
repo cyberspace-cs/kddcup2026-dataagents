@@ -14,9 +14,10 @@ PATH_CONVENTION_NOTE: Final = (
 # large values make run-benchmark failures expensive.
 EXECUTE_PYTHON_TIMEOUT_SECONDS: Final = 30
 
-# `answer` inline path hard limits. Passing either limit forces `from_csv`.
-INLINE_ANSWER_ROW_LIMIT: Final = 11
-INLINE_ANSWER_CELL_LIMIT: Final = 51
+# `answer` inline path hard limits.  Values are the max allowed counts;
+# exceeding either forces `from_csv`.
+INLINE_ANSWER_ROW_LIMIT: Final = 10
+INLINE_ANSWER_CELL_LIMIT: Final = 50
 
 ANSWER_ARTIFACT_ENV_VAR: Final = "DABENCH_ANSWER_DIR"
 ANSWER_ARTIFACT_FILENAME: Final = "answer.csv"
@@ -27,12 +28,12 @@ NON_SQLITE_PATH_WARNING: Final = "do NOT call on `.csv` / `.json` / `.md` / `.tx
 
 def inline_answer_size_phrase() -> str:
     """Human-readable size contract for inline answer payloads."""
-    return f"≤{INLINE_ANSWER_ROW_LIMIT - 1} rows AND ≤{INLINE_ANSWER_CELL_LIMIT - 1} cells"
+    return f"≤{INLINE_ANSWER_ROW_LIMIT} rows AND ≤{INLINE_ANSWER_CELL_LIMIT} cells"
 
 
 def artifact_answer_size_phrase() -> str:
     """Human-readable size contract for CSV artifact answer payloads."""
-    return f"{INLINE_ANSWER_ROW_LIMIT}+ rows OR {INLINE_ANSWER_CELL_LIMIT}+ cells"
+    return f"answers exceeding {INLINE_ANSWER_ROW_LIMIT} rows OR {INLINE_ANSWER_CELL_LIMIT} cells"
 
 
 def answer_artifact_expression() -> str:
