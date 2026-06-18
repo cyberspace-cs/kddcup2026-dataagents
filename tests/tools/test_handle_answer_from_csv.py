@@ -311,7 +311,7 @@ def test_inline_submission_with_existing_artifact_raises(task: PublicTask, tmp_p
     回归参照 run 20260501-010/task_8：execute_python 已经把 140 行写到
     `_answer/answer.csv`，但 `answer` tool_call 的 JSON 参数里只 inline 了 head(5)
     的 5 行（attention drift 把更早一轮 head() 预览当成了完整表）。inline
-    硬闸（10 行 / 50 cells）抓不住此类小体量截断；提交时间点检测到 artifact
+    硬闸（>10 行 / >50 cells）抓不住此类小体量截断；提交时间点检测到 artifact
     残留就直接拒绝，让 ReAct 循环把错误回灌给模型自行改用 from_csv。
 
     artifact 文件必须保留在原位——下一轮模型才能用同一路径走 from_csv 重交。
@@ -341,7 +341,7 @@ def test_artifact_exists_beats_inline_threshold_when_both_fire(
     而不是把模型导回去重写一遍它早已写好的 CSV。
 
     回归参照 run 20260614-009/task_31：execute_python 已经把表写到
-    `_answer/answer.csv`，模型却又发了 10 行 inline。旧顺序下 Pydantic 先按"阈值"
+    `_answer/answer.csv`，模型却又发了 12 行 inline。旧顺序下 Pydantic 先按"阈值"
     拒了 inline，错误信息是"write the table to ... answer.csv from execute_python and
     resubmit with from_csv"——模型读完只会再算一遍同一份表，从未反应过来应改 from_csv。
     新顺序让 handler 的 artifact-exists 错误胜出，里头直接给出可照搬的
@@ -351,7 +351,7 @@ def test_artifact_exists_beats_inline_threshold_when_both_fire(
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text("id\n" + "\n".join(str(n) for n in range(20)) + "\n", encoding="utf-8")
 
-    # 12 行 inline → 阈值条件 (n_rows >= 10) 也会成立。
+    # 12 行 inline → 阈值条件 (n_rows > 10) 也会成立。
     args = AnswerInput.model_validate({"columns": ["id"], "rows": [[n] for n in range(12)]})
 
     with pytest.raises(ValueError) as exc_info:
@@ -379,13 +379,14 @@ def test_inline_threshold_check_in_handler_when_no_artifact(
         for child in answer_dir.iterdir():
             child.unlink()
 
-    args = AnswerInput.model_validate({"columns": ["id"], "rows": [[n] for n in range(10)]})
+    args = AnswerInput.model_validate({"columns": ["id"], "rows": [[n] for n in range(11)]})
 
     with pytest.raises(
         ValueError,
         match=(
             r"^inline rows payload exceeds artifact-handoff threshold "
-            r"\(got 10 rows, 10 cells; threshold = 10 rows or 50 cells\)"
+            r"\(got 11 rows, 11 cells; inline is allowed only for <= 10 rows AND "
+            r"<= 50 cells; if either limit is exceeded, use from_csv\)"
         ),
     ):
         _answer_tool.handler(task, args)
@@ -400,8 +401,24 @@ def test_fallback_builder_rejects_inline_over_threshold(task: PublicTask) -> Non
     """
     from agents.tools.answer import build_answer_table_without_side_effects
 
-    arguments = {"columns": ["id"], "rows": [[n] for n in range(10)]}
+    arguments = {"columns": ["id"], "rows": [[n] for n in range(11)]}
     assert build_answer_table_without_side_effects(task, arguments) is None
+
+
+def test_fallback_builder_accepts_inline_at_cell_threshold(task: PublicTask) -> None:
+    """fallback builder 与 handler 同源：正好 50 cells 仍是合法 inline。"""
+    from agents.tools.answer import build_answer_table_without_side_effects
+
+    arguments = {
+        "columns": [f"c{i}" for i in range(10)],
+        "rows": [[row] * 10 for row in range(5)],
+    }
+
+    answer = build_answer_table_without_side_effects(task, arguments)
+
+    assert answer is not None
+    assert len(answer.columns) == 10
+    assert len(answer.rows) == 5
 
 
 def test_from_csv_normalizes_fullwidth_comma_in_header(task: PublicTask, tmp_path: Path) -> None:
