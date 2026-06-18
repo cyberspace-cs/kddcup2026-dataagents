@@ -444,7 +444,7 @@ def test_from_csv_normalizes_fullwidth_comma_in_all_rows(task: PublicTask, tmp_p
 
 
 def test_from_csv_no_false_positive_on_quoted_fullwidth(task: PublicTask, tmp_path: Path) -> None:
-    """Quoted cell 内的全角逗号也会被归一化，但因在 quote 内不影响列分割。"""
+    """Quoted cell 内的全角逗号保持原样，不被归一化。"""
     csv_path = _write(
         tmp_path / "_answer" / "quoted_fw.csv",
         'name,desc\nAlice,"你好，世界"\nBob,"再见，朋友"\n',
@@ -456,7 +456,7 @@ def test_from_csv_no_false_positive_on_quoted_fullwidth(task: PublicTask, tmp_pa
     assert result.ok is True
     assert result.answer is not None
     assert result.answer.columns == ["name", "desc"]
-    assert result.answer.rows == [["Alice", "你好,世界"], ["Bob", "再见,朋友"]]
+    assert result.answer.rows == [["Alice", "你好，世界"], ["Bob", "再见，朋友"]]
 
 
 def test_from_csv_rejects_wide_rows_after_normalization(task: PublicTask, tmp_path: Path) -> None:

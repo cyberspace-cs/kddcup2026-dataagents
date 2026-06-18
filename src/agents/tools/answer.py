@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import pathlib
 import re
 import shutil
@@ -104,20 +105,33 @@ def _coerce_row(row: list[str], dtypes: list[str]) -> list[Any]:
     return out
 
 
-def _normalize_fullwidth_delimiters(path: pathlib.Path) -> bool:
-    """Replace CJK full-width commas/semicolons/pipes with ASCII equivalents in-place.
+def _normalize_fullwidth_delimiters(text: str) -> str:
+    """Replace CJK full-width commas/semicolons/pipes with ASCII equivalents.
 
-    Returns True if any replacement was made.
+    Only replaces characters outside CSV-quoted fields to preserve cell content.
     """
-    try:
-        text = path.read_text("utf-8")
-    except (UnicodeDecodeError, OSError):
-        return False
     if not _FULLWIDTH_PUNCT_RE.search(text):
-        return False
-    normalized = text.replace("，", ",").replace("；", ";").replace("｜", "|")
-    path.write_text(normalized, "utf-8")
-    return True
+        return text
+    fw_map = {"，": ",", "；": ";", "｜": "|"}
+    out: list[str] = []
+    in_quotes = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            if in_quotes and i + 1 < n and text[i + 1] == '"':
+                out.append('""')
+                i += 2
+                continue
+            in_quotes = not in_quotes
+            out.append(ch)
+        elif not in_quotes and ch in fw_map:
+            out.append(fw_map[ch])
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _typecast_string_table(
@@ -155,20 +169,22 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
         raise ValueError(f"from_csv file not found: {path}")
     if path.stat().st_size > _FROM_CSV_SIZE_LIMIT_BYTES:
         raise ValueError("from_csv exceeds 5MB; split the table or use inline columns/rows")
-    _normalize_fullwidth_delimiters(path)
+    try:
+        raw = path.read_text("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"from_csv is not valid UTF-8: {exc}") from exc
+    normalized = _normalize_fullwidth_delimiters(raw)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", ParserWarning)
             df = pd.read_csv(
-                path,
+                io.StringIO(normalized),
                 dtype=str,
                 engine="python",
                 index_col=False,
                 keep_default_na=False,
                 na_filter=False,
             )
-    except UnicodeDecodeError as exc:
-        raise ValueError(f"from_csv is not valid UTF-8: {exc}") from exc
     except EmptyDataError as exc:
         raise ValueError("from_csv is empty; expected header row + data rows") from exc
     except ParserWarning as exc:
