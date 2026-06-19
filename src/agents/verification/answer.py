@@ -49,6 +49,9 @@ Check 2 — MISSING columns:
 Does the question EXPLICITLY ask the user to output attributes that
 the answer does NOT include?  Only count attributes the question asks
 you to RETURN, not values used solely to filter or rank.
+Judge missing columns ONLY from the submitted COLUMNS list.  If a
+PRODUCING CODE section is present, ignore every intermediate SQL/Python
+selected column for this check; producing code is not the submitted table.
 Examples:
   "list their ID, sex and diagnosis" → 3 output columns required.
   "give the name and reference" → 2 output columns required.
@@ -107,6 +110,8 @@ the data.  Values like 100%, 0%, or 99.95% are perfectly valid.
 Only flag values that are MATHEMATICALLY impossible for the requested measure.
 
 Check 5 — NULL-filter leakage (only when a PRODUCING CODE section is present):
+The PRODUCING CODE section is provided ONLY for this null-filter check.
+Do not use producing code for extra, missing, row-count, or value checks.
 Reject a data-listing answer whose producing code drops NULL rows of a
 SUBMITTED column (`WHERE <col> IS NOT NULL`, `.dropna(`, `.notna()`)
 unless the question explicitly excludes empty values.  Instruction:

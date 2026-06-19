@@ -18,6 +18,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tool_choice` in thinking mode. `"forced"` is an opt-in optimization that
   pins the video sub-agent's tool choice to `report` in one turn, for
   deployments verified via `scripts/smoke_video_tool_choice.py`.
+- **`agent.video_max_tokens` config field.** Video sub-agent calls can use a
+  larger output cap than the main ReAct loop. When rate limiting is enabled and
+  `video_max_tokens` is explicitly higher than `max_tokens`, the video adapter
+  reserves that larger output budget while the prompt estimator still reserves
+  the fixed video input token estimate.
 - **Model adapters accept per-call `tools`.** `ModelAdapter.complete(messages,
   tools=...)` lets the ReAct loop push its own registry on every turn, so the
   request-body tool advertisement and the execution dispatch table are the
@@ -25,6 +30,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the byte-stable cached payload; overrides render fresh.
 
 ### Behavior changes (intentional tightening)
+- **Video report `extracted_data` has a fixed rules/sample shape.** The
+  video `report` tool now normalizes missing extracted data to
+  `{"rules": {}, "displayed_samples": {}}`. Flat legacy payloads
+  (keys outside `rules`/`displayed_samples`) raise a validation error
+  that the agent loop surfaces as a retry prompt, so downstream agents
+  can reliably distinguish query instructions from on-screen preview
+  values.
 - **`run.blocklist` never reaches the judged container.** The submission
   entrypoint force-clears the blocklist baked into the image config: a
   skip-list entry kept from local debugging would otherwise silently

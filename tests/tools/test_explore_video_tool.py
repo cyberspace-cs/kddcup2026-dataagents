@@ -44,7 +44,15 @@ def test_happy_path_returns_parsed_findings(
     def fake_run(t, video_path, instructions, model, **kwargs):
         seen.update(path=video_path, instructions=instructions)
         return VideoAgentResult(
-            findings=json.dumps({"summary": "s", "extracted_data": {"k": 1}}),
+            findings=json.dumps(
+                {
+                    "summary": "s",
+                    "extracted_data": {
+                        "rules": {},
+                        "displayed_samples": {"k": 1},
+                    },
+                }
+            ),
             steps_used=1,
             success=True,
         )

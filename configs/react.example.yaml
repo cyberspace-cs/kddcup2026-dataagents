@@ -9,6 +9,9 @@ agent:
   allow_parallel_tool_calls: true          # bool；个别后端不支持 parallel_tool_calls 时设 false
   max_tokens: 8192                         # int >= 0；0=不下发上限走服务端默认
   enable_thinking: true                    # bool | null；null = 不下发 extra_body
+  video_tool_choice: auto                  # "auto" | "forced"; forced 仅给已验证后端 opt-in
+  video_max_tokens: 16384                  # int >= 0 | null；null=沿用 max_tokens
+
   # backend_kind 决定思考模式参数在 extra_body 里的位置：
   # - "vllm":      enable_thinking 嵌套到 chat_template_kwargs
   # - "dashscope": enable_thinking 走顶层（DashScope OpenAI 兼容模式约定）

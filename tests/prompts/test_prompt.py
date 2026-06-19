@@ -62,6 +62,19 @@ def test_system_prompts_use_runtime_clock_for_current_year() -> None:
     assert "do not infer the current year from the latest date in the dataset" in lower
 
 
+def test_system_prompt_distinguishes_video_rules_from_displayed_samples() -> None:
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "video_findings" in prompt
+    assert "findings.extracted_data.rules" in prompt
+    assert "findings.extracted_data.displayed_samples" in prompt
+    assert "never copy" in lower
+    assert "screen previews/examples only" in lower
+    assert "inspect_sqlite_schema" in prompt
+    assert "df.columns" in prompt
+
+
 # ---------- build_observation_prompt: ok parameter & recovery hints ----------
 
 
