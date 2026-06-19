@@ -135,13 +135,18 @@ def _extract_reasoning_content(message: Any) -> str:
 
     vLLM `--reasoning-parser qwen3` 与百炼 Qwen3 均会把思维链塞进这个字段。
     OpenAI 官方 SDK 的 pydantic 模型不一定声明该字段，兜底走 `model_extra`。
+    Some vLLM builds expose the same field as `reasoning`.
     """
     direct = getattr(message, "reasoning_content", None)
     if isinstance(direct, str) and direct:
         return direct
+    direct_reasoning = getattr(message, "reasoning", None)
+    if isinstance(direct_reasoning, str) and direct_reasoning:
+        return direct_reasoning
     extras = getattr(message, "model_extra", None)
     if isinstance(extras, dict):
-        value = cast(dict[str, Any], extras).get("reasoning_content")
+        extra_dict = cast(dict[str, Any], extras)
+        value = extra_dict.get("reasoning_content") or extra_dict.get("reasoning")
         if isinstance(value, str):
             return value
     return ""

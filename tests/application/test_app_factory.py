@@ -165,3 +165,15 @@ def test_build_video_adapter_default_auto(monkeypatch: pytest.MonkeyPatch, tmp_p
     adapter = _build_video_adapter(_video_cfg(monkeypatch, tmp_path))
     assert isinstance(adapter, NativeToolsOpenAIAdapter)
     assert adapter.tool_choice == "auto"
+
+
+def test_build_video_adapter_uses_video_max_tokens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agents.application import _build_video_adapter
+
+    adapter = _build_video_adapter(
+        _video_cfg(monkeypatch, tmp_path, max_tokens=8192, video_max_tokens=16384)
+    )
+    assert isinstance(adapter, NativeToolsOpenAIAdapter)
+    assert adapter.max_tokens == 16384

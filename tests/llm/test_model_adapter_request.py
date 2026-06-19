@@ -169,6 +169,16 @@ def _adapter(adapter_cls: type, **overrides: Any) -> Any:
             "hidden",
             id="model-extra-fallback",
         ),
+        pytest.param(
+            types.SimpleNamespace(reasoning="direct-hidden"),
+            "direct-hidden",
+            id="direct-reasoning-alias",
+        ),
+        pytest.param(
+            types.SimpleNamespace(model_extra={"reasoning": "hidden-alias"}),
+            "hidden-alias",
+            id="model-extra-reasoning-alias",
+        ),
         pytest.param(types.SimpleNamespace(), "", id="absent"),
     ],
 )

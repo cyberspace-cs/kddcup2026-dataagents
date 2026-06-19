@@ -298,12 +298,24 @@ class AgentConfig:
     # - "forced": opt-in optimization — request-level named-function tool_choice pins `report`
     #   in one turn; only for deployments verified via scripts/smoke_video_tool_choice.py.
     video_tool_choice: Literal["forced", "auto"] = "auto"
+    # Video sub-agent can need a larger reasoning+tool-call budget than the main ReAct loop.
+    # None = inherit max_tokens; 0 = do not send max_tokens for video requests.
+    video_max_tokens: StrictInt | None = None
 
     @field_validator("model", "api_base", "api_key", mode="before")
     @classmethod
     def _coerce_str(cls, v: Any) -> str:
         # 旧实现 `str(...)`：保留 `123 → "123"` 与 `null → "None"`，避免对历史 YAML 静默破坏。
         return str(v)
+
+    @field_validator("max_tokens", "video_max_tokens")
+    @classmethod
+    def _check_max_tokens(cls, v: int | None, info: ValidationInfo) -> int | None:
+        if v is None:
+            return v
+        if v < 0:
+            raise ValueError(f"agent.{info.field_name} must be >= 0.")
+        return v
 
     @field_validator("temperature")
     @classmethod

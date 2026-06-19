@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agents.benchmark.schema import PublicTask
 from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistry
@@ -51,7 +51,8 @@ class VideoReportInput(BaseModel):
         default_factory=list,
         description=(
             'Timestamped events, e.g. [{"time": "00:42", "event": "bar chart of Q3 '
-            'revenue by category"}]. Cover the whole video.'
+            'revenue by category"}]. Cover the whole video. MUST be an array; use an '
+            "empty array when there are no events. FORBIDDEN: null or one plain string."
         ),
     )
     extracted_data: VideoExtractedData = Field(
@@ -64,6 +65,7 @@ class VideoReportInput(BaseModel):
             "real data; "
             "`displayed_samples` = numbers, distribution snapshots, TOP-N panels, "
             "preview rows the screen merely SHOWS — NOT the answer. "
+            "MUST be a structured object. FORBIDDEN: quoted JSON text. "
             "Transcribe all numbers exactly as shown. Same value may appear in BOTH "
             "keys with a `warnings` note if you cannot tell which it is."
         ),
@@ -72,13 +74,49 @@ class VideoReportInput(BaseModel):
         default_factory=list,
         description=(
             "Content you saw but did NOT fully transcribe (one item per entry), so the "
-            "caller can request a targeted follow-up."
+            "caller can request a targeted follow-up. MUST be an array of strings; use "
+            "an empty array when there is no omitted content. FORBIDDEN: null or one "
+            "plain string."
         ),
     )
     warnings: list[str] = Field(
         default_factory=list,
-        description="Blurry / truncated / uncertain readings, one atomic fact each.",
+        description=(
+            "Blurry / truncated / uncertain readings, one atomic fact each. MUST be an "
+            "array of strings; use an empty array when there are no warnings. FORBIDDEN: "
+            "null or one plain string."
+        ),
     )
+
+    @field_validator("extracted_data", mode="before")
+    @classmethod
+    def _parse_stringified_extracted_data(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return {}
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return value
+        return value
+
+    @field_validator("timeline", mode="before")
+    @classmethod
+    def _none_timeline_to_empty(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        return value
+
+    @field_validator("coverage", "warnings", mode="before")
+    @classmethod
+    def _normalize_text_list_fields(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            return [text] if text else []
+        return value
 
 
 VIDEO_REPORT_SCHEMA = normalize_for_vllm(VideoReportInput.model_json_schema())
@@ -109,7 +147,9 @@ def create_video_tool_registry() -> ToolRegistry:
         name="report",
         description=(
             "Submit your video analysis findings. This is your ONLY tool and the only "
-            "way to complete the task — call it exactly once with complete findings."
+            "way to complete the task — call it exactly once with complete findings. "
+            "Nested fields MUST stay structured. FORBIDDEN: stringified objects or "
+            "stringified arrays."
         ),
         json_schema=VIDEO_REPORT_SCHEMA,
         handler=handle_video_report,

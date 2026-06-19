@@ -218,6 +218,11 @@ def _build_video_adapter(config: AppConfig) -> ModelAdapter:
     sampling = _resolve_sampling_defaults(config.agent)
     reject_placeholder_api_key(config.agent.api_key, field="agent.api_key")
     has_rate_limiter = _has_rate_limiter(config)
+    max_tokens = (
+        config.agent.video_max_tokens
+        if config.agent.video_max_tokens is not None
+        else config.agent.max_tokens
+    )
 
     from agents.video.registry import create_video_tool_registry
 
@@ -232,7 +237,7 @@ def _build_video_adapter(config: AppConfig) -> ModelAdapter:
         tools=create_video_tool_registry(),
         allow_parallel_tool_calls=False,
         tool_choice=tool_choice,
-        max_tokens=config.agent.max_tokens,
+        max_tokens=max_tokens,
         enable_thinking=config.agent.enable_thinking,
         thinking_mode=config.agent.thinking_mode,
         reasoning_effort=config.agent.reasoning_effort,

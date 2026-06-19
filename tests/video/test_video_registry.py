@@ -61,6 +61,53 @@ def test_missing_extracted_data_defaults_to_empty_contract(tmp_path: Path) -> No
     assert findings["extracted_data"] == {"rules": {}, "displayed_samples": {}}
 
 
+def test_null_warnings_normalized_to_empty_list(tmp_path: Path) -> None:
+    registry = create_video_tool_registry()
+    result = registry.execute(
+        _make_task(tmp_path),
+        "report",
+        {
+            "summary": "dashboard",
+            "coverage": None,
+            "warnings": None,
+        },
+    )
+
+    assert result.ok is True
+    findings = json.loads(result.content["findings"])
+    assert findings["coverage"] == []
+    assert findings["warnings"] == []
+
+
+def test_stringified_extracted_data_and_single_coverage_normalized(tmp_path: Path) -> None:
+    registry = create_video_tool_registry()
+    result = registry.execute(
+        _make_task(tmp_path),
+        "report",
+        {
+            "summary": "dashboard",
+            "extracted_data": json.dumps(
+                {
+                    "rules": {"scheme_id": "Q3-FM-07"},
+                    "displayed_samples": {"threshold": "100.00亿"},
+                },
+                ensure_ascii=False,
+            ),
+            "coverage": "Threshold details were visible but partly abbreviated.",
+            "warnings": None,
+        },
+    )
+
+    assert result.ok is True
+    findings = json.loads(result.content["findings"])
+    assert findings["extracted_data"] == {
+        "rules": {"scheme_id": "Q3-FM-07"},
+        "displayed_samples": {"threshold": "100.00亿"},
+    }
+    assert findings["coverage"] == ["Threshold details were visible but partly abbreviated."]
+    assert findings["warnings"] == []
+
+
 def test_flat_extracted_data_rejected(tmp_path: Path) -> None:
     registry = create_video_tool_registry()
     with pytest.raises(

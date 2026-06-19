@@ -228,7 +228,12 @@ def _extract_findings(steps: list[Any]) -> str | None:
             raw_args: Any = getattr(step, "action_input", None)
             if not isinstance(raw_args, dict):
                 continue
+            from agents.explorer.registry import DICT_FIELDS, coerce_dict_field
+
             d = cast(dict[str, Any], raw_args)
+            for df in DICT_FIELDS:
+                if df in d:
+                    d[df] = coerce_dict_field(d[df])
             assembled = {k: d.get(k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS}
             return _json.dumps(assembled, ensure_ascii=False)
     return None

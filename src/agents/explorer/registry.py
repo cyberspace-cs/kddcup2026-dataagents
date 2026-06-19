@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agents.benchmark.schema import PublicTask
 from agents.tools.execute_sql import execute_context_sql
@@ -16,6 +16,30 @@ from agents.tools.read_doc import read_doc
 from agents.tools.read_json import read_json
 from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
+
+
+def coerce_dict_field(val: Any) -> dict[str, Any]:
+    """Convert a list-of-objects to a keyed dict if the model sent the wrong shape."""
+    if isinstance(val, dict):
+        return cast(dict[str, Any], val)
+    if not isinstance(val, list):
+        return {}
+    items = cast(list[dict[str, Any] | Any], val)
+    out: dict[str, Any] = {}
+    for item in items:
+        if isinstance(item, dict):
+            d_item = cast(dict[str, Any], item)
+            key: str | None = d_item.get("name") or d_item.get("table") or d_item.get("file")
+            if key:
+                out[str(key)] = {
+                    k: v for k, v in d_item.items() if k not in ("name", "table", "file")
+                }
+                continue
+        out[f"_item_{len(out)}"] = item
+    return out
+
+
+DICT_FIELDS = ("schema_map", "knowledge", "value_samples")
 
 
 class ReportInput(BaseModel):
@@ -42,7 +66,7 @@ class ReportInput(BaseModel):
         default_factory=list,
         description='Discovered relationships, e.g. [{"left": "a.col", "right": "b.col"}].',
     )
-    value_samples: dict[str, list[str]] = Field(
+    value_samples: dict[str, list[Any]] = Field(
         default_factory=dict,
         description="Sampled distinct values for filter-relevant columns.",
     )
@@ -50,6 +74,11 @@ class ReportInput(BaseModel):
         default_factory=list,
         description="Objective data-quality observations (one atomic fact each).",
     )
+
+    @field_validator("schema_map", "knowledge", "value_samples", mode="before")
+    @classmethod
+    def _coerce_list_to_dict(cls, v: Any) -> Any:
+        return coerce_dict_field(v)
 
 
 REPORT_SCHEMA = normalize_for_vllm(ReportInput.model_json_schema())
@@ -63,6 +92,9 @@ def handle_report(_task: PublicTask, args: Any) -> ToolExecutionResult:
         dict[str, Any],
         args if isinstance(args, dict) else {k: getattr(args, k, None) for k in _KEYS},
     )
+    for df in DICT_FIELDS:
+        if df in d:
+            d[df] = coerce_dict_field(d[df])
     findings = _json.dumps(
         {k: d.get(k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS},
         ensure_ascii=False,

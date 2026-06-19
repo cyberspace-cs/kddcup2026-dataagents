@@ -32,6 +32,7 @@ def test_defaults_when_fields_absent(tmp_path: Path) -> None:
     cfg = load_app_config(cfg_path)
 
     assert cfg.agent.max_tokens == 16384
+    assert cfg.agent.video_max_tokens is None
     assert cfg.agent.max_empty_tool_call_retries == 8
     assert cfg.agent.enable_thinking is None
     # backend_kind 缺省 → None，由 adapter 按 api_base 自动推断
@@ -66,6 +67,10 @@ def test_config_constructors_reject_unknown_fields() -> None:
             "  max_empty_tool_call_retries: -1\n",
             "max_empty_tool_call_retries",
             id="empty-retries-negative",
+        ),
+        pytest.param("  max_tokens: -1\n", "max_tokens", id="max-tokens-negative"),
+        pytest.param(
+            "  video_max_tokens: -1\n", "video_max_tokens", id="video-max-tokens-negative"
         ),
         # `enable_thinking: 1` 不应被静默当作 True —— 明确报错，避免运维踩坑
         pytest.param("  enable_thinking: 1\n", "enable_thinking", id="enable-thinking-non-bool"),
@@ -130,6 +135,16 @@ def _dotted(cfg: Any, path: str) -> Any:
         ),
         # 0 = 不下发 max_tokens，是合法值
         pytest.param("  max_tokens: 0\n", {"agent.max_tokens": 0}, id="max-tokens-zero"),
+        pytest.param(
+            "  video_max_tokens: 16384\n",
+            {"agent.video_max_tokens": 16384},
+            id="video-max-tokens-explicit",
+        ),
+        pytest.param(
+            "  video_max_tokens: 0\n",
+            {"agent.video_max_tokens": 0},
+            id="video-max-tokens-zero",
+        ),
         # explicit null 与缺省同义（enable_thinking 是 None/True/False 三态）
         pytest.param(
             "  enable_thinking: null\n", {"agent.enable_thinking": None}, id="enable-thinking-null"
