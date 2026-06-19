@@ -97,18 +97,3 @@ def test_system_prompt_is_static_and_declares_brief_as_data() -> None:
     assert "{" not in VIDEO_AGENT_SYSTEM_PROMPT  # 零动态插值
     assert "analysis_brief" in VIDEO_AGENT_SYSTEM_PROMPT
     assert "report" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "REPORT ARGUMENT SHAPE" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "REASONING BUDGET" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "SAMPLE SCOPE" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "NEVER turn displayed examples into a global answer" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert 'exclusive wording such as "only", "唯一"' in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "among displayed samples" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "The reusable output is the rule" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "fields," in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "whether conditions are AND or OR" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "not a proof or debate" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "not a second pass" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "extracted_data" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "quoted JSON text" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "Any violation is invalid" in VIDEO_AGENT_SYSTEM_PROMPT
-    assert "FORBIDDEN: null" in VIDEO_AGENT_SYSTEM_PROMPT

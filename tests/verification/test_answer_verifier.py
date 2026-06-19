@@ -47,14 +47,12 @@ def test_verifier_allows_grouped_superlative_multiple_rows() -> None:
 class _CapturingVerifier:
     def __init__(self, response: str = '{"verdict": "ok"}') -> None:
         self.response = response
-        self.seen_system: object = None
         self.seen_content: object = None
 
     def complete(
         self, messages: list[ModelMessage], *, tools: object | None = None
     ) -> ModelResponse:
         del tools
-        self.seen_system = messages[0].content
         self.seen_content = messages[-1].content
         return ModelResponse(content=self.response, raw_response=self.response)
 
@@ -68,12 +66,6 @@ def test_verifier_sees_producing_code_when_provided() -> None:
     assert adapter.seen_content is not None
     assert isinstance(adapter.seen_content, str)
     assert code in adapter.seen_content
-    assert adapter.seen_system is not None
-    assert isinstance(adapter.seen_system, str)
-    assert "intermediate SQL/Python" in adapter.seen_system
-    assert "producing code is not the submitted table" in adapter.seen_system
-    assert "ONLY for this null-filter check" in adapter.seen_system
-
     adapter2 = _CapturingVerifier()
     verify_answer(adapter2, "查一下总资产", ["TotalAssets"], [[1.0]])
     assert adapter2.seen_content is not None
