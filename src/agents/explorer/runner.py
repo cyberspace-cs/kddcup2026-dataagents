@@ -13,7 +13,7 @@ from typing import Any, cast
 from agents.agent import ReActAgent, ReActAgentConfig
 from agents.benchmark.schema import PublicTask
 from agents.explorer.prompt import EXPLORER_SYSTEM_PROMPT
-from agents.explorer.registry import create_explorer_tool_registry
+from agents.explorer.registry import REPORT_KEYS, ReportInput, create_explorer_tool_registry
 from agents.llm import ModelAdapter
 from agents.runtime import StepCallback
 from agents.tools.registry import FunctionTool
@@ -222,17 +222,15 @@ def _extract_findings(steps: list[Any]) -> str | None:
     """Walk steps backward to find the report tool's structured findings."""
     import json as _json
 
-    _KEYS = ("files", "schema_map", "knowledge", "join_paths", "value_samples", "warnings")
     for step in reversed(steps):
         if getattr(step, "action", None) == "report":
             raw_args: Any = getattr(step, "action_input", None)
             if not isinstance(raw_args, dict):
                 continue
-            from agents.explorer.registry import ReportInput
-
             report = ReportInput.model_validate(raw_args)
             assembled = {
-                k: getattr(report, k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS
+                k: getattr(report, k, {} if k in ("schema_map", "knowledge") else [])
+                for k in REPORT_KEYS
             }
             return _json.dumps(assembled, ensure_ascii=False)
     return None

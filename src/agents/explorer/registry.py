@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -37,9 +38,6 @@ def coerce_dict_field(val: Any) -> dict[str, Any]:
                 continue
         out[f"_item_{len(out)}"] = item
     return out
-
-
-DICT_FIELDS = ("schema_map", "knowledge", "value_samples")
 
 
 class ReportInput(BaseModel):
@@ -83,18 +81,20 @@ class ReportInput(BaseModel):
 
 REPORT_SCHEMA = normalize_for_vllm(ReportInput.model_json_schema())
 
+REPORT_KEYS = ("files", "schema_map", "knowledge", "join_paths", "value_samples", "warnings")
+
 
 def handle_report(_task: PublicTask, args: Any) -> ToolExecutionResult:
-    import json as _json
-
-    _KEYS = ("files", "schema_map", "knowledge", "join_paths", "value_samples", "warnings")
     d: dict[str, Any] = cast(
         dict[str, Any],
-        args if isinstance(args, dict) else {k: getattr(args, k, None) for k in _KEYS},
+        args if isinstance(args, dict) else {k: getattr(args, k, None) for k in REPORT_KEYS},
     )
     report = ReportInput.model_validate(d)
-    findings = _json.dumps(
-        {k: getattr(report, k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS},
+    findings = json.dumps(
+        {
+            k: getattr(report, k, {} if k in ("schema_map", "knowledge") else [])
+            for k in REPORT_KEYS
+        },
         ensure_ascii=False,
     )
     return ToolExecutionResult(

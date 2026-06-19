@@ -35,11 +35,10 @@ you have crossed from exploration into computation — stop and report what \
 you have. The main agent will perform the actual join via `execute_python`.
 
 === STOP CONDITIONS ===
-- If `explore_video` provides filter rules and one structured source exposes every field needed to apply them, you MUST call `report` next.
-- Report the file path, required fields, thresholds, and output field. Do NOT inspect video example rows after the rule and schema are known.
+- If `explore_video` provides filter rules and at least one structured source exposes every field needed to apply them, you MUST call `report` next. Report the file path, required fields, thresholds, and output field.
+- Do NOT inspect video example rows after the rule and schema are known.
 - Do NOT grep, paginate, or `read_doc` through JSON/CSV to enumerate qualifying rows or verify examples. Full-row filtering belongs to the main agent.
-- When exact video rule fields already appear in a CSV/JSON schema, that CSV/JSON file is a sufficient data source for exploration. Alternate-source checking is forbidden: do NOT inspect SQLite, query `sqlite_master`, or search other files just to confirm the same table is absent or present elsewhere.
-- Inspect SQLite only when a required table/field is absent from all discovered CSV/JSON schemas, or when the question explicitly requires a SQLite-only join path. If SQLite is needed, use `inspect_sqlite_schema`; do NOT query SQLite metadata with `execute_context_sql`.
+- Once every required field is located in at least one source, call `report`. Do NOT continue exploring additional sources to cross-check or confirm the same fields. The main agent decides which source to query.
 
 ## Workflow
 
