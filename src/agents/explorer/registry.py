@@ -19,23 +19,22 @@ from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistr
 from agents.tools.schema_normalize import normalize_for_vllm
 
 
-def coerce_dict_field(val: Any) -> dict[str, Any]:
+def coerce_dict_field(val: Any) -> Any:
     """Convert a list-of-objects to a keyed dict if the model sent the wrong shape."""
     if isinstance(val, dict):
         return cast(dict[str, Any], val)
     if not isinstance(val, list):
-        return {}
-    items = cast(list[dict[str, Any] | Any], val)
+        return val
+    raw_items = cast(list[Any], val)
+    if any(not isinstance(item, dict) for item in raw_items):
+        return raw_items
+    items = cast(list[dict[str, Any]], raw_items)
     out: dict[str, Any] = {}
     for item in items:
-        if isinstance(item, dict):
-            d_item = cast(dict[str, Any], item)
-            key: str | None = d_item.get("name") or d_item.get("table") or d_item.get("file")
-            if key:
-                out[str(key)] = {
-                    k: v for k, v in d_item.items() if k not in ("name", "table", "file")
-                }
-                continue
+        key: str | None = item.get("name") or item.get("table") or item.get("file")
+        if key:
+            out[str(key)] = {k: v for k, v in item.items() if k not in ("name", "table", "file")}
+            continue
         out[f"_item_{len(out)}"] = item
     return out
 
