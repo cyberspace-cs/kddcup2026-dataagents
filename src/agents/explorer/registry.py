@@ -92,11 +92,9 @@ def handle_report(_task: PublicTask, args: Any) -> ToolExecutionResult:
         dict[str, Any],
         args if isinstance(args, dict) else {k: getattr(args, k, None) for k in _KEYS},
     )
-    for df in DICT_FIELDS:
-        if df in d:
-            d[df] = coerce_dict_field(d[df])
+    report = ReportInput.model_validate(d)
     findings = _json.dumps(
-        {k: d.get(k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS},
+        {k: getattr(report, k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS},
         ensure_ascii=False,
     )
     return ToolExecutionResult(
