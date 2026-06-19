@@ -66,6 +66,7 @@ def test_verifier_sees_producing_code_when_provided() -> None:
     assert adapter.seen_content is not None
     assert isinstance(adapter.seen_content, str)
     assert code in adapter.seen_content
+
     adapter2 = _CapturingVerifier()
     verify_answer(adapter2, "查一下总资产", ["TotalAssets"], [[1.0]])
     assert adapter2.seen_content is not None
