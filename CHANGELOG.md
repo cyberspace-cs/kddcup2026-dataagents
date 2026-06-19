@@ -18,6 +18,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tool_choice` in thinking mode. `"forced"` is an opt-in optimization that
   pins the video sub-agent's tool choice to `report` in one turn, for
   deployments verified via `scripts/smoke_video_tool_choice.py`.
+- **`agent.video_max_tokens` config field.** Video sub-agent calls can use a
+  larger output cap than the main ReAct loop. When rate limiting is enabled and
+  `video_max_tokens` is explicitly higher than `max_tokens`, the video adapter
+  reserves that larger output budget while the prompt estimator still reserves
+  the fixed video input token estimate.
 - **Model adapters accept per-call `tools`.** `ModelAdapter.complete(messages,
   tools=...)` lets the ReAct loop push its own registry on every turn, so the
   request-body tool advertisement and the execution dispatch table are the

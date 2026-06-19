@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from agents.agent import ReActAgent, ReActAgentConfig
@@ -104,11 +104,18 @@ def _has_rate_limiter(config: AppConfig) -> bool:
     return config.agent.rate_limit is not None and bool(config.agent.api_key)
 
 
-def _maybe_wrap_rate_limiter(config: AppConfig, inner: ModelAdapter) -> ModelAdapter:
+def _maybe_wrap_rate_limiter(
+    config: AppConfig,
+    inner: ModelAdapter,
+    *,
+    reserve_output_tokens: int | None = None,
+) -> ModelAdapter:
     """Apply the shared rate-limit wrapper to any adapter that calls the model API."""
     rate_limit = config.agent.rate_limit
     if rate_limit is None or not config.agent.api_key:
         return inner
+    if reserve_output_tokens is not None:
+        rate_limit = replace(rate_limit, reserve_output_tokens=reserve_output_tokens)
     return RateLimitedAdapter(
         inner=inner,
         api_key=config.agent.api_key,
@@ -246,7 +253,19 @@ def _build_video_adapter(config: AppConfig) -> ModelAdapter:
         **sampling,
     )
 
-    return _maybe_wrap_rate_limiter(config, inner)
+    reserve_output_tokens = None
+    if (
+        config.agent.video_max_tokens is not None
+        and max_tokens > 0
+        and (config.agent.max_tokens <= 0 or max_tokens > config.agent.max_tokens)
+    ):
+        reserve_output_tokens = max_tokens
+
+    return _maybe_wrap_rate_limiter(
+        config,
+        inner,
+        reserve_output_tokens=reserve_output_tokens,
+    )
 
 
 def build_answer_verifier(config: AppConfig) -> AnswerVerifier:
