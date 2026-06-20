@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import io
 import pathlib
 import shutil
@@ -172,6 +173,28 @@ def _from_csv_shape_error(detail: str | None = None) -> str:
     return msg
 
 
+def _validate_csv_row_widths(raw: str) -> None:
+    """Reject ragged rows while allowing intentionally preserved blank lines."""
+    reader = csv.reader(io.StringIO(raw))
+    try:
+        header = next(reader)
+    except StopIteration:
+        return
+    except csv.Error as exc:
+        raise ValueError(f"failed to parse from_csv: {exc}") from exc
+
+    width = len(header)
+    try:
+        for row_idx, row in enumerate(reader, start=2):
+            if not row:
+                continue
+            if len(row) != width:
+                detail = f"row {row_idx} has {len(row)} cells; header has {width}"
+                raise ValueError(_from_csv_shape_error(detail))
+    except csv.Error as exc:
+        raise ValueError(f"failed to parse from_csv: {exc}") from exc
+
+
 def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], list[str]]:
     """Read and type-cast an answer artifact CSV.
 
@@ -220,6 +243,7 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
             else:
                 header = [str(column) for column in df.columns]
                 if header and not df.isna().to_numpy().any():
+                    _validate_csv_row_widths(normalized)
                     data = df.astype(str).values.tolist()
                     return _typecast_string_table(header, data)
         raise ValueError(_from_csv_shape_error(str(exc))) from exc
@@ -228,6 +252,7 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
     header = [str(column) for column in df.columns]
     if not header:
         raise ValueError("from_csv header row is empty")
+    _validate_csv_row_widths(raw)
     if df.isna().to_numpy().any():
         raise ValueError(_from_csv_shape_error("one or more rows have fewer cells than the header"))
     data = df.astype(str).values.tolist()
