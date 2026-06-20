@@ -14,7 +14,7 @@ from agents.tools import (
 from agents.verification.answer import AnswerVerifier
 
 _EXECUTE_ACTIONS = ("execute_python", "execute_context_sql")
-_PRODUCING_CODE_STEPS = 2
+_PRODUCING_CODE_STEPS = 1
 _PRODUCING_CODE_CHARS = 2000
 
 

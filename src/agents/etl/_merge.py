@@ -28,21 +28,25 @@ TEMP_ANCHOR_PREFIX = "__anchor__:"
 UNIT_SUFFIX = re.compile(r"^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)\s+\S+\s*$")
 
 
-def _canonical_key_map(keys: list[str]) -> dict[str, str]:
-    """Map lower-cased field names to their canonical schema spelling."""
-    return {key.lower(): key for key in keys}
+def strip_key(s: str) -> str:
+    return s.lower().replace("_", "").replace("-", "")
 
 
-def _canonicalize_key(key: str, key_map: dict[str, str]) -> str:
-    return key_map.get(key.strip().lower(), key.strip())
+def canonical_key_map(keys: list[str]) -> dict[str, str]:
+    """Map normalized field names to their canonical schema spelling."""
+    return {strip_key(key): key for key in keys}
 
 
-def _line_has_kv_key(line: str, key: str) -> bool:
+def canonicalize_key(key: str, key_map: dict[str, str]) -> str:
+    return key_map.get(strip_key(key), key.strip())
+
+
+def line_has_kv_key(line: str, key: str) -> bool:
     """Return whether a pipe-separated KV line contains ``key`` as a full field."""
-    target = key.lower()
+    target = strip_key(key)
     for part in line.split("|"):
         raw_key, sep, _value = part.partition(":")
-        if sep and raw_key.strip().lower() == target:
+        if sep and strip_key(raw_key) == target:
             return True
     return False
 
@@ -233,7 +237,7 @@ def pre_merge_entity_lines(
     Round 3: drop unplaced identity-echo fragments.
     """
     pk_token = f"{primary_key}:" if primary_key else None
-    key_map = _canonical_key_map([k for k in [primary_key, *(anchor_keys or [])] if k])
+    key_map = canonical_key_map([k for k in [primary_key, *(anchor_keys or [])] if k])
 
     entity_lines: list[str] = []
     header_lines: list[str] = []
@@ -242,7 +246,7 @@ def pre_merge_entity_lines(
         if not stripped:
             continue
         is_entity = (
-            _line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
+            line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
         )
         if is_entity:
             entity_lines.append(stripped)
@@ -262,7 +266,7 @@ def pre_merge_entity_lines(
             if ":" not in part:
                 continue
             key, _, val = part.partition(":")
-            key = _canonicalize_key(key, key_map)
+            key = canonicalize_key(key, key_map)
             val = val.strip()
             if (primary_key and key == primary_key) or (not pk_token and key.upper() == "ID"):
                 pk_val = val
@@ -427,6 +431,84 @@ def pre_merge_entity_lines(
     return f"{header}\n\n{body}" if header else body
 
 
+def collect_unmatched_keys(
+    text: str,
+    schema_columns: list[str],
+) -> list[str]:
+    """Return field keys in KV entity lines that don't match any schema column (case-insensitive)."""
+    col_lower = {c.lower() for c in schema_columns}
+    seen: dict[str, None] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        for part in stripped.split("|"):
+            if ":" not in part:
+                continue
+            key = part.partition(":")[0].strip()
+            if key and key.lower() not in col_lower and key not in seen:
+                seen[key] = None
+    return list(seen)
+
+
+def apply_field_name_map(
+    text: str,
+    field_map: dict[str, str],
+) -> str:
+    """Rewrite KV entity lines, replacing field keys per ``field_map`` (source→canonical)."""
+    if not field_map:
+        return text
+    lower_map = {k.lower(): v for k, v in field_map.items()}
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or "|" not in stripped:
+            out.append(line)
+            continue
+        parts: list[str] = []
+        for part in stripped.split("|"):
+            if ":" not in part:
+                parts.append(part)
+                continue
+            key, _, val = part.partition(":")
+            canonical = lower_map.get(key.strip().lower())
+            if canonical:
+                parts.append(f" {canonical}: {val}")
+            else:
+                parts.append(part)
+        out.append(" |".join(parts))
+    return "\n".join(out)
+
+
+def detect_malformed_lines(text: str, schema_columns: list[str]) -> list[str]:
+    """Return data-bearing lines whose format is not valid KV.
+
+    A valid KV line has at least one ``key: value`` segment where *key*
+    case-insensitively matches a schema column.  Lines that look like
+    data (contain ``|`` or multiple tokens) but fail this check are
+    malformed — bare pipe values, wrong separators, missing keys, etc.
+    """
+    col_lower = {c.lower() for c in schema_columns}
+    bad: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        has_kv_hit = False
+        for part in stripped.split("|"):
+            if ":" not in part:
+                continue
+            key = part.partition(":")[0].strip().lower()
+            if key in col_lower:
+                has_kv_hit = True
+                break
+        if has_kv_hit:
+            continue
+        if "|" in stripped or len(stripped.split()) >= 3:
+            bad.append(stripped)
+    return bad
+
+
 def normalize_entity_lines(
     text: str,
     schema_columns: list[str],
@@ -437,7 +519,7 @@ def normalize_entity_lines(
     Drops fields not in the schema and fills missing fields with empty
     values, so downstream CSV extraction sees a uniform tabular layout.
     """
-    field_map = _canonical_key_map(schema_columns)
+    field_map = canonical_key_map(schema_columns)
     col_set = set(schema_columns)
 
     normalized: list[str] = []
@@ -446,7 +528,7 @@ def normalize_entity_lines(
         if not stripped:
             continue
         is_entity = (
-            _line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
+            line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
         )
         if not is_entity:
             normalized.append(line)
@@ -457,7 +539,7 @@ def normalize_entity_lines(
             if ":" not in part:
                 continue
             key, _, val = part.partition(":")
-            key = _canonicalize_key(key, field_map)
+            key = canonicalize_key(key, field_map)
             if key in col_set:
                 fields[key] = val.strip()
 
@@ -519,7 +601,7 @@ def deterministic_kv_to_csv(
       col_a: val | col_b: val | ...
     with columns in schema_columns order (produced by normalize_entity_lines).
     """
-    field_map = _canonical_key_map(schema_columns)
+    field_map = canonical_key_map(schema_columns)
     col_set = set(schema_columns)
 
     rows: list[list[str]] = []
@@ -528,7 +610,7 @@ def deterministic_kv_to_csv(
         if not stripped:
             continue
         is_entity = (
-            _line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
+            line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
         )
         if not is_entity:
             continue
@@ -538,7 +620,7 @@ def deterministic_kv_to_csv(
             if ":" not in part:
                 continue
             key, _, val = part.partition(":")
-            key = _canonicalize_key(key, field_map)
+            key = canonicalize_key(key, field_map)
             if key in col_set:
                 fields[key] = clean_cell_for_type(
                     val.strip(),

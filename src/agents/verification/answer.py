@@ -29,10 +29,13 @@ You are an answer-table auditor.  You will receive:
 2. The COLUMNS the agent is about to submit.
 3. A SAMPLE of rows (up to 5) and the TOTAL row count.
 
-Run these checks IN ORDER and report the FIRST failure found:
+Run ALL checks and report ALL failures found:
 
 Check 1 — EXTRA columns:
-Is any column NOT requested by the question?  Common mistakes:
+Judge ONLY from the submitted COLUMNS list, NOT from PRODUCING CODE.
+SQL/Python may SELECT extra columns for intermediate processing; only
+the COLUMNS array is the actual answer.
+Is any column in COLUMNS NOT requested by the question?  Common mistakes:
 - Row-ID / primary-key / code / rank columns (id, CustomerID, PostId,
   基金代码, fund_code, ticker, stock_code, 排名, rank, 序号, …) when
   the question does not ask for identifiers or rankings.
@@ -112,12 +115,18 @@ Only flag values that are MATHEMATICALLY impossible for the requested measure.
 Check 5 — NULL-filter leakage (only when a PRODUCING CODE section is present):
 The PRODUCING CODE section is provided ONLY for this null-filter check.
 Do not use producing code for extra, missing, row-count, or value checks.
-Reject a data-listing answer whose producing code drops NULL rows of a
-SUBMITTED column (`WHERE <col> IS NOT NULL`, `.dropna(`, `.notna()`)
-unless the question explicitly excludes empty values.  Instruction:
-rebuild keeping NULL rows; filter only on identity/key columns.
-NULL filters on non-submitted columns and inside aggregates
-(AVG/SUM/COUNT...) are fine — say "ok".
+Reject ONLY when a data-listing answer's producing code DROPS NULL rows
+of a SUBMITTED column (`WHERE <col> IS NOT NULL`, `.dropna(`, `.notna()`).
+Say "ok" in ALL of these cases — they are NOT null-filter leakage:
+- `.notna()` / `.isna()` / `IS NOT NULL` used in print/logging/counting
+  (e.g., `print(df.notna().sum())`, `COUNT(*)...WHERE x IS NOT NULL`).
+  Only reject when the filter controls which rows are WRITTEN to the
+  output file or returned as the answer.
+- NULL filters on non-submitted columns and inside aggregates
+  (AVG/SUM/COUNT...).
+The fix when rejecting is ALWAYS to REMOVE the NULL filter and KEEP
+NULL rows — the grader expects them as empty cells.
+NEVER reject an answer for INCLUDING NULL rows.
 
 Check 6 — UNIT SUFFIX in cell values:
 Scan the SAMPLE ROWS for numeric cells that carry a unit suffix —
@@ -132,8 +141,8 @@ values — column names keep the unit, cells must be bare numbers."
 
 Reply with a JSON object (no markdown fence):
 {"verdict": "ok"} — all checks pass.
-{"verdict": "reject", "check": "extra|missing|row_count|value|null_filter|unit_suffix", \
-"reason": "<25 words: name the bad columns/values and the fix, no reasoning>"}
+{"verdict": "reject", "checks": ["extra", "null_filter"], \
+"reason": "<25 words per issue: name the bad columns/values and the fix>"}
 
 Be conservative: when in doubt, say "ok".  Only reject when you are
 confident the answer violates one of the checks above: extra/missing
@@ -153,7 +162,7 @@ class AnswerVerifier:
     """
 
     model: ModelAdapter
-    max_rejections: int = 1
+    max_rejections: int = 2
 
     def verify(
         self,
@@ -210,7 +219,12 @@ def verify_answer(
     if not columns:
         return None
 
-    sample = rows[:_MAX_SAMPLE_ROWS]
+    n = len(rows)
+    if n <= _MAX_SAMPLE_ROWS:
+        sample = rows
+    else:
+        step = max(1, n // _MAX_SAMPLE_ROWS)
+        sample = [rows[i * step] for i in range(_MAX_SAMPLE_ROWS) if i * step < n]
     user_content = (
         f"QUESTION: {question}\n\n"
         f"COLUMNS: {json.dumps(columns)}\n\n"
@@ -250,11 +264,20 @@ def verify_answer(
         return None
 
     if verdict == "reject":
-        check = result.get("check", "unknown")
+        checks_raw: object = result.get("checks", result.get("check", "unknown"))
+        if isinstance(checks_raw, list):
+            checks = ", ".join(str(c) for c in cast(list[Any], checks_raw))
+        else:
+            checks = str(checks_raw)
         reason = result.get("reason", "")
-        return (
-            f"ANSWER REJECTED by verifier (check={check}): {reason} "
-            "Fix the issue and resubmit with `answer`."
-        )
+        parts = [f"ANSWER REJECTED by verifier (checks={checks}): {reason}"]
+        if "null_filter" in str(checks):
+            parts.append(
+                "NULL-FILTER FIX: REMOVE every `WHERE col IS NOT NULL`, "
+                "`.dropna()`, `.notna()` on submitted columns. "
+                "The grader expects NULL rows as empty cells — dropping them scores 0."
+            )
+        parts.append("Fix the issue and resubmit with `answer`.")
+        return " ".join(parts)
 
     return None

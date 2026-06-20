@@ -34,7 +34,7 @@ def test_extract_prose_file_stops_when_deterministic_csv_fails(
     monkeypatch.setattr(
         extractor,
         "compress_prose",
-        lambda *_args, **_kwargs: "id: 1 | value: source",
+        lambda *_args, **_kwargs: ("id: 1 | value: source", None),
     )
     monkeypatch.setattr(extractor, "deterministic_kv_to_csv", lambda *_args, **_kwargs: None)
 

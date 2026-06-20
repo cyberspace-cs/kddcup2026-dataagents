@@ -192,10 +192,11 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
             df = pd.read_csv(
                 io.StringIO(raw),
                 dtype=str,
-                engine="python",
+                engine="c",
                 index_col=False,
                 keep_default_na=False,
                 na_filter=False,
+                skip_blank_lines=False,
             )
     except EmptyDataError as exc:
         raise ValueError("from_csv is empty; expected header row + data rows") from exc
@@ -208,10 +209,11 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
                     df = pd.read_csv(
                         io.StringIO(normalized),
                         dtype=str,
-                        engine="python",
+                        engine="c",
                         index_col=False,
                         keep_default_na=False,
                         na_filter=False,
+                        skip_blank_lines=False,
                     )
             except (EmptyDataError, ParserError, ParserWarning):
                 pass

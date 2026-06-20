@@ -458,7 +458,7 @@ def test_compress_prose_recovers_missing_and_ignores_casing() -> None:
     ]
     adapter = _RecoveryAdapter()
 
-    result = compress_prose(
+    result, _ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],
@@ -508,7 +508,7 @@ def test_compress_prose_processes_unmatched_numeric_paragraphs() -> None:
     paras.append("The special asset registered under 9 reported a metric of ninety.")
     adapter = _LeftoverAdapter()
 
-    result = compress_prose(
+    result, _ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],
@@ -549,7 +549,7 @@ def test_grouping_falls_back_to_regex_when_all_llm_calls_fail() -> None:
     ]
     adapter = _GroupingDownAdapter()
 
-    result = compress_prose(
+    result, _ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],
@@ -584,7 +584,7 @@ def test_grouping_rejected_by_gate_uses_positional_path() -> None:
     ]
     adapter = _GateRejectAdapter()
 
-    result = compress_prose(
+    result, _ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],

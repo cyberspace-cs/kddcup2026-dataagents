@@ -270,7 +270,7 @@ def _build_video_adapter(config: AppConfig) -> ModelAdapter:
 
 def build_answer_verifier(config: AppConfig) -> AnswerVerifier:
     """Build the no-tools answer verifier used by online application wiring."""
-    return AnswerVerifier(model=build_no_tools_model_adapter(config), max_rejections=1)
+    return AnswerVerifier(model=build_no_tools_model_adapter(config), max_rejections=2)
 
 
 @dataclass(frozen=True, slots=True)

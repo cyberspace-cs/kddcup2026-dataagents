@@ -28,7 +28,10 @@ from typing import TYPE_CHECKING, Any
 from agents.config import ETL_SCRATCH_ROOT
 from agents.etl._compress import (
     compress_prose,
+    dedup_cross_field_copies,
+    retry_missing_values,
     sample_paragraphs_by_section,
+    verify_field_values,
 )
 from agents.etl._detect import (
     ETLResult,
@@ -190,20 +193,24 @@ def _parse_schema_response(
     field_defs: dict[str, str] = {}
     columns: list[str] = []
 
+    _PREFIX = re.compile(r"^(PK|ANCHORS?|TYPES?|UNITS?|DEFS?)\s*:", re.IGNORECASE)
+
     for line in lines:
-        upper = line.upper()
-        if upper.startswith("PK"):
-            pk = line.split(":", 1)[-1].strip()
-        elif upper.startswith("ANCHOR"):
-            raw = [a.strip() for a in line.split(":", 1)[-1].split(",") if a.strip()]
-            if raw:
-                anchor_keys = raw
-        elif upper.startswith("TYPE"):
-            explicit_types = _parse_schema_types_line(line)
-        elif upper.startswith("UNIT"):
-            field_units = _parse_kv_line(line)
-        elif upper.startswith("DEF"):
-            field_defs = _parse_defs_line(line)
+        m = _PREFIX.match(line)
+        if m:
+            tag = m.group(1).upper()
+            if tag == "PK":
+                pk = line.split(":", 1)[-1].strip()
+            elif tag.startswith("ANCHOR"):
+                raw = [a.strip() for a in line.split(":", 1)[-1].split(",") if a.strip()]
+                if raw:
+                    anchor_keys = raw
+            elif tag.startswith("TYPE"):
+                explicit_types = _parse_schema_types_line(line)
+            elif tag.startswith("UNIT"):
+                field_units = _parse_kv_line(line)
+            elif tag.startswith("DEF"):
+                field_defs = _parse_defs_line(line)
         elif "," in line and not columns and "=" not in line:
             tokens = [c.strip() for c in line.split(",") if c.strip()]
             if all(len(t.split()) <= 3 for t in tokens):
@@ -701,6 +708,178 @@ def _adjudicate_synonym_columns(
     )
 
 
+_FIX_FORMAT_MAX_RETRIES = 3
+_FIX_FORMAT_MAX_LINES = 80
+
+
+def _fix_malformed_lines(
+    adapter: ModelAdapter,
+    compressed: str,
+    schema_columns: list[str],
+    schema_field_defs: dict[str, str] | None,
+) -> str:
+    """Detect and LLM-rewrite malformed lines, up to 3 retries.
+
+    After compression the output should be ``key: val | key: val | ...``
+    with keys from the schema.  Any line that looks like data but does
+    not follow this format is sent back to the LLM for rewriting.
+    """
+    from agents.etl._merge import detect_malformed_lines
+
+    defs = schema_field_defs or {}
+    schema_block = ", ".join(schema_columns)
+    defs_block = "\n".join(
+        f"- {col}: {defs.get(col, '')}" for col in schema_columns if defs.get(col)
+    )
+
+    for attempt in range(1, _FIX_FORMAT_MAX_RETRIES + 1):
+        bad = detect_malformed_lines(compressed, schema_columns)
+        if not bad:
+            return compressed
+
+        batch = bad[:_FIX_FORMAT_MAX_LINES]
+        logger.info(
+            "ETL fix-format attempt %d: %d malformed lines detected",
+            attempt,
+            len(bad),
+        )
+
+        prompt = f"Target schema columns: {schema_block}\n"
+        if defs_block:
+            prompt += f"Column definitions:\n{defs_block}\n"
+        prompt += (
+            "\nThe lines below are MALFORMED — they lack proper key: value format. "
+            "Rewrite EVERY line into pipe-separated KEY-VALUE pairs using ONLY "
+            "the schema columns above.\n"
+            "Required format: col1: val1 | col2: val2 | col3: val3 | ...\n"
+            "Use COLON (:) between key and value. Use PIPE (|) between fields.\n"
+            "NEVER drop, merge, or reorder lines. Output the SAME number of lines.\n\n"
+            + "\n".join(batch)
+        )
+
+        messages = [
+            ModelMessage(
+                role="system",
+                content="Rewrite malformed lines into key-value format. Output only rewritten lines.",
+            ),
+            ModelMessage(role="user", content=prompt),
+        ]
+        try:
+            response: ModelResponse = adapter.complete(messages)
+        except Exception as exc:
+            logger.warning("ETL fix-format attempt %d failed: %s", attempt, exc)
+            break
+
+        content = response.content.strip()
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        rewritten = [ln.strip() for ln in content.splitlines() if ln.strip() and ":" in ln]
+
+        if not rewritten:
+            break
+
+        batch_set = set(batch)
+        lines = compressed.splitlines()
+        out: list[str] = []
+        ri = 0
+        for line in lines:
+            if line.strip() in batch_set and ri < len(rewritten):
+                out.append(rewritten[ri])
+                ri += 1
+            else:
+                out.append(line)
+
+        compressed = "\n".join(out)
+        logger.info(
+            "ETL fix-format attempt %d: rewrote %d/%d lines",
+            attempt,
+            ri,
+            len(batch),
+        )
+
+    return compressed
+
+
+def _reconcile_field_names(
+    adapter: ModelAdapter,
+    compressed: str,
+    schema_columns: list[str],
+    schema_field_defs: dict[str, str] | None,
+) -> str:
+    """Map variant field names in compressed output back to schema columns.
+
+    Compression can emit different field names for the same concept across
+    chunks (e.g. ``patient_id`` vs ``uniquepid``, ``height_cm`` vs
+    ``admissionheight_cm``). This function collects all unmatched keys,
+    asks the LLM to map them to schema columns, and rewrites the compressed
+    text with canonical names — before normalize_entity_lines drops them.
+    """
+    from agents.etl._merge import apply_field_name_map, collect_unmatched_keys
+
+    unmatched = collect_unmatched_keys(compressed, schema_columns)
+    if not unmatched:
+        return compressed
+
+    defs = schema_field_defs or {}
+    schema_block = "\n".join(f"- {col}: {defs.get(col, '')}" for col in schema_columns)
+    unmatched_block = "\n".join(f"- {k}" for k in unmatched)
+
+    prompt = textwrap.dedent(f"""\
+        An ETL pipeline extracted entity data into pipe-separated KV lines.
+        The target schema columns are:
+        {schema_block}
+
+        The following field names appeared in the extraction output but do NOT
+        match any schema column (case-insensitive):
+        {unmatched_block}
+
+        For each unmatched field, decide whether it is an EXACT synonym of one
+        schema column — same concept, same entity scope, same semantics.
+        - Match → output: <unmatched>=<schema_column>
+        - No match or unsure → output: <unmatched>=NONE
+
+        Output one line per unmatched field, nothing else.""")
+
+    messages = [
+        ModelMessage(
+            role="system",
+            content="Map extraction field names to schema columns. Output only mapping lines.",
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception as exc:
+        logger.warning("Field name reconciliation failed: %s", exc)
+        return compressed
+
+    content = response.content.strip()
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    col_lower = {c.lower(): c for c in schema_columns}
+    field_map: dict[str, str] = {}
+    for line in content.splitlines():
+        line = line.strip().lstrip("- ")
+        if "=" not in line:
+            continue
+        src, _, dst = line.partition("=")
+        src = src.strip()
+        dst = dst.strip().lower()
+        if dst == "none" or not dst:
+            continue
+        canon = col_lower.get(dst)
+        if canon and src.lower() != canon.lower():
+            field_map[src] = canon
+
+    if not field_map:
+        return compressed
+
+    logger.info(
+        "ETL field-name reconciliation: %d variant(s) mapped → %s",
+        len(field_map),
+        dict(list(field_map.items())[:10]),
+    )
+    return apply_field_name_map(compressed, field_map)
+
+
 def _unify_csv_synonyms(
     adapter: ModelAdapter,
     csv_path: Path,
@@ -926,6 +1105,99 @@ def _repair_csv_numeric_identities(csv_path: Path) -> list[tuple[int, str, str, 
             new,
         )
     return repairs
+
+
+def _merge_prose_schema_into_governance(
+    adapter: ModelAdapter,
+    prose_text: str,
+    gov_columns: list[str],
+    gov_defs: dict[str, str],
+    gov_types: dict[str, str],
+    question: str,
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """Union governance + prose-inferred schemas with synonym dedup.
+
+    Independently infers a schema from the prose sample (no governance
+    context, so it discovers ALL fields without bias), then asks the LLM
+    to adjudicate which prose fields are synonyms of governance fields
+    and which are genuinely distinct.
+
+    Returns (extra_columns, extra_types, extra_defs) — only the fields
+    NOT already covered by a governance synonym.
+    """
+    inferred = _infer_schema_single(adapter, sample_paragraphs_by_section(prose_text), question)
+    if not inferred:
+        return [], {}, {}
+
+    prose_cols, _prose_anchors, prose_types_raw, _prose_units, prose_defs_raw = inferred
+    prose_types = _complete_schema_field_types(prose_cols, prose_types_raw)
+    prose_defs = _complete_schema_field_defs(prose_cols, prose_defs_raw)
+
+    from agents.etl._merge import strip_key
+
+    gov_norm = {strip_key(c) for c in gov_columns}
+    novel = [
+        c for c in prose_cols if strip_key(c) not in gov_norm and c.lower() not in RECORD_ID_FIELDS
+    ]
+    if not novel:
+        return [], {}, {}
+
+    gov_block = "\n".join(f"- {c}: {gov_defs.get(c, '(no definition)')}" for c in gov_columns)
+    novel_block = "\n".join(f"- {c}: {prose_defs.get(c, '(no definition)')}" for c in novel)
+
+    prompt = textwrap.dedent(f"""\
+        A data governance document defines these CANONICAL fields:
+        {gov_block}
+
+        An independent prose scan discovered these ADDITIONAL fields:
+        {novel_block}
+
+        For each ADDITIONAL field, decide:
+        - If it is an EXACT SYNONYM of one canonical field (same concept,
+          scope, aggregation level, unit), output: additional=canonical
+        - If it is DISTINCT (different concept, sub-total vs grand-total,
+          component vs aggregate, different time window, etc.), output:
+          additional=DISTINCT
+
+        Sub-totals and aggregates are ALWAYS DISTINCT even when names are
+        similar (e.g. reserve_assets = deposits + cash ≠ totalassets = all
+        assets). Component fields are DISTINCT from their parent total.
+
+        Output one line per additional field, nothing else.""")
+
+    messages = [
+        ModelMessage(
+            role="system",
+            content="Adjudicate whether prose-discovered fields are synonyms "
+            "of governance fields. Output mapping lines only.",
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception as exc:
+        logger.warning("Schema synonym adjudication failed: %s", exc)
+        return [], {}, {}
+
+    raw = response.content.strip()
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+    distinct: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip().lstrip("- ")
+        if "=" not in line:
+            continue
+        left, _, right = line.partition("=")
+        left = left.strip().lower()
+        right = right.strip().lower()
+        if right == "distinct" and left in {c.lower() for c in novel}:
+            orig = next(c for c in novel if c.lower() == left)
+            distinct.append(orig)
+
+    extra_cols = distinct
+    extra_types = {c: prose_types.get(c, "number") for c in extra_cols}
+    extra_defs = {c: prose_defs.get(c, "") for c in extra_cols}
+    return extra_cols, extra_types, extra_defs
 
 
 def _apply_km_schema_floor(
@@ -1225,22 +1497,15 @@ def _parse_knowledge_schema(
     return columns, anchor_keys, field_types, field_units, field_defs
 
 
-def _infer_schema_from_sample(
+_SCHEMA_SAMPLE_ROUNDS = 3
+
+
+def _infer_schema_single(
     adapter: ModelAdapter,
-    prose_text: str,
+    sample: str,
     question: str,
 ) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
-    """Infer a unified schema by sampling the raw prose text before compression.
-
-    Sends a representative sample to the LLM to discover structured data fields
-    and produce a canonical column list + anchor keys.
-
-    Returns (columns, anchor_keys, field_types, field_units, field_defs) or None.
-    """
-    sample = sample_paragraphs_by_section(prose_text)
-    if not sample or len(sample) < 50:
-        return None
-
+    """One round of schema inference. Returns raw parsed tuple or None."""
     prompt = textwrap.dedent(f"""\
         Below is a sample from a prose data document. Each paragraph describes
         one entity and mixes structured data with narrative filler.
@@ -1312,23 +1577,161 @@ def _infer_schema_from_sample(
     parsed = _parse_schema_response(response.content)
     if not parsed:
         return None
-    _, anchor_keys, explicit_types, columns, field_units, raw_defs = parsed
+    _pk, anchor_keys, explicit_types, columns, field_units, raw_defs = parsed
+    return columns, anchor_keys, explicit_types, field_units, raw_defs
+
+
+def _merge_multi_round_schemas(
+    adapter: ModelAdapter,
+    rounds: list[tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]]],
+) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]]:
+    """Merge schemas from multiple inference rounds: union columns, then LLM-adjudicate synonyms."""
+    if len(rounds) == 1:
+        return rounds[0]
+
+    all_cols: list[str] = []
+    seen_lower: set[str] = set()
+    merged_anchors: list[str] = []
+    merged_types: dict[str, str] = {}
+    merged_units: dict[str, str] = {}
+    merged_defs: dict[str, str] = {}
+
+    for cols, anchors, types, units, defs in rounds:
+        for c in cols:
+            if c.lower() not in seen_lower and c.lower() not in RECORD_ID_FIELDS:
+                seen_lower.add(c.lower())
+                all_cols.append(c)
+        for a in anchors:
+            if a not in merged_anchors and a.lower() not in RECORD_ID_FIELDS:
+                merged_anchors.append(a)
+        merged_types.update(types)
+        merged_units.update(units)
+        merged_defs.update(defs)
+
+    if len(all_cols) <= len(rounds[0][0]):
+        return all_cols, merged_anchors, merged_types, merged_units, merged_defs
+
+    col_block = "\n".join(f"- {c}: {merged_defs.get(c, '')}" for c in all_cols)
+    prompt = textwrap.dedent(f"""\
+        Multiple schema inference rounds produced these columns (some may be
+        synonyms for the same concept):
+
+        {col_block}
+
+        Group columns that refer to EXACTLY the same data field. For each group,
+        pick the most descriptive canonical name.
+
+        Output one line per group:
+          canonical_name = synonym1, synonym2, ...
+        For columns with no synonyms, output:
+          column_name = (unique)""")
+
+    messages = [
+        ModelMessage(
+            role="system", content="Merge synonym schema columns. Output mapping lines only."
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception as exc:
+        logger.warning("Schema synonym merge failed: %s", exc)
+        return all_cols, merged_anchors, merged_types, merged_units, merged_defs
+
+    content = response.content.strip()
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+    canonical_cols: list[str] = []
+    alias_to_canon: dict[str, str] = {}
+    for line in content.splitlines():
+        line = line.strip().lstrip("- ")
+        if "=" not in line:
+            continue
+        canon, _, rest = line.partition("=")
+        canon = canon.strip()
+        if not canon:
+            continue
+        canonical_cols.append(canon)
+        for syn in rest.split(","):
+            syn = syn.strip().strip("()")
+            if syn.lower() != "unique" and syn.lower() != canon.lower():
+                alias_to_canon[syn.lower()] = canon
+
+    if not canonical_cols:
+        return all_cols, merged_anchors, merged_types, merged_units, merged_defs
+
+    final_anchors: list[str] = []
+    for a in merged_anchors:
+        resolved = alias_to_canon.get(a.lower(), a)
+        if resolved not in final_anchors:
+            final_anchors.append(resolved)
+
+    final_types: dict[str, str] = {}
+    final_units: dict[str, str] = {}
+    final_defs: dict[str, str] = {}
+    for old_key, val in merged_types.items():
+        new_key = alias_to_canon.get(old_key.lower(), old_key)
+        final_types.setdefault(new_key, val)
+    for old_key, val in merged_units.items():
+        new_key = alias_to_canon.get(old_key.lower(), old_key)
+        final_units.setdefault(new_key, val)
+    for old_key, val in merged_defs.items():
+        new_key = alias_to_canon.get(old_key.lower(), old_key)
+        final_defs.setdefault(new_key, val)
+
+    logger.info(
+        "Schema multi-round merge: %d union cols → %d canonical (%d synonyms resolved)",
+        len(all_cols),
+        len(canonical_cols),
+        len(alias_to_canon),
+    )
+    return canonical_cols, final_anchors, final_types, final_units, final_defs
+
+
+def _infer_schema_from_sample(
+    adapter: ModelAdapter,
+    prose_text: str,
+    question: str,
+) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
+    """Infer a unified schema by sampling the raw prose text before compression.
+
+    Runs multiple inference rounds, unions all discovered columns, and merges
+    synonyms via LLM adjudication to minimize field loss from single-run variance.
+
+    Returns (columns, anchor_keys, field_types, field_units, field_defs) or None.
+    """
+    sample = sample_paragraphs_by_section(prose_text)
+    if not sample or len(sample) < 50:
+        return None
+
+    rounds: list[tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]]] = []
+    for _i in range(_SCHEMA_SAMPLE_ROUNDS):
+        result = _infer_schema_single(adapter, sample, question)
+        if result:
+            cols, anchors, types, units, defs = result
+            rounds.append((cols, anchors, types, units, defs))
+
+    if not rounds:
+        return None
+
+    columns, anchor_keys, field_types, field_units, field_defs = _merge_multi_round_schemas(
+        adapter, rounds
+    )
 
     columns, anchor_keys = _ensure_local_record_anchor(
         prose_text,
         columns,
         anchor_keys,
-        explicit_types,
+        field_types,
     )
-    field_types = _complete_schema_field_types(columns, explicit_types)
-    field_defs = _complete_schema_field_defs(columns, raw_defs)
+    field_types = _complete_schema_field_types(columns, field_types)
+    field_defs = _complete_schema_field_defs(columns, field_defs)
 
     logger.info(
-        "Schema inferred from sample: pk=%s, anchors=%s, types=%s, defs=%s, cols=%s",
-        anchor_keys[0],
+        "Schema inferred from sample (%d rounds): pk=%s, anchors=%s, cols=%s",
+        len(rounds),
+        anchor_keys[0] if anchor_keys else None,
         anchor_keys,
-        field_types,
-        field_defs,
         columns,
     )
     return columns, anchor_keys, field_types, field_units, field_defs
@@ -1502,7 +1905,7 @@ def extract_prose_file(
 
     # ---- Phase 1: compress ----
     logger.info("ETL compress: %s (%d chars)", path.name, len(full_text))
-    compressed = compress_prose(
+    compressed, entity_groups = compress_prose(
         adapter,
         full_text,
         schema_columns=schema_columns,
@@ -1530,7 +1933,49 @@ def extract_prose_file(
         source_text=full_text,
     )
     if schema_columns:
+        compressed = _fix_malformed_lines(
+            adapter,
+            compressed,
+            schema_columns,
+            schema_field_defs,
+        )
+        compressed = _reconcile_field_names(
+            adapter,
+            compressed,
+            schema_columns,
+            schema_field_defs,
+        )
         compressed = normalize_entity_lines(compressed, schema_columns, primary_key)
+        compressed, dedup_cleared = dedup_cross_field_copies(
+            adapter,
+            compressed,
+            schema_columns,
+            primary_key,
+            anchor_keys,
+            full_text,
+            schema_field_types,
+        )
+        compressed = retry_missing_values(
+            adapter,
+            compressed,
+            schema_columns,
+            primary_key,
+            anchor_keys,
+            entity_groups,
+            schema_field_types,
+            schema_field_defs,
+            forced_gaps=dedup_cleared,
+        )
+        compressed = verify_field_values(
+            adapter,
+            compressed,
+            schema_columns,
+            primary_key,
+            anchor_keys,
+            entity_groups,
+            schema_field_types,
+            schema_field_defs,
+        )
     compressed_path.write_text(compressed, encoding="utf-8")
 
     if field_units:
@@ -1617,6 +2062,23 @@ def run_etl_for_task(
         parsed = _parse_knowledge_schema(task, pf, adapter, text)
         if parsed:
             schema, anchors, field_types, units, defs = parsed
+            extra_cols, extra_types, extra_defs = _merge_prose_schema_into_governance(
+                adapter,
+                text,
+                schema,
+                defs,
+                field_types,
+                task.question,
+            )
+            if extra_cols:
+                schema.extend(extra_cols)
+                field_types.update(extra_types)
+                defs.update(extra_defs)
+                logger.info(
+                    "ETL schema union: added %d prose-discovered fields: %s",
+                    len(extra_cols),
+                    extra_cols,
+                )
             units.pop("_default", None)
             if km_text and units:
                 targets = _vote_target_units(adapter, km_text, units, question=task.question)
