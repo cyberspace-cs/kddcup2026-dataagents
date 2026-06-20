@@ -139,6 +139,20 @@ If ANY numeric cell in the sample contains a unit suffix, reject with
 check="unit_suffix" and instruct: "Strip the unit suffix from cell
 values — column names keep the unit, cells must be bare numbers."
 
+Check 7 — TRANSPOSED / PIVOTED layout:
+The grader matches columns by hashed value lists.  A transposed answer
+(metrics as rows instead of columns) produces the WRONG column hashes
+and scores 0.  Detect this pattern:
+- Exactly 2 columns where one is a label/metric-name column and the
+  other is a value column, AND multiple rows whose label column holds
+  names that SHOULD be separate result columns (e.g., "总资产最大值",
+  "max_revenue", "count", …).
+- A "wide" question asking for several named statistics/metrics at once
+  ("最大值和最小值", "max and min", "mean, median, and std") is a
+  strong signal the answer should have one column per statistic.
+If detected, reject with check="transposed" and instruct: "Pivot the
+table so each metric is its own column and values fill a single row."
+
 Reply with a JSON object (no markdown fence):
 {"verdict": "ok"} — all checks pass.
 {"verdict": "reject", "checks": ["extra", "null_filter"], \
