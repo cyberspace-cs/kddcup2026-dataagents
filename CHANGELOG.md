@@ -28,6 +28,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   request-body tool advertisement and the execution dispatch table are the
   same instance. `tools=None` (or the adapter's constructor registry) keeps
   the byte-stable cached payload; overrides render fresh.
+- **Deterministic video-constraint answer check.** Before the LLM verifier
+  runs, the terminal-policy gate applies two zero-token checks against the
+  latest `explore_video` findings: (1) reject answers whose latest execute
+  step filters by the batch's year alone when the video declared a more
+  specific `batch_id` (e.g. `BATCH-2021-Q4` reduced to
+  `WHERE endate LIKE '2021%'`); (2) reject single-row answers when the video
+  declared multiple `snapshot_dates`/`reporting_dates` and the question is
+  not an aggregate. Comments are stripped before matching so `# batch
+  BATCH-2021-Q4` mentions in reasoning code do not mask the actual filter.
+  Lives in `src/agents/verification/video_constraints.py`; shares the
+  existing `rejections_used` budget so the agent still gets the standard
+  retry quota.
 
 ### Fixed
 - **Text-mode file IO defaults to UTF-8.** Multiple call sites used
