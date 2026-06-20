@@ -7,12 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from agents.etl._merge import (
-    clean_cell_for_type,
-    mine_additive_identities,
-    repair_numeric_identities,
-)
-from agents.etl.extractor import _repair_csv_numeric_identities
+from agents.etl._identity import mine_additive_identities, repair_numeric_identities
+from agents.etl._merge import clean_cell_for_type
+from agents.etl._schema import repair_csv_numeric_identities
 
 # Six exact rows satisfying before == after + transfer (task_15 shape), plus
 # auxiliary columns: a constant code, a date, and dusty percentage columns
@@ -188,7 +185,7 @@ def test_repair_strips_tags_even_without_any_identity() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _repair_csv_numeric_identities — file-level wrapper
+# repair_csv_numeric_identities — file-level wrapper
 # ---------------------------------------------------------------------------
 
 
@@ -203,7 +200,7 @@ def test_csv_repair_rewrites_file_and_reports(tmp_path: Path) -> None:
     csv_path = tmp_path / "lc_sharetransfer.csv"
     _write(csv_path, _rows(_fuzzy_row("~6970000")))
 
-    repairs = _repair_csv_numeric_identities(csv_path)
+    repairs = repair_csv_numeric_identities(csv_path)
 
     assert [(r[1], r[3]) for r in repairs] == [("sumbeforetran", "6973434")]
     with csv_path.open(encoding="utf-8") as f:
@@ -218,7 +215,7 @@ def test_csv_repair_strips_orphan_tags_without_repairs(tmp_path: Path) -> None:
     row[HEADER.index("sumaftertran")] = ""
     _write(csv_path, _rows(row))
 
-    repairs = _repair_csv_numeric_identities(csv_path)
+    repairs = repair_csv_numeric_identities(csv_path)
 
     assert repairs == []
     with csv_path.open(encoding="utf-8") as f:

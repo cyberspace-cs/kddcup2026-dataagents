@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from statistics import median
 from typing import Any, cast
 
+from agents.etl._constants import PDF_CJK_PUNCT, PDF_SENTENCE_END, PDF_STRUCTURAL_LINE
+
 logger = logging.getLogger(__name__)
 
-_CJK_PUNCT = frozenset("，。！？；：、）】》”’")
-_STRUCTURAL_LINE = re.compile(r"^(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+|`{3,}|~~~|\|.*\|$)")
-_SENTENCE_END = re.compile(r"[。！？.!?」）)\"']\s*$")
 _Line = tuple[float, float, float, float, str]
 
 
@@ -21,7 +19,7 @@ def _is_cjk(char: str) -> bool:
 
 
 def _join_without_space(prev: str, cur: str) -> bool:
-    return bool((_is_cjk(prev) or prev in _CJK_PUNCT) and _is_cjk(cur))
+    return bool((_is_cjk(prev) or prev in PDF_CJK_PUNCT) and _is_cjk(cur))
 
 
 def _join_prose_lines(lines: list[str]) -> str:
@@ -38,7 +36,7 @@ def _join_prose_lines(lines: list[str]) -> str:
 
 
 def _is_structural_line(line: str) -> bool:
-    if _STRUCTURAL_LINE.match(line):
+    if PDF_STRUCTURAL_LINE.match(line):
         return True
     return bool(line.startswith("|") or line.endswith("|") or "\t" in line)
 
@@ -137,7 +135,7 @@ def _page_to_paragraphs(page: Any) -> list[str]:
 
 
 def _is_complete_sentence(paragraph: str) -> bool:
-    return bool(_SENTENCE_END.search(paragraph))
+    return bool(PDF_SENTENCE_END.search(paragraph))
 
 
 def _stitch_page_paragraphs(pages: list[tuple[int, list[str]]]) -> list[tuple[int, list[str]]]:

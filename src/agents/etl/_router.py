@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from agents.etl._compress import sample_paragraphs_by_section
+from agents.etl._constants import (
+    ROUTER_MAX_DESC_CHARS,
+    ROUTER_MAX_FIELDS_PER_FILE,
+    ROUTER_MAX_SAMPLE_CHARS,
+    ROUTER_SAMPLE_TOKEN_BUDGET,
+)
 from agents.etl._pdf import pdf_to_markdown
 from agents.etl.knowledge import km_table_fields
 
@@ -22,11 +28,6 @@ if TYPE_CHECKING:
     from agents.llm import ModelAdapter
 
 logger = logging.getLogger(__name__)
-
-_ROUTER_SAMPLE_TOKEN_BUDGET = 2000
-_MAX_FIELDS_PER_FILE = 15
-_MAX_SAMPLE_CHARS = 500
-_MAX_DESC_CHARS = 200
 
 
 class FileProfile(TypedDict):
@@ -91,7 +92,7 @@ def build_file_profile(
     path: Path, km_text: str, question: str, adapter: ModelAdapter | None = None
 ) -> FileProfile:
     text = read_prose_text(path)
-    sample = sample_paragraphs_by_section(text, token_limit=_ROUTER_SAMPLE_TOKEN_BUDGET)
+    sample = sample_paragraphs_by_section(text, token_limit=ROUTER_SAMPLE_TOKEN_BUDGET)
     km_fields = km_table_fields(km_text, path.stem) if km_text else {}
 
     schema_fields: list[str] = list(km_fields.keys())
@@ -118,15 +119,15 @@ def build_file_profile(
 def format_profiles_for_prompt(profiles: list[FileProfile]) -> str:
     parts: list[str] = []
     for i, p in enumerate(profiles, 1):
-        fields = p["schema_fields"][:_MAX_FIELDS_PER_FILE]
+        fields = p["schema_fields"][:ROUTER_MAX_FIELDS_PER_FILE]
         fields_str = ", ".join(fields) if fields else "(unknown)"
         descs = p.get("schema_descriptions", {})
         desc_str = "; ".join(f"{k}={v}" for k, v in list(descs.items())[:8]) if descs else ""
         parts.append(
             f"[{i}] {p['filename']}\n"
             f"    Fields: {fields_str}\n"
-            f"    Descriptions: {desc_str[:_MAX_DESC_CHARS]}\n"
-            f"    Sample: {p['sample'][:_MAX_SAMPLE_CHARS]}\n"
+            f"    Descriptions: {desc_str[:ROUTER_MAX_DESC_CHARS]}\n"
+            f"    Sample: {p['sample'][:ROUTER_MAX_SAMPLE_CHARS]}\n"
         )
     return "\n".join(parts)
 

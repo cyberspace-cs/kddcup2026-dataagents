@@ -81,6 +81,7 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["agents"]
+combine-as-imports = true
 
 [tool.ruff.format]
 quote-style = "double"

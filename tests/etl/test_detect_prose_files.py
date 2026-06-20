@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from agents.etl._detect import MIN_LINES, detect_prose_files
+from agents.etl._constants import MIN_PROSE_LINES
+from agents.etl._detect import detect_prose_files
 
 
 def _make_task(tmp_path: Path) -> PublicTask:
@@ -26,7 +27,7 @@ def test_txt_in_doc_dir_detected(tmp_path: Path) -> None:
     task = _make_task(tmp_path)
     doc_dir = task.context_dir / "doc"
     doc_dir.mkdir()
-    _write_lines(doc_dir / "data.txt", MIN_LINES + 10)
+    _write_lines(doc_dir / "data.txt", MIN_PROSE_LINES + 10)
     result = detect_prose_files(task)
     assert any(p.name == "data.txt" for p in result)
 
@@ -34,7 +35,7 @@ def test_txt_in_doc_dir_detected(tmp_path: Path) -> None:
 def test_non_utf8_txt_does_not_crash(tmp_path: Path) -> None:
     task = _make_task(tmp_path)
     bad = task.context_dir / "bad.txt"
-    bad.write_bytes((b"line\n" * (MIN_LINES + 1)) + b"\xff")
+    bad.write_bytes((b"line\n" * (MIN_PROSE_LINES + 1)) + b"\xff")
 
     result = detect_prose_files(task)
 
@@ -43,7 +44,7 @@ def test_non_utf8_txt_does_not_crash(tmp_path: Path) -> None:
 
 def test_md_in_context_root_detected(tmp_path: Path) -> None:
     task = _make_task(tmp_path)
-    _write_lines(task.context_dir / "heroes.md", MIN_LINES + 10)
+    _write_lines(task.context_dir / "heroes.md", MIN_PROSE_LINES + 10)
     result = detect_prose_files(task)
     assert any(p.name == "heroes.md" for p in result)
 
@@ -52,15 +53,15 @@ def test_knowledge_md_excluded_everywhere(tmp_path: Path) -> None:
     task = _make_task(tmp_path)
     doc_dir = task.context_dir / "doc"
     doc_dir.mkdir()
-    _write_lines(task.context_dir / "knowledge.md", MIN_LINES + 10)
-    _write_lines(doc_dir / "knowledge.md", MIN_LINES + 10)
+    _write_lines(task.context_dir / "knowledge.md", MIN_PROSE_LINES + 10)
+    _write_lines(doc_dir / "knowledge.md", MIN_PROSE_LINES + 10)
     result = detect_prose_files(task)
     assert not any(p.name.lower() == "knowledge.md" for p in result)
 
 
 def test_short_file_excluded(tmp_path: Path) -> None:
     task = _make_task(tmp_path)
-    _write_lines(task.context_dir / "short.md", MIN_LINES - 1)
+    _write_lines(task.context_dir / "short.md", MIN_PROSE_LINES - 1)
     result = detect_prose_files(task)
     assert result == []
 
@@ -83,7 +84,7 @@ def test_no_duplicates_when_file_in_both(tmp_path: Path) -> None:
     task = _make_task(tmp_path)
     doc_dir = task.context_dir / "doc"
     doc_dir.mkdir()
-    _write_lines(doc_dir / "data.md", MIN_LINES + 10)
+    _write_lines(doc_dir / "data.md", MIN_PROSE_LINES + 10)
     result = detect_prose_files(task)
     names = [p.name for p in result]
     assert names.count("data.md") == 1

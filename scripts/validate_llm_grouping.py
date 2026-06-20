@@ -1,6 +1,6 @@
 """Validate LLM-driven paragraph grouping against real benchmark documents.
 
-Drives the PRODUCTION grouping components from ``agents.etl._compress``
+Drives the PRODUCTION grouping components from ``agents.etl._grouping``
 (prompt template, batcher, response parser, deterministic verifier) against
 real documents, keeping only the reporting layer local.  For each document
 this script reports:
@@ -39,17 +39,19 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from agents.config import load_app_config
-from agents.etl._compress import (
+from agents.etl._constants import RECORD_ID_INLINE
+from agents.etl._grouping import (
     GROUPING_BATCH_SIZE,
     GROUPING_TRUNCATE_CHARS,
-    RECORD_ID_INLINE,
-    _first_standalone_match,
-    _grouping_messages,
-    _has_standalone_id,
-    _make_grouping_batches,
-    _parse_grouping_response,
-    _split_prose_paragraphs,
-    _verify_paragraph_groups,
+    grouping_messages,
+    make_grouping_batches,
+    parse_grouping_response,
+    split_prose_paragraphs,
+    verify_paragraph_groups,
+)
+from agents.etl._types import (
+    first_standalone_match,
+    has_standalone_id as _has_standalone_id,
 )
 from agents.llm.openai import OpenAIModelAdapter, resolve_backend_kind
 from agents.llm.tokenizer import count_qwen_tokens
@@ -69,11 +71,17 @@ def load_document(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _message_content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, ensure_ascii=False)
+
+
 def baseline_assignments(paras: list[str]) -> dict[int, str]:
     """1-based index -> rid for paragraphs the builtin regex tags."""
     out: dict[int, str] = {}
     for i, para in enumerate(paras, start=1):
-        m = _first_standalone_match(RECORD_ID_INLINE, para)
+        m = first_standalone_match(RECORD_ID_INLINE, para)
         if m:
             out[i] = m.group(1)
     return out
@@ -105,9 +113,9 @@ def run_document(
     workers: int,
 ) -> dict:
     text = load_document(path)
-    paras = _split_prose_paragraphs(text)
+    paras = split_prose_paragraphs(text)
     baseline = baseline_assignments(paras)
-    batches = _make_grouping_batches(paras, batch_size=batch_size, truncate=truncate)
+    batches = make_grouping_batches(paras, batch_size=batch_size, truncate=truncate)
 
     print(f"\n=== {path.name} ===")
     print(f"paragraphs: {len(paras)} | batches: {len(batches)}")
@@ -117,28 +125,28 @@ def run_document(
     )
     if dry_run:
         print("\n--- first prompt preview ---")
-        for msg in _grouping_messages(batches[0][1]):
+        for msg in grouping_messages(batches[0][1]):
             print(f"[{msg.role}]")
-            print(msg.content[:1500])
+            print(_message_content_text(msg.content)[:1500])
         return {"doc": path.name, "dry_run": True}
 
     assert adapter is not None
 
     def call(batch: tuple[list[int], str]) -> tuple[str, float, int, int]:
-        messages = _grouping_messages(batch[1])
+        messages = grouping_messages(batch[1])
         t0 = time.time()
         response = adapter.complete(messages)
         return (
             response.content,
             time.time() - t0,
-            sum(count_qwen_tokens(m.content) for m in messages),
+            sum(count_qwen_tokens(_message_content_text(m.content)) for m in messages),
             count_qwen_tokens(response.content),
         )
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(call, batches))
 
-    # Merge with the same per-batch range filter as _group_paragraphs_by_llm.
+    # Merge with the same per-batch range filter as group_paragraphs_by_llm.
     merged: dict[str, list[int]] = {}
     none_indices: list[int] = []
     groups_none_batches = 0
@@ -149,7 +157,7 @@ def run_document(
         wall = max(wall, dt)  # batches ran in parallel
         tok_in += ti
         tok_out += to
-        groups, nones, gnone, unparsed = _parse_grouping_response(raw)
+        groups, nones, gnone, unparsed = parse_grouping_response(raw)
         unparsed_total += unparsed
         if gnone:
             groups_none_batches += 1
@@ -161,7 +169,7 @@ def run_document(
             if kept:
                 merged.setdefault(rid, []).extend(kept)
 
-    verified = _verify_paragraph_groups(merged, paras)
+    verified = verify_paragraph_groups(merged, paras)
     gate_pass = verified is not None
     final: dict[str, list[int]] = verified or {}
     anchors = {

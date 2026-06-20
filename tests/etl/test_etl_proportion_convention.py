@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from agents.etl.extractor import (
-    _apply_proportion_convention,
+from agents.etl._units import (
     _classify_proportion_values,
-    _infer_proportion_conventions,
+    apply_proportion_convention,
+    infer_proportion_conventions,
 )
 
 
@@ -63,7 +63,7 @@ def test_infer_conventions_are_subfamily_scoped(tmp_path: Path) -> None:
         },
     )
 
-    assert _infer_proportion_conventions(context) == {"pct": "ratio", "ratio": "percent"}
+    assert infer_proportion_conventions(context) == {"pct": "ratio", "ratio": "percent"}
 
 
 def test_infer_conventions_merge_csv_evidence(tmp_path: Path) -> None:
@@ -73,7 +73,7 @@ def test_infer_conventions_merge_csv_evidence(tmp_path: Path) -> None:
         writer.writerow(["code", "HoldingPCT", "note"])
         writer.writerows([["1", "0.8065", "a"], ["2", "0.2750", "b"]])
 
-    assert _infer_proportion_conventions(context) == {"pct": "ratio"}
+    assert infer_proportion_conventions(context) == {"pct": "ratio"}
 
 
 def test_infer_conventions_mixed_subfamily_is_omitted(tmp_path: Path) -> None:
@@ -87,14 +87,14 @@ def test_infer_conventions_mixed_subfamily_is_omitted(tmp_path: Path) -> None:
         },
     )
 
-    assert _infer_proportion_conventions(context) == {"pct": "ratio"}
+    assert infer_proportion_conventions(context) == {"pct": "ratio"}
 
 
 def test_infer_conventions_without_proportion_columns(tmp_path: Path) -> None:
     context = _make_context(tmp_path)
     _make_db(context / "db" / "sub_db.sqlite", {"amount": [0.5, 2.0]})
 
-    assert _infer_proportion_conventions(context) == {}
+    assert infer_proportion_conventions(context) == {}
 
 
 def test_apply_convention_matches_field_to_own_subfamily() -> None:
@@ -109,7 +109,7 @@ def test_apply_convention_matches_field_to_own_subfamily() -> None:
         "_target_growth": "ratio",
         "_factor_growth": "0.01",
     }
-    _apply_proportion_convention(units, {"pct": "ratio", "ratio": "percent"})
+    apply_proportion_convention(units, {"pct": "ratio", "ratio": "percent"})
 
     assert units["_target_pctbeforetran"] == "ratio"
     assert units["_factor_pctbeforetran"] == "0.01"
@@ -128,7 +128,7 @@ def test_apply_convention_percent_cancels_heuristic_targets() -> None:
         "_target_reserve_ratio": "ratio",
         "_factor_reserve_ratio": "0.01",
     }
-    _apply_proportion_convention(units, {"ratio": "percent"})
+    apply_proportion_convention(units, {"ratio": "percent"})
 
     assert "_target_reserve_ratio" not in units
     assert "_factor_reserve_ratio" not in units
@@ -137,6 +137,6 @@ def test_apply_convention_percent_cancels_heuristic_targets() -> None:
 def test_apply_convention_empty_is_noop() -> None:
     units = {"pctbeforetran": "%", "_target_pctbeforetran": "ratio"}
     before = dict(units)
-    _apply_proportion_convention(units, {})
-    _apply_proportion_convention(units, None)
+    apply_proportion_convention(units, {})
+    apply_proportion_convention(units, None)
     assert units == before
