@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agents.etl._constants import MIN_PROSE_LINES, PROSE_EXTS, SECTION_HEADING
+from agents.etl._constants import PROSE_EXTS, SECTION_HEADING
 
 if TYPE_CHECKING:
     from agents.benchmark.schema import PublicTask
@@ -41,12 +41,8 @@ def detect_sections(text: str) -> list[dict[str, Any]]:
     return sections
 
 
-def detect_prose_files(task: PublicTask, *, force: bool = False) -> list[Path]:
-    """Find .md/.txt files in context/doc/ and context/ root that exceed MIN_PROSE_LINES.
-
-    When *force* is True the line-count threshold is skipped — any non-empty
-    prose file qualifies.
-    """
+def detect_prose_files(task: PublicTask) -> list[Path]:
+    """Find non-empty UTF-8 .md/.txt files and non-empty PDFs."""
     seen: set[Path] = set()
     results: list[Path] = []
 
@@ -68,13 +64,11 @@ def detect_prose_files(task: PublicTask, *, force: bool = False) -> list[Path]:
                 results.append(f)
                 continue
             try:
-                with f.open(encoding="utf-8", errors="replace") as handle:
+                with f.open(encoding="utf-8") as handle:
                     line_count = sum(1 for _ in handle)
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 continue
             if line_count == 0:
-                continue
-            if not force and line_count < MIN_PROSE_LINES:
                 continue
             results.append(f)
 

@@ -720,7 +720,7 @@ def _positional_chunks(text: str) -> list[tuple[str | None, str]]:
     """Original positional chunking: split by section, then by paragraph count."""
     sections = detect_sections(text)
     work: list[tuple[str | None, str]] = []
-    if not sections:
+    if len(sections) < 3:
         paras = [p.strip() for p in text.split("\n\n") if p.strip()]
         for i in range(0, len(paras), COMPRESS_CHUNK_SIZE):
             work.append((None, "\n\n".join(paras[i : i + COMPRESS_CHUNK_SIZE])))

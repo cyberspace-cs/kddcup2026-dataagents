@@ -26,10 +26,7 @@ ETL_HTTP_TIMEOUT = 300.0
 ETL_MAX_OUTPUT_TOKENS = 4096
 ETL_RESERVE_OUTPUT_TOKENS = 2048
 
-# Prose-file detection thresholds and suffix allow-list. PDFs bypass the line
-# count because page extraction happens later and an empty file-size check is
-# enough to reject corrupt inputs early.
-MIN_PROSE_LINES = 200
+# Prose-file detection suffix allow-list.
 PROSE_EXTS = frozenset({".md", ".txt", ".pdf"})
 
 # Document-local record-id recognition. These labels describe generated prose

@@ -15,7 +15,11 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    TimeoutError as FuturesTimeout,
+    as_completed,
+)
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -334,13 +338,13 @@ def run_etl_for_task(
     task: PublicTask,
     model_adapter: Any,
 ) -> list[ETLResult] | None:
-    """Orchestrator: detect large prose files, extract each, return metadata list.
+    """Orchestrator: detect prose files, extract each, return metadata list.
 
-    Returns None if no large prose files found. If a selected prose file cannot
-    be materialized as CSV, raise so the task fails explicitly.
+    Returns None if no prose files were converted. Individual file failures are
+    logged and skipped so one bad document does not block usable ETL output from
+    sibling documents.
     """
-    force_etl = task.difficulty.lower() in {"hard", "extreme"}
-    prose_files = detect_prose_files(task, force=force_etl)
+    prose_files = detect_prose_files(task)
     if not prose_files:
         return None
 
@@ -437,33 +441,44 @@ def run_etl_for_task(
             adapter, pf, task, text, proportion_conventions=proportion_conventions
         )
 
-    if len(prose_files) == 1:
-        result = _process(prose_files[0])
+    def _run_one(pf: Path) -> ETLResult | None:
+        try:
+            result = _process(pf)
+        except Exception as exc:
+            logger.warning("ETL failed for %s; skipping file: %s", pf.name, exc)
+            return None
         if result is None:
-            raise RuntimeError(f"ETL produced no CSV for {prose_files[0].name}")
-        return [result]
+            logger.warning("ETL produced no CSV for %s; skipping file", pf.name)
+            return None
+        return result
+
+    if len(prose_files) == 1:
+        result = _run_one(prose_files[0])
+        return [result] if result is not None else None
 
     results: list[ETLResult] = []
     orch_timeout = ETL_ORCHESTRATOR_LLM_CALL_TIMEOUT * max(4, len(prose_files))
-    with ThreadPoolExecutor(
-        max_workers=min(len(prose_files), ETL_ORCHESTRATOR_MAX_WORKERS)
-    ) as pool:
-        futs = {pool.submit(_process, pf): pf for pf in prose_files}
+    pool = ThreadPoolExecutor(max_workers=min(len(prose_files), ETL_ORCHESTRATOR_MAX_WORKERS))
+    try:
+        futs = {pool.submit(_run_one, pf): pf for pf in prose_files}
         try:
             for fut in as_completed(futs, timeout=orch_timeout):
                 try:
-                    result = fut.result(timeout=orch_timeout)
-                    if result is None:
-                        raise RuntimeError(f"ETL produced no CSV for {futs[fut].name}")
-                    results.append(result)
-                except TimeoutError:
-                    raise TimeoutError(f"ETL timed out for {futs[fut].name}") from None
+                    result = fut.result()
                 except Exception as exc:
-                    raise RuntimeError(f"ETL failed for {futs[fut].name}: {exc}") from exc
-        except TimeoutError:
+                    logger.warning(
+                        "ETL worker failed for %s; skipping file: %s", futs[fut].name, exc
+                    )
+                    continue
+                if result is not None:
+                    results.append(result)
+        except FuturesTimeout:
             unfinished = [pf.name for fut, pf in futs.items() if not fut.done()]
-            raise TimeoutError(
-                f"ETL orchestrator timed out; unfinished files: {unfinished}"
-            ) from None
+            logger.warning("ETL orchestrator timed out; skipping unfinished files: %s", unfinished)
+            for fut in futs:
+                if not fut.done():
+                    fut.cancel()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
-    return results
+    return results or None
