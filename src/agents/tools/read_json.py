@@ -161,7 +161,7 @@ def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, A
             "truncated": True,
         }
 
-    payload = json.loads(path.read_text(errors="replace"))
+    payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     return {
         "path": relative_path,
         "kind": "scalar",
@@ -176,7 +176,7 @@ def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
     size = path.stat().st_size
     if size > constants.READ_JSON_SIZE_LIMIT:
         return _streaming_json_schema(path, relative_path)
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
 
     if isinstance(payload, dict):
         payload_dict = cast(dict[str, Any], payload)
@@ -235,7 +235,7 @@ def summarize_json(path: Path) -> dict[str, Any]:
         result = _streaming_json_schema(path, None)
         result.pop("path", None)
         return result
-    payload = json.loads(path.read_text(errors="replace"))
+    payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     if isinstance(payload, dict):
         payload_dict = cast(dict[str, Any], payload)
         keys: list[str] = list(payload_dict.keys())

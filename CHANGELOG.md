@@ -29,6 +29,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   same instance. `tools=None` (or the adapter's constructor registry) keeps
   the byte-stable cached payload; overrides render fresh.
 
+### Fixed
+- **Text-mode file IO defaults to UTF-8.** Multiple call sites used
+  `Path.read_text()` / `path.open(...)` without an `encoding` argument, which
+  falls back to the OS locale codec (cp936 on a zh_CN Windows install). Tasks
+  with Chinese `task.json` questions raised `UnicodeDecodeError` before the
+  agent even started; `prediction.csv` writes silently encoded Chinese column
+  headers as GBK, breaking the grader. Affected files: `benchmark/dataset.py`,
+  `config.py`, `llm/token_bucket.py`, `runs/artifacts.py`,
+  `tools/inspect_files.py`, `tools/read_csv.py`, `tools/read_doc.py`,
+  `tools/read_json.py`. All now pin UTF-8 explicitly.
+
 ### Behavior changes (intentional tightening)
 - **Video report `extracted_data` has a fixed rules/sample shape.** The
   video `report` tool now normalizes missing extracted data to
