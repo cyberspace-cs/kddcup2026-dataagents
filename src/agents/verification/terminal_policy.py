@@ -12,6 +12,7 @@ from agents.tools import (
     cleanup_answer_artifacts,
 )
 from agents.verification.answer import AnswerVerifier
+from agents.verification.video_constraints import evaluate_video_constraints
 
 _EXECUTE_ACTIONS = ("execute_python", "execute_context_sql")
 _PRODUCING_CODE_STEPS = 1
@@ -66,24 +67,46 @@ class TerminalAnswerPolicy:
         remaining_steps: int,
         state: AgentRuntimeState | None = None,
     ) -> TerminalAnswerRejection | None:
-        """Return a rejection observation when the terminal answer verifier rejects."""
-        if (
-            self.verifier is None
-            or not is_terminal
-            or self.rejections_used >= self.verifier.max_rejections
-            or remaining_steps <= 1
-        ):
+        """Return a rejection observation when any verifier rejects.
+
+        Runs the deterministic video-constraint checker FIRST (cheap, no LLM call,
+        high confidence). If it rejects, that rejection counts against the shared
+        ``rejections_used`` budget — the LLM verifier still gets a turn on the
+        retry if the agent fails differently. If the deterministic check passes,
+        falls through to the LLM verifier as before.
+        """
+        if not is_terminal or remaining_steps <= 1:
+            return None
+        budget_cap = self.verifier.max_rejections if self.verifier is not None else 1
+        if self.rejections_used >= budget_cap:
+            return None
+        producing_code = recent_execute_code(state)
+        candidate = build_answer_table_without_side_effects(task, arguments)
+        row_count = len(candidate.rows) if candidate is not None else 0
+
+        deterministic_rejection = evaluate_video_constraints(
+            state,
+            task.question,
+            row_count,
+        )
+        if deterministic_rejection is not None:
+            self.rejections_used += 1
+            if candidate is not None and candidate.columns and candidate.rows:
+                self.fallback_answer = candidate
+                self.fallback_answer_arguments = dict(arguments)
+            return TerminalAnswerRejection(content={"answer_rejected": deterministic_rejection})
+
+        if self.verifier is None:
             return None
         rejection = self.verifier.verify(
             task.question,
             arguments,
-            producing_code=recent_execute_code(state),
+            producing_code=producing_code,
         )
         if rejection is None:
             return None
 
         self.rejections_used += 1
-        candidate = build_answer_table_without_side_effects(task, arguments)
         if candidate is not None and candidate.columns and candidate.rows:
             self.fallback_answer = candidate
             self.fallback_answer_arguments = dict(arguments)

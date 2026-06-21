@@ -569,7 +569,7 @@ def load_app_config(config_path: Path) -> AppConfig:
     调用方拿到的仍然是历史以来的 `AppConfig` 类型。
     """
     # safe_load 防止任意 Python 对象实例化；空文件返回 None 时退化为空 dict
-    payload: dict[str, Any] = yaml.safe_load(config_path.read_text()) or {}
+    payload: dict[str, Any] = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 
     try:
         return _check_loaded_config(_APP_CONFIG_ADAPTER.validate_python(payload))

@@ -94,7 +94,7 @@ def profile_columns(
 def read_csv_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
     """Return CSV schema plus head/tail samples. This is not full data access."""
     path = resolve_context_path(task, relative_path)
-    with path.open(newline="") as handle:
+    with path.open(newline="", encoding="utf-8", errors="replace") as handle:
         reader = csv.reader(handle)
         rows = list(reader)
 
@@ -136,7 +136,7 @@ def read_csv_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
 
 def summarize_csv(path: Path) -> dict[str, Any]:
     """Stream a CSV enough for inspect_files schema and column profiling."""
-    with path.open(newline="") as handle:
+    with path.open(newline="", encoding="utf-8", errors="replace") as handle:
         reader = csv.reader(handle)
         try:
             header = next(reader)

@@ -130,7 +130,7 @@ def _format_for_inspect(rel_path: str, abs_path: Path) -> dict[str, Any]:
         base["schema"] = summarize_doc(abs_path)
         if abs_path.name.lower() == "knowledge.md" and size <= constants.KNOWLEDGE_MD_PRELOAD_LIMIT:
             try:
-                base["schema"]["full_text"] = abs_path.read_text(errors="replace")
+                base["schema"]["full_text"] = abs_path.read_text(encoding="utf-8", errors="replace")
                 base["schema"]["knowledge_preloaded"] = True
             except OSError:
                 pass

@@ -35,7 +35,9 @@ def _make_task(tmp_path: Path) -> PublicTask:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False))
+    # Windows 默认 cp936 写,但 read_json 强制 utf-8 读 — helper 必须显式 utf-8
+    # 否则中文 payload 在 zh_CN 机器上读取时 UnicodeDecodeError。
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def test_object_returns_keys_and_value_preview(tmp_path: Path) -> None:

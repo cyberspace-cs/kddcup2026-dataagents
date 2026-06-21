@@ -92,7 +92,7 @@ def read_doc_preview(
 ) -> dict[str, Any]:
     """Preview a text document. Paging mode and keyword mode are mutually exclusive."""
     path = resolve_context_path(task, relative_path)
-    lines = path.read_text(errors="replace").splitlines()
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     total_lines = len(lines)
 
     if total_lines == 0:
@@ -148,7 +148,7 @@ def read_doc_preview(
 
 def summarize_doc(path: Path) -> dict[str, Any]:
     """Summarize a text document for inspect_files."""
-    lines = path.read_text(errors="replace").splitlines()
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     return {
         "line_count": len(lines),
         "head": lines[: constants.INSPECT_FILES_DOC_HEAD_LINES],

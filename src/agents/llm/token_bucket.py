@@ -74,7 +74,7 @@ class FileTokenBucket:
         """读磁盘状态；不存在或损坏时按满桶初始化。"""
         if self._state_path.exists():
             try:
-                raw = json.loads(self._state_path.read_text())
+                raw = json.loads(self._state_path.read_text(encoding="utf-8"))
                 return _BucketState(
                     rpm=float(raw.get("rpm", self._rpm_cap)),
                     tpm=float(raw.get("tpm", self._tpm_cap)),
