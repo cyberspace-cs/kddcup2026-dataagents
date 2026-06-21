@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from agents.video.registry import VIDEO_REPORT_MAX_BYTES, create_video_tool_registry
+from agents.video.registry import (
+    VIDEO_REPORT_MAX_BYTES,
+    VideoReportInput,
+    create_video_tool_registry,
+)
 
 
 def _make_task(tmp_path: Path) -> PublicTask:
@@ -50,6 +54,34 @@ def test_valid_report_roundtrips_findings(tmp_path: Path) -> None:
         "displayed_samples": {"q3_revenue": {"A": 10, "B": 20}},
     }
     assert findings["coverage"] == [] and findings["warnings"] == []
+
+
+def test_displayed_samples_accepts_list_shape(tmp_path: Path) -> None:
+    registry = create_video_tool_registry()
+    samples = [{"rank": 1, "name": "Alpha"}, {"rank": 2, "name": "Beta"}]
+    result = registry.execute(
+        _make_task(tmp_path),
+        "report",
+        {
+            "summary": "ranked panel",
+            "extracted_data": {
+                "rules": {"ranking_limit": 2},
+                "displayed_samples": samples,
+            },
+        },
+    )
+
+    assert result.ok is True and result.is_terminal is True
+    findings = json.loads(result.content["findings"])
+    assert findings["extracted_data"]["displayed_samples"] == samples
+
+
+def test_displayed_samples_schema_description_allows_arrays() -> None:
+    schema = VideoReportInput.model_json_schema()
+    description = schema["properties"]["extracted_data"]["description"]
+
+    assert "structured object OR array" in description
+    assert "MUST be a structured object. FORBIDDEN" not in description
 
 
 def test_missing_extracted_data_defaults_to_empty_contract(tmp_path: Path) -> None:

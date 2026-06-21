@@ -183,7 +183,7 @@ def pin_key_on_config(config: AppConfig, *, task_index: int, effective_run_id: s
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     """写 JSON：UTF-8 + 2 缩进 + 行尾换行，保证 git diff 可读。"""
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _write_csv(path: Path, columns: list[str], rows: list[list[Any]]) -> None:

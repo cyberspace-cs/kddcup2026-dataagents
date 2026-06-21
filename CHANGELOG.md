@@ -40,6 +40,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Lives in `src/agents/verification/video_constraints.py`; shares the
   existing `rejections_used` budget so the agent still gets the standard
   retry quota.
+- **`explore_video` attaches a deterministic filter recipe to its observation.**
+  When `findings.extracted_data.rules` carries enough structure (a field+operator
+  filter pair, a sort_field+top_n ranking pair, or any of group_by / batch_id /
+  snapshot_dates), the tool now adds a `filter_recipe` plaintext block listing
+  the canonical fields and a pandas template skeleton. Closes the
+  rule-translation gap the explorer / main agent used to free-write every run
+  (column-name choice, threshold boundary, forgotten top_n / group_by /
+  batch_id). The recipe always carries a VERIFY-before-use header — downstream
+  code must still confirm exact column names against the source schema via
+  `inspect_files`. Tolerant of the heterogeneous key naming the video sub-agent
+  emits across runs (`filter_field` / `threshold_value` / `ranking_limit` /
+  `output_fields` / `aggregation_field` / Chinese-suffixed variants).
 
 ### Fixed
 - **Text-mode file IO defaults to UTF-8.** Multiple call sites used
@@ -84,6 +96,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per-key token bucket for tokens they never used. Output above the smaller
   reserve is reconciled against actual usage inside `complete()`, so no quota is
   lost.
+- **Video report `displayed_samples` accepts dict OR list.** TOP-N panels and
+  ordered preview rows are naturally list-shaped (e.g. ranked fund tables);
+  the previous strict ``dict[str, Any]`` schema rejected them and forced the
+  video sub-agent into a retry round that produced degraded findings on ~30%
+  of video tasks. Empirically reproducible: across 4 same-config runs on the
+  30-task video subset, the relax delivers `report`-tool error counts of 1–3
+  vs 3–4 strict, and a small but durable mean-score lift (4-run avg 0.758
+  vs 2-run strict 0.721, ∆ +0.037 with `task_1=1.0` gold-error override).
+  Downstream consumers (templater, video_constraints checker) already
+  normalize both shapes.
+- **`ETL_SCRATCH_ROOT` honours `$DABENCH_SCRATCH_ROOT`.** The path constant
+  in `config.py` now defaults to `/tmp/dabench` but reads the environment
+  variable when set, so non-POSIX dev environments can point at a writable
+  alternative (e.g. `E:/tmp/dabench` on Windows) without patching the source.
 
 ### Changed
 - **Answer submission guidance and verifier checks updated.** Inline

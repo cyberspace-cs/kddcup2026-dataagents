@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import warnings
 from dataclasses import field
 from pathlib import Path
@@ -38,7 +39,7 @@ from pydantic.dataclasses import dataclass
 # 注：src/agents/config.py → parents[2] = 项目根
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-ETL_SCRATCH_ROOT = Path("/tmp/dabench")
+ETL_SCRATCH_ROOT = Path(os.environ.get("DABENCH_SCRATCH_ROOT", "/tmp/dabench"))
 
 
 def _default_dataset_root() -> Path:
