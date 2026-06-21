@@ -8,69 +8,32 @@ import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
-from agents.etl._detect import detect_sections
-from agents.etl._types import (
+from agents.etl._constants import (
+    COMPRESS_CHUNK_SIZE,
     DATE_SCALAR,
+    LLM_CALL_TIMEOUT,
+    MAX_WORKERS,
     NUMERIC_SCALAR,
     RECORD_ID_FIELDS,
-    RECORD_ID_KEYWORDS,
-    has_standalone_id,
-    is_embedded_digit_run,
+    RECORD_ID_LABEL,
+    RECORD_ID_RANGE,
+    RECORD_LABEL_EXAMPLES,
+    SCHEMA_SAMPLE_TOKEN_BUDGET,
+)
+from agents.etl._detect import detect_sections
+from agents.etl._grouping import (
+    entity_chunks_by_token_budget,
+    group_paragraphs_by_entity,
+)
+from agents.etl._types import (
     is_placeholder,
     normalize_boolean,
 )
 
 if TYPE_CHECKING:
-    from agents.llm.types import ModelAdapter, ModelMessage
+    from agents.llm.types import ModelAdapter
 
 logger = logging.getLogger(__name__)
-
-COMPRESS_CHUNK_SIZE = 30
-
-MAX_WORKERS = 4
-LLM_CALL_TIMEOUT = 180
-ENTITY_CHUNK_TOKEN_BUDGET = 2500
-
-_ID_SEP = r"\s*(?:\(?(?:ID|id|Id)[：:]\s*)?[：:#\-]?\s*"
-
-RECORD_ID_INLINE = re.compile(
-    rf"(?:{RECORD_ID_KEYWORDS}){_ID_SEP}(\d{{1,8}})",
-    re.IGNORECASE,
-)
-
-RECORD_ID_LABEL = re.compile(
-    rf"^(?:{RECORD_ID_KEYWORDS}){_ID_SEP}(\d{{1,8}})$",
-    re.IGNORECASE,
-)
-RECORD_ID_RANGE = re.compile(
-    rf"(?:{RECORD_ID_KEYWORDS})?\s*\d{{1,8}}\s*(?:至|到|[-~–—])\s*\d{{1,8}}",
-    re.IGNORECASE,
-)
-
-_DIGIT_RUN = re.compile(r"\d{1,8}")
-
-
-# Anchor-verification helpers live in _types (shared with the merge layer);
-# private aliases keep this module's established import surface stable.
-_is_embedded_digit_run = is_embedded_digit_run
-_has_standalone_id = has_standalone_id
-
-
-def _first_standalone_match(regex: re.Pattern[str], text: str) -> re.Match[str] | None:
-    """First match whose captured digits form a standalone token."""
-    group = 1 if regex.groups else 0
-    for m in regex.finditer(text):
-        if m.group(group) is None:
-            continue
-        if not _is_embedded_digit_run(text, m.start(group), m.end(group)):
-            return m
-    return None
-
-
-def _contains_standalone_number(text: str) -> bool:
-    return any(
-        not _is_embedded_digit_run(text, m.start(), m.end()) for m in _DIGIT_RUN.finditer(text)
-    )
 
 
 def _clean_numeric_scalar(val: str) -> str | None:
@@ -154,8 +117,12 @@ def _format_hard_type_rules(
     schema_columns: list[str] | None,
     schema_field_types: dict[str, str] | None,
 ) -> str:
+    lines = [
+        "HARD TYPE RULES:",
+        "- ALL numeric values: NEVER include thousand separators (commas). Write 7031834, NOT 7,031,834.",
+    ]
     if not schema_columns or not schema_field_types:
-        return ""
+        return "\n" + "\n".join(lines) + "\n"
 
     number_fields = [
         field
@@ -169,14 +136,13 @@ def _format_hard_type_rules(
     boolean_fields = [
         field for field in schema_columns if "boolean" in schema_field_types.get(field, "").lower()
     ]
-    if not number_fields and not date_fields and not boolean_fields:
-        return ""
 
-    lines = [
-        "HARD TYPE RULES:",
-        "- If a value has the wrong type for a field, leave the value blank.",
-        "- Do NOT put names, descriptions, or labels into number/date/boolean fields.",
-    ]
+    lines.extend(
+        [
+            "- If a value has the wrong type for a field, leave the value blank.",
+            "- Do NOT put names, descriptions, or labels into number/date/boolean fields.",
+        ]
+    )
     if number_fields:
         lines.append(
             "- number/integer fields: numeric values only (integers or decimals); "
@@ -298,9 +264,6 @@ def sample_paragraphs(text: str, first_n: int = 3, stride_n: int = 10) -> str:
     return "\n\n".join(samples)
 
 
-SCHEMA_SAMPLE_TOKEN_BUDGET = 8000
-
-
 def sample_paragraphs_by_section(text: str, token_limit: int = SCHEMA_SAMPLE_TOKEN_BUDGET) -> str:
     """Sample whole paragraphs for schema field discovery.
 
@@ -359,523 +322,6 @@ def sample_paragraphs_by_section(text: str, token_limit: int = SCHEMA_SAMPLE_TOK
     keep = max(1, int(len(flat) * token_limit / max(1, flat_tokens)))
     indices = sorted({round((j + 0.5) * len(flat) / keep - 0.5) for j in range(keep)})
     return "\n\n".join(flat[i] for i in indices)
-
-
-GROUPING_BATCH_SIZE = 40
-GROUPING_TRUNCATE_CHARS = 300
-
-# Models sometimes echo the input's paragraph numbering as a line prefix
-# ("1) 9: 1" = paragraph 1 → record 9): the optional enumeration prefix is
-# stripped.  It requires ")"/"."/"）" after the digits, so a plain
-# "<rid>: ..." line can never lose its rid to it.
-_ENUM_PREFIX = r"(?:\d{1,8}\s*[).．）]\s*)?"
-_GROUP_LINE = re.compile(rf"^[-*\s]*{_ENUM_PREFIX}(\d{{1,8}})\s*[:：]\s*(.+)$")
-_NONE_LINE = re.compile(rf"^[-*\s]*{_ENUM_PREFIX}NONE\s*[:：]\s*(.+)$", re.IGNORECASE)
-_GROUPS_NONE = re.compile(r"GROUPS\s*[:：]\s*NONE", re.IGNORECASE)
-_INDEX_TOKEN = re.compile(r"\d+")
-
-# Instructions live in the SYSTEM message (stronger adherence on instruct
-# models); the user message carries only the data block.
-GROUPING_SYSTEM_PROMPT = """\
-You group data-document paragraphs by entity.
-
-The user supplies numbered paragraph openings from a data document. Most \
-paragraphs describe exactly ONE record/entity, introduced somewhere in the \
-text by a numeric record ID (phrasings vary: "Record <N>", "档案 <N>", \
-"registered as <N>", "the strategic unit identified as <N>", ...). Some \
-paragraphs are narrative filler describing no record, and some CONTINUE the \
-previous record without restating its ID.
-
-Task: group the paragraph numbers by entity.
-
-Output format — one line per entity, nothing else:
-<record_id>: <paragraph numbers, comma-separated>
-
-Rules:
-- <record_id> is the numeric ID stated IN the paragraph text. COPY it exactly. \
-NEVER invent IDs and NEVER renumber paragraphs sequentially.
-- A paragraph usually states OTHER numbers besides its record ID: domain \
-codes (identification/company/security codes), dates, years, amounts. The \
-record ID is the document-local label that INTRODUCES the record, using the \
-same labeling scheme across the whole document ("Record <N>", \
-"档案条目 <N>", "备案号 <N>"); the other numbers are that record's DATA \
-values. When a paragraph states both, group by the record label — NEVER by \
-a data value, even when that value is a unique code (e.g. \
-"档案条目 <N>，识别码为 <M>" groups as <N>, not <M>).
-- A paragraph that continues an earlier entity without restating the ID goes \
-on that entity's line.
-- A GROUP paragraph that explicitly states the record IDs of SEVERAL entities \
-(e.g. "for units <A>, <B> and <C>, the index ...") goes on EACH stated \
-entity's line.
-- Narrative/filler paragraphs that describe no record: put their numbers on a \
-single line `NONE: <numbers>`.
-- Every paragraph number must appear on at least one line; only group \
-paragraphs stating several record IDs may appear on more than one line.
-- If the paragraphs are NOT organized by per-record numeric IDs (e.g. a pure \
-time series keyed by dates), output exactly `GROUPS: NONE` instead."""
-
-GROUPING_USER_TEMPLATE = """\
-Below are numbered paragraph openings from a data document. Group them by \
-entity.
-
-{paragraphs}"""
-
-
-def _grouping_messages(numbered_block: str) -> list[ModelMessage]:
-    """Build the grouping chat messages (shared with the validation script)."""
-    from agents.llm.types import ModelMessage
-
-    return [
-        ModelMessage(role="system", content=GROUPING_SYSTEM_PROMPT),
-        ModelMessage(role="user", content=GROUPING_USER_TEMPLATE.format(paragraphs=numbered_block)),
-    ]
-
-
-def _split_prose_paragraphs(text: str) -> list[str]:
-    """Split prose into paragraphs — THE shared 1-based index space.
-
-    Every component of the grouping pipeline (batching, LLM responses,
-    verification, leftover routing) refers to paragraphs by their 1-based
-    position in this list.
-    """
-    return [p.strip() for p in text.split("\n\n") if p.strip() and len(p.strip()) > 30]
-
-
-_SENTENCE_END = re.compile(r"[。！？]|[.!?](?=\s|$)")
-
-
-def _leading_sentences(flat: str, count: int) -> str:
-    """First *count* sentences of whitespace-collapsed text.
-
-    A sentence ends at a CJK terminator or at ``.!?`` followed by whitespace
-    (or end of text) — the lookahead keeps decimal points inside numerals
-    ("141,389,573.43") from terminating the sentence early. Falls back to the
-    whole text when fewer terminators exist.
-    """
-    end = 0
-    for _ in range(count):
-        m = _SENTENCE_END.search(flat, end)
-        if not m:
-            return flat
-        end = m.end()
-    return flat[:end]
-
-
-def _grouping_head(para: str) -> str:
-    """Paragraph opening rendered for grouping prompts.
-
-    First sentence by default — record IDs introduce their paragraph, so that
-    is where the grouping signal lives. Extends to the second sentence only
-    when the first carries no standalone number while the paragraph does:
-    rhetorical openers ("The investigation now turns to ...") defer the ID to
-    sentence two, and a head without the ID turns a data paragraph into
-    apparent filler.
-    """
-    flat = " ".join(para.split())
-    head = _leading_sentences(flat, 1)
-    if _contains_standalone_number(head) or not _contains_standalone_number(flat):
-        return head
-    return _leading_sentences(flat, 2)
-
-
-def _make_grouping_batches(
-    paras: list[str],
-    batch_size: int = GROUPING_BATCH_SIZE,
-    truncate: int = GROUPING_TRUNCATE_CHARS,
-) -> list[tuple[list[int], str]]:
-    """Contiguous balanced batches of (global 1-based indices, rendered numbered block).
-
-    Batch count is ceil(n / batch_size) but sizes are balanced (they differ by
-    at most one) instead of fixed-stride: a stride remainder produces a
-    sub-handful tail batch whose numbered-list format anchor is too weak — the
-    model drifts to prose, every claim falls to unparsed, and the batch's
-    paragraphs all drop to the leftover path (task_53 ed_otherdepositorycorpbs:
-    606 paras → tail batch of 6 → the document's last five entities lost their
-    Section XI fields). Balancing keeps every multi-batch slice at
-    >= batch_size // 2 lines with no extra parameter.
-    """
-    if not paras:
-        return []
-    n_batches = -(-len(paras) // batch_size)
-    base, extra = divmod(len(paras), n_batches)
-    batches: list[tuple[list[int], str]] = []
-    start = 0
-    for i in range(n_batches):
-        size = base + (1 if i < extra else 0)
-        chunk = paras[start : start + size]
-        indices = list(range(start + 1, start + 1 + size))
-        lines: list[str] = []
-        for idx, para in zip(indices, chunk, strict=True):
-            # head = " ".join(para[:truncate].split())  # 300-char opening (sentence-head A/B)
-            head = _grouping_head(para)
-            lines.append(f"{idx}) {head}")
-        batches.append((indices, "\n".join(lines)))
-        start += size
-    return batches
-
-
-def _parse_grouping_response(raw: str) -> tuple[dict[str, list[int]], list[int], bool, int]:
-    """Parse one grouping response.
-
-    Returns (groups rid->indices, none_indices, groups_none, unparsed_lines).
-    Prose lines the model adds around the groups are counted, never fatal.
-    """
-    raw = raw.replace("```", "")
-    groups: dict[str, list[int]] = {}
-    none_indices: list[int] = []
-    unparsed = 0
-    if _GROUPS_NONE.search(raw):
-        return {}, [], True, 0
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if m := _NONE_LINE.match(line):
-            none_indices.extend(int(t) for t in _INDEX_TOKEN.findall(m.group(1)))
-            continue
-        if m := _GROUP_LINE.match(line):
-            idxs = [int(t) for t in _INDEX_TOKEN.findall(m.group(2))]
-            if idxs:
-                groups.setdefault(m.group(1), []).extend(idxs)
-            continue
-        unparsed += 1
-    return groups, none_indices, False, unparsed
-
-
-def _verify_paragraph_groups(
-    groups: dict[str, list[int]],
-    paras: list[str],
-) -> dict[str, list[int]] | None:
-    """Deterministically verify LLM-proposed paragraph groups.
-
-    Three layers:
-
-    1. Structure — out-of-range indices are dropped.  An index claimed by
-       several groups is kept for every claimant whose ID the paragraph
-       states as a standalone token: explicit multi-entity GROUP paragraphs
-       ("for units 206, 211 and 216, ...") legitimately belong to each
-       stated entity.  Claims without such an anchor are dropped, and an
-       index where NO claimant anchors is invalidated entirely (it routes
-       to the leftover/positional path instead of being arbitrarily
-       assigned).
-    2. Member — a group survives only with >= 1 anchor paragraph: its ID
-       occurs as a standalone digit token in the FULL paragraph text.
-       Anchorless groups are hallucinated IDs and are dropped.  An attached
-       (non-anchor) member is rejected when it contains ANOTHER verified
-       group's ID standalone — the LLM mis-attached it (hijack guard).
-    3. Global — the verified result must look like per-record grouping at
-       all: >= 3 distinct entities whose IDs are not a tiny dense integer
-       run.  Evidence from the corpus: legit record IDs are sparse (16,
-       20, 21, ... 532) while categorical period keys form tiny dense runs
-       ({1..4} quarters, {1..12} months).  An anchor-ratio gate does NOT
-       work here: legit entities restate their ID in every paragraph.
-
-    Returns rid -> sorted paragraph indices, or None when the global gate
-    rejects the grouping as not-per-record data.
-    """
-    valid_indices = set(range(1, len(paras) + 1))
-
-    # Layer 1 — structure: out-of-range indices dropped; contested indices
-    # resolved per claimant by anchor presence (multi-entity group
-    # paragraphs anchor every claimant and keep them all).
-    claims: dict[int, list[str]] = {}
-    out_of_range = 0
-    for rid, idxs in groups.items():
-        for idx in idxs:
-            if idx not in valid_indices:
-                out_of_range += 1
-                continue
-            rids = claims.setdefault(idx, [])
-            if rid not in rids:
-                rids.append(rid)
-
-    invalidated: set[int] = set()
-    multi_member: list[int] = []
-    for idx, rids in claims.items():
-        if len(rids) == 1:
-            continue
-        anchored = [rid for rid in rids if _has_standalone_id(paras[idx - 1], rid)]
-        if not anchored:
-            invalidated.add(idx)
-            continue
-        claims[idx] = anchored
-        if len(anchored) > 1:
-            multi_member.append(idx)
-
-    cleaned: dict[str, list[int]] = {}
-    for rid, idxs in groups.items():
-        kept = [
-            idx
-            for idx in dict.fromkeys(idxs)  # dedupe, preserve order
-            if idx in claims and idx not in invalidated and rid in claims[idx]
-        ]
-        if kept:
-            cleaned[rid] = kept
-
-    # Layer 2 — member level: anchors and dropped (hallucinated-ID) groups.
-    anchors: dict[str, list[int]] = {}
-    verified: dict[str, list[int]] = {}
-    dropped_groups: list[str] = []
-    for rid, idxs in cleaned.items():
-        anch = [i for i in idxs if _has_standalone_id(paras[i - 1], rid)]
-        if anch:
-            anchors[rid] = anch
-            verified[rid] = idxs
-        else:
-            dropped_groups.append(rid)
-
-    # Hijack guard on attached (non-anchor) members.
-    hijack_rejected: list[tuple[int, str, str]] = []  # (idx, claimed, other)
-    for rid, idxs in verified.items():
-        for idx in idxs:
-            if idx in anchors[rid]:
-                continue
-            other = next(
-                (g for g in verified if g != rid and _has_standalone_id(paras[idx - 1], g)),
-                None,
-            )
-            if other is not None:
-                hijack_rejected.append((idx, rid, other))
-    rejected_idx = {i for i, _, _ in hijack_rejected}
-    final = {
-        rid: sorted(i for i in idxs if i not in rejected_idx) for rid, idxs in verified.items()
-    }
-    final = {rid: idxs for rid, idxs in final.items() if idxs}
-
-    if out_of_range:
-        logger.warning(
-            "ETL compress: grouping dropped %d out-of-range paragraph indices", out_of_range
-        )
-    if multi_member:
-        logger.info(
-            "ETL compress: %d group paragraphs granted multi-entity membership: %s",
-            len(multi_member),
-            sorted(multi_member)[:10],
-        )
-    if invalidated:
-        logger.warning(
-            "ETL compress: grouping invalidated indices claimed by multiple groups "
-            "with no anchoring claimant: %s",
-            sorted(invalidated)[:10],
-        )
-    if dropped_groups:
-        logger.warning(
-            "ETL compress: grouping dropped %d hallucinated groups (no anchor paragraph): %s",
-            len(dropped_groups),
-            sorted(dropped_groups)[:10],
-        )
-    if hijack_rejected:
-        logger.warning(
-            "ETL compress: grouping hijack guard rejected %d attached members: %s",
-            len(hijack_rejected),
-            hijack_rejected[:10],
-        )
-
-    # Layer 3 — global distinctness gate (anti time-series collapse).
-    distinct = len(final)
-    ids = [int(r) for r in final if r.isdigit()]
-    tiny_dense_run = (
-        bool(ids)
-        and min(ids) <= 2
-        and max(ids) <= 12
-        and len(set(ids)) > (max(ids) - min(ids)) * 0.8
-    )
-    if distinct < 3 or tiny_dense_run:
-        logger.info(
-            "ETL compress: grouping gate rejected result (%d distinct entities, tiny_dense_run=%s)",
-            distinct,
-            tiny_dense_run,
-        )
-        return None
-    logger.info(
-        "ETL compress: LLM grouping verified %d entities over %d paragraphs "
-        "(%d anchor-verified members)",
-        distinct,
-        sum(len(v) for v in final.values()),
-        sum(len(v) for v in anchors.values()),
-    )
-    return final
-
-
-def _group_paragraphs_by_llm(
-    adapter: ModelAdapter,
-    paras: list[str],
-) -> tuple[dict[str, list[int]] | None, bool]:
-    """Number paragraphs, batch them to the LLM, verify the claimed groups.
-
-    Returns ``(verified_groups, llm_responded)``:
-
-    - ``(groups, True)`` — verified rid -> sorted paragraph indices;
-    - ``(None, True)`` — the LLM responded but the result was semantically
-      rejected (GROUPS:NONE everywhere, or the verification gate failed);
-      callers must NOT override this verdict with the builtin regex;
-    - ``(None, False)`` — every batch call failed (infrastructure), so no
-      verdict exists; callers may fall back to the builtin regex.
-    """
-    if len(paras) < 3:
-        return None, True
-
-    batches = _make_grouping_batches(paras)
-
-    def call(batch: tuple[list[int], str]) -> str:
-        return adapter.complete(_grouping_messages(batch[1])).content
-
-    raw_results: list[str | None] = [None] * len(batches)
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futs = {pool.submit(call, batch): idx for idx, batch in enumerate(batches)}
-        try:
-            for fut in as_completed(futs, timeout=LLM_CALL_TIMEOUT * len(batches)):
-                idx = futs[fut]
-                try:
-                    raw_results[idx] = fut.result(timeout=LLM_CALL_TIMEOUT)
-                except TimeoutError:
-                    logger.warning("ETL compress: grouping batch %d timed out", idx)
-                except Exception as exc:
-                    logger.warning("ETL compress: grouping batch %d failed: %s", idx, exc)
-        except TimeoutError:
-            logger.warning("ETL compress: grouping pool timed out; using partial batches")
-
-    if all(raw is None for raw in raw_results):
-        return None, False
-
-    merged: dict[str, list[int]] = {}
-    unparsed_total = 0
-    for (indices, _), raw in zip(batches, raw_results, strict=True):
-        if raw is None:
-            continue
-        groups, _nones, groups_none, unparsed = _parse_grouping_response(raw)
-        unparsed_total += unparsed
-        if groups_none:
-            continue
-        batch_indices = set(indices)
-        for rid, idxs in groups.items():
-            kept = [i for i in idxs if i in batch_indices]
-            if kept:
-                merged.setdefault(rid, []).extend(kept)
-    if unparsed_total:
-        logger.info("ETL compress: grouping responses had %d unparsed lines", unparsed_total)
-
-    return _verify_paragraph_groups(merged, paras), True
-
-
-def _group_paragraphs_by_entity(
-    text: str,
-    adapter: ModelAdapter | None = None,
-) -> tuple[dict[str, list[str]], list[str]] | None:
-    """Group paragraphs by record ID — LLM grouping verified deterministically.
-
-    Returns ``(groups, leftover)``: groups maps record_id → [paragraph, ...]
-    preserving paragraph order within each entity and ordering entities by
-    first appearance; leftover lists paragraphs in no verified group
-    (NONE-classified or unassigned) that still carry standalone numbers —
-    potential entities the grouping missed.  Callers must process leftovers
-    too: silently dropping them loses whole records.  Returns None when the
-    document should be processed positionally instead.
-
-    With an adapter, paragraphs are numbered and batched to the LLM, which
-    emits ``<record_id>: <paragraph indices>`` lines; the claims are then
-    verified deterministically (see _verify_paragraph_groups).  A semantic
-    reject — GROUPS:NONE or a failed verification gate — returns None
-    WITHOUT consulting the builtin regex: the gate exists precisely because
-    the regex happily tags quarter/month period keys as record IDs.  Only
-    when every grouping call fails on infrastructure (or no adapter is
-    given) does the builtin record-ID regex take over as fallback.
-
-    Regex-path matches whose captured digits are fragments of larger
-    formatted numbers ("8,408,793" → "408") are ignored — they used to
-    spawn spurious entity groups and hijack paragraphs away from the
-    entity they belong to.
-    """
-    paras = _split_prose_paragraphs(text)
-    if not paras:
-        return None
-
-    if adapter is not None:
-        verified, llm_responded = _group_paragraphs_by_llm(adapter, paras)
-        if verified:
-            ordered = sorted(verified.items(), key=lambda kv: kv[1][0])
-            grouped = {rid: [paras[i - 1] for i in idxs] for rid, idxs in ordered}
-            assigned = {i for idxs in verified.values() for i in idxs}
-            unassigned = [
-                para
-                for i, para in enumerate(paras, start=1)
-                if i not in assigned and _contains_standalone_number(para)
-            ]
-            return grouped, unassigned
-        if llm_responded:
-            return None
-        logger.warning("ETL compress: all grouping batches failed; falling back to record-ID regex")
-
-    groups: dict[str, list[str]] = {}
-    leftover: list[str] = []
-    tagged = 0
-    for para in paras:
-        match = _first_standalone_match(RECORD_ID_INLINE, para)
-        if match:
-            groups.setdefault(match.group(1), []).append(para)
-            tagged += 1
-        elif _contains_standalone_number(para):
-            leftover.append(para)
-
-    if tagged < 3 or not groups:
-        return None
-    return groups, leftover
-
-
-ENTITY_SEPARATOR = "\n\n---\n\n"
-
-
-def _entity_chunks_by_token_budget(
-    entity_groups: dict[str, list[str]],
-    token_budget: int = ENTITY_CHUNK_TOKEN_BUDGET,
-) -> list[tuple[str, list[str]]]:
-    """Pack complete entity contexts into chunks that fit a token budget.
-
-    Each entity's paragraphs are joined and never split across chunks.
-    Entities are separated by ``---`` and each begins with a
-    ``[RECORD_ID: <rid>]`` marker so the LLM copies the authoritative ID
-    instead of inventing sequential numbers (which would collide across
-    chunks and collapse entities during the downstream PK merge).
-    Entities larger than the budget get their own chunk.
-
-    Returns a list of ``(chunk_text, rids_in_chunk)`` tuples.
-    """
-    from agents.llm.tokenizer import count_qwen_tokens
-
-    entity_texts: list[tuple[str, str, int]] = []
-    for rid, paras in entity_groups.items():
-        full = f"[RECORD_ID: {rid}]\n" + "\n\n".join(paras)
-        toks = count_qwen_tokens(full)
-        entity_texts.append((rid, full, toks))
-
-    chunks: list[tuple[str, list[str]]] = []
-    current_parts: list[str] = []
-    current_rids: list[str] = []
-    current_tokens = 0
-
-    def _flush() -> None:
-        nonlocal current_parts, current_rids, current_tokens
-        if current_parts:
-            chunks.append((ENTITY_SEPARATOR.join(current_parts), current_rids))
-            current_parts = []
-            current_rids = []
-            current_tokens = 0
-
-    for rid, full, toks in entity_texts:
-        if toks >= token_budget:
-            _flush()
-            chunks.append((full, [rid]))
-            continue
-
-        if current_tokens + toks > token_budget and current_parts:
-            _flush()
-
-        current_parts.append(full)
-        current_rids.append(rid)
-        current_tokens += toks
-
-    _flush()
-    return chunks
 
 
 def _generate_compress_guide(
@@ -987,13 +433,6 @@ def _generate_compress_guide(
         return None
 
 
-# Quoted example list like '"档案 <N>", "记录 <N>", ...' for prompts —
-# derived from RECORD_ID_KEYWORDS so the label set has one source of truth.
-# Placeholder <N> instead of a concrete number: idle chunks were observed
-# echoing concrete example values into output as fabricated rows.
-_RECORD_LABEL_EXAMPLES = ", ".join(f'"{lbl} <N>"' for lbl in RECORD_ID_KEYWORDS.split("|"))
-
-
 def _format_schema_def_hint(
     schema_columns: list[str] | None,
     schema_field_defs: dict[str, str] | None,
@@ -1028,10 +467,12 @@ def compress_chunk(
     if schema_columns and primary_key:
         cols = ", ".join(schema_columns)
         schema_hint = (
-            f"\nUse EXACTLY these field names: {cols}\n"
+            f"\nALLOWED FIELD NAMES (use ONLY these, letter-for-letter): {cols}\n"
+            "NEVER rename, abbreviate, or paraphrase a field name. "
+            'If the prose says "height" and the allowed name is "admissionheight", '
+            'output "admissionheight". Any key not in the allowed list is an error.\n'
             "Map a value to a field only when it explicitly matches that field's "
-            "meaning. Do NOT force narrative text into the closest field, and "
-            "do NOT invent synonyms or alternative names.\n"
+            "meaning. Do NOT force narrative text into the closest field.\n"
         )
         type_hint = _format_schema_type_hint(schema_columns, schema_field_types)
         hard_type_rules = _format_hard_type_rules(schema_columns, schema_field_types)
@@ -1192,7 +633,7 @@ def compress_chunk(
         total, count, rank, or average into a qualified/category-specific \
         field unless the paragraph explicitly states the same qualifier for \
         that value; omit the field instead.
-        - Local document labels such as {_RECORD_LABEL_EXAMPLES} are \
+        - Local document labels such as {RECORD_LABEL_EXAMPLES} are \
         record identifiers. Put only the scalar numeric portion (for example, \
         "<N>") in the {id_field_label} field. \
         NEVER output ranges like "197至217" or grouped labels as a single \
@@ -1241,9 +682,12 @@ def compress_chunk(
         ratio you picked doesn't satisfy this, you grabbed the wrong one.
           If any check fails, re-read the paragraph and pick the value that \
         satisfies all three constraints.
+        - CHINESE NUMBERS: NEVER output Chinese number words — ALWAYS \
+        convert to Arabic digits. 两=2 一点五=1.5 亿=1e8 万=1e4. \
+        "两亿元"→200000000 "一点五亿元"→150000000. Leaving empty is wrong.
         - FUZZY NUMBERS: when a value is approximate — marked with "约", \
         "大约", "近", "左右", "roughly", "approximately", or written in \
-        coarse Chinese number words like "六百九十七万" — convert the \
+        coarse Chinese number words like "约六百九十七万" — convert the \
         numeral mechanically and prefix it with ~ (e.g. "约六百九十七万股" \
         → ~6970000). Do NOT attempt arithmetic to sharpen it, and NEVER \
         omit a value merely because it is approximate — always output it \
@@ -1279,7 +723,7 @@ def _positional_chunks(text: str) -> list[tuple[str | None, str]]:
     """Original positional chunking: split by section, then by paragraph count."""
     sections = detect_sections(text)
     work: list[tuple[str | None, str]] = []
-    if not sections:
+    if len(sections) < 3:
         paras = [p.strip() for p in text.split("\n\n") if p.strip()]
         for i in range(0, len(paras), COMPRESS_CHUNK_SIZE):
             work.append((None, "\n\n".join(paras[i : i + COMPRESS_CHUNK_SIZE])))
@@ -1304,19 +748,23 @@ def compress_prose(
     anchor_keys: list[str] | None = None,
     schema_field_types: dict[str, str] | None = None,
     schema_field_defs: dict[str, str] | None = None,
-) -> str:
-    """Compress prose by stripping noise. All chunks across all sections run in one pool."""
+) -> tuple[str, dict[str, list[str]] | None]:
+    """Compress prose by stripping noise. All chunks across all sections run in one pool.
+
+    Returns (compressed_text, entity_groups) where entity_groups maps
+    record_id → source paragraphs (None when positional chunking was used).
+    """
 
     # Try entity-aware chunking: group paragraphs by entity (LLM grouping
     # with deterministic verification) so each entity's full context is in
     # one chunk, never split across chunks.
-    grouping = _group_paragraphs_by_entity(text, adapter=adapter)
+    grouping = group_paragraphs_by_entity(text, adapter=adapter)
     entity_groups: dict[str, list[str]] | None = None
     work: list[tuple[str | None, str]] = []
     chunk_rids: list[list[str]] = []
     if grouping:
         entity_groups, leftover = grouping
-        chunk_infos = _entity_chunks_by_token_budget(entity_groups)
+        chunk_infos = entity_chunks_by_token_budget(entity_groups)
         work = [(None, c) for c, _ in chunk_infos]
         chunk_rids = [rids for _, rids in chunk_infos]
         # Paragraphs in no verified group (NONE-classified or unassigned)
@@ -1343,7 +791,7 @@ def compress_prose(
         chunk_rids = [[] for _ in work]
 
     if not work:
-        return text
+        return text, entity_groups
 
     guide = _generate_compress_guide(
         adapter,
@@ -1445,7 +893,7 @@ def compress_prose(
                     "ETL compress: targeted recovery pass for %d missing entities",
                     len(subset),
                 )
-                for retry_text, _ in _entity_chunks_by_token_budget(subset):
+                for retry_text, _ in entity_chunks_by_token_budget(subset):
                     try:
                         result = compress_chunk(
                             adapter,
@@ -1485,8 +933,9 @@ def compress_prose(
         if chunk_result:
             parts.append(chunk_result)
     parts.extend(recovered_parts)
-    return _clean_compressed_entity_lines(
+    result = _clean_compressed_entity_lines(
         "\n\n".join(parts),
         schema_columns,
         schema_field_types,
     )
+    return result, entity_groups

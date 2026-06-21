@@ -178,7 +178,7 @@ def main():
             assets=TaskAssets(task_dir=td, context_dir=td / "context"),
         )
 
-        prose_files = detect_prose_files(task, force=True)
+        prose_files = detect_prose_files(task)
         if len(prose_files) < 2:
             # Still record, but skip routing
             result = {

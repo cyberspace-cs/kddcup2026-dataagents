@@ -1,36 +1,16 @@
-"""Shared schema-type constants and validation helpers for ETL stages."""
+"""Shared validation helpers for ETL stages."""
 
 from __future__ import annotations
 
 import re
 
-RECORD_ID_FIELDS = frozenset(
-    {"record_id", "archive_id", "file_id", "case_id", "entry_id", "local_id", "unit_id"}
+from agents.etl._constants import (
+    APPROX_PREFIXES,
+    BOOL_FALSE,
+    BOOL_TRUE,
+    DIGIT_RUN,
+    PLACEHOLDER_VALS,
 )
-
-RECORD_ID_KEYWORDS = r"档案|记录|条目|战略单元|Record|File|Case"
-
-NUMERIC_SCALAR = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$")
-DATE_SCALAR = re.compile(r"^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$")
-
-PLACEHOLDER_VALS = frozenset(
-    {
-        "",
-        "-",
-        "none",
-        "nan",
-        "n/a",
-        "placeholder",
-        "none (placeholder)",
-        "nan (placeholder)",
-        "- (placeholder)",
-        "0.0 (placeholder)",
-        "redacted",
-    }
-)
-
-_BOOL_TRUE = frozenset(("true", "yes", "1", "是"))
-_BOOL_FALSE = frozenset(("false", "no", "0", "否"))
 
 
 def is_embedded_digit_run(text: str, start: int, end: int) -> bool:
@@ -65,8 +45,21 @@ def has_standalone_id(text: str, rid: str) -> bool:
     return False
 
 
-APPROX_TAG = "~"
-_APPROX_PREFIXES = ("~", "～")
+def first_standalone_match(regex: re.Pattern[str], text: str) -> re.Match[str] | None:
+    """First match whose captured digits form a standalone token."""
+    group = 1 if regex.groups else 0
+    for m in regex.finditer(text):
+        if m.group(group) is None:
+            continue
+        if not is_embedded_digit_run(text, m.start(group), m.end(group)):
+            return m
+    return None
+
+
+def contains_standalone_number(text: str) -> bool:
+    return any(
+        not is_embedded_digit_run(text, m.start(), m.end()) for m in DIGIT_RUN.finditer(text)
+    )
 
 
 def split_approx_tag(val: str) -> tuple[str, bool]:
@@ -77,7 +70,7 @@ def split_approx_tag(val: str) -> tuple[str, bool]:
     them; everything downstream of that pass must never see the tag.
     """
     stripped = val.strip()
-    for prefix in _APPROX_PREFIXES:
+    for prefix in APPROX_PREFIXES:
         if stripped.startswith(prefix):
             return stripped[len(prefix) :].strip(), True
     return stripped, False
@@ -90,8 +83,8 @@ def is_placeholder(val: str) -> bool:
 def normalize_boolean(val: str) -> str | None:
     """Normalize a boolean-ish string to 'true'/'false', or None if unrecognizable."""
     low = val.strip().lower()
-    if low in _BOOL_TRUE:
+    if low in BOOL_TRUE:
         return "true"
-    if low in _BOOL_FALSE:
+    if low in BOOL_FALSE:
         return "false"
     return None

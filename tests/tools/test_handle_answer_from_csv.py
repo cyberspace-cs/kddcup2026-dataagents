@@ -22,8 +22,7 @@ from agents.benchmark.schema import (
     TaskAssets,
     TaskRecord,
 )
-from agents.tools.answer import AnswerInput
-from agents.tools.answer import answer as _answer_tool
+from agents.tools.answer import AnswerInput, answer as _answer_tool
 
 _answer_mod = importlib.import_module("agents.tools.answer")
 

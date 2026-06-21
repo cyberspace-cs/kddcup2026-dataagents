@@ -6,12 +6,11 @@ from typing import Any, cast
 import pytest
 
 from agents.etl._compress import _clean_compressed_entity_lines
-from agents.etl.extractor import (
-    _deterministic_factor,
+from agents.etl._schema import (
     _ensure_local_record_anchor,
     _parse_schema_response,
-    _parse_unit_factor_response,
 )
+from agents.etl._units import _deterministic_factor, _parse_unit_factor_response
 from agents.llm.types import ModelResponse
 
 
@@ -302,7 +301,7 @@ def test_km_table_fields_retries_next_heading_and_skips_junk_cells() -> None:
 
 
 def test_apply_km_schema_floor_readds_omitted_columns() -> None:
-    from agents.etl.extractor import _apply_km_schema_floor
+    from agents.etl._schema import _apply_km_schema_floor
 
     columns = ["record_id", "totalassets"]
     raw_defs = {"totalassets": "from llm"}
@@ -346,12 +345,12 @@ def test_parse_knowledge_schema_skips_unmentioned_table(tmp_path) -> None:
     """
     from types import SimpleNamespace
 
-    from agents.etl.extractor import _parse_knowledge_schema
+    from agents.etl._schema import parse_knowledge_schema
 
     (tmp_path / "knowledge.md").write_text(_KM_FIXTURE, encoding="utf-8")
     task = SimpleNamespace(context_dir=tmp_path)
 
-    result = _parse_knowledge_schema(
+    result = parse_knowledge_schema(
         cast(Any, task),
         Path("doc/ed_consumerpriceindex.md"),
         cast(Any, _FailingAdapter()),
@@ -365,7 +364,7 @@ def test_parse_knowledge_schema_rejects_filter_output_without_stem(tmp_path) -> 
     """Gate B: the pre-filter returning another entity's section is no-match."""
     from types import SimpleNamespace
 
-    from agents.etl.extractor import _parse_knowledge_schema
+    from agents.etl._schema import parse_knowledge_schema
 
     km = _KM_FIXTURE + "\nCross-reference: see also `ed_cpi` for deflators.\n"
     (tmp_path / "knowledge.md").write_text(km, encoding="utf-8")
@@ -374,7 +373,7 @@ def test_parse_knowledge_schema_rejects_filter_output_without_stem(tmp_path) -> 
         ["### 2.1 Balance Sheet (`ed_bs`)\n\n| Column | Def |\n|---|---|\n| `totalassets` | x |"]
     )
 
-    result = _parse_knowledge_schema(
+    result = parse_knowledge_schema(
         cast(Any, task),
         Path("doc/ed_cpi.md"),
         cast(Any, adapter),
@@ -389,7 +388,7 @@ def test_parse_knowledge_schema_applies_km_floor(tmp_path) -> None:
     """Happy path: LLM omits a governance column; the floor re-adds it."""
     from types import SimpleNamespace
 
-    from agents.etl.extractor import _parse_knowledge_schema
+    from agents.etl._schema import parse_knowledge_schema
 
     (tmp_path / "knowledge.md").write_text(_KM_FIXTURE, encoding="utf-8")
     task = SimpleNamespace(context_dir=tmp_path)
@@ -407,7 +406,7 @@ def test_parse_knowledge_schema_applies_km_floor(tmp_path) -> None:
     )
     adapter = _SequenceAdapter([section, schema_reply])
 
-    result = _parse_knowledge_schema(
+    result = parse_knowledge_schema(
         cast(Any, task),
         Path("doc/ed_bs.md"),
         cast(Any, adapter),

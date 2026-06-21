@@ -29,10 +29,15 @@ You are an answer-table auditor.  You will receive:
 2. The COLUMNS the agent is about to submit.
 3. A SAMPLE of rows (up to 5) and the TOTAL row count.
 
-Run these checks IN ORDER and report the FIRST failure found:
+Run ALL checks and report ALL failures found:
 
 Check 1 — EXTRA columns:
-Is any column NOT requested by the question?  Common mistakes:
+NEVER look at PRODUCING CODE for this check.  The ONLY input is the
+submitted COLUMNS array.  SQL/Python may SELECT dozens of columns for
+intermediate processing — those are irrelevant.  A column is "extra"
+ONLY if it appears in the COLUMNS array AND the question did not ask
+for it.  This check ONLY identifies columns to REMOVE — NEVER suggest
+adding columns here.  Common mistakes:
 - Row-ID / primary-key / code / rank columns (id, CustomerID, PostId,
   基金代码, fund_code, ticker, stock_code, 排名, rank, 序号, …) when
   the question does not ask for identifiers or rankings.
@@ -46,12 +51,13 @@ Is any column NOT requested by the question?  Common mistakes:
   their dates", "for each year").
 
 Check 2 — MISSING columns:
-Does the question EXPLICITLY ask the user to output attributes that
-the answer does NOT include?  Only count attributes the question asks
-you to RETURN, not values used solely to filter or rank.
-Judge missing columns ONLY from the submitted COLUMNS list.  If a
-PRODUCING CODE section is present, ignore every intermediate SQL/Python
-selected column for this check; producing code is not the submitted table.
+NEVER look at PRODUCING CODE for this check.  Does the question
+EXPLICITLY name output attributes that the COLUMNS array does NOT
+include?  Only count attributes the question asks you to RETURN, not
+values used solely to filter or rank.  This check ONLY identifies
+columns to ADD — NEVER suggest removing columns here.  Words like "记录"/"records"/
+"数据"/"data" do NOT imply additional columns — they refer to rows of
+whatever attribute the question names.
 Examples:
   "list their ID, sex and diagnosis" → 3 output columns required.
   "give the name and reference" → 2 output columns required.
@@ -59,6 +65,11 @@ Examples:
     is a ranking criterion, NOT a requested output — do NOT flag it
     as missing.
   "who is the fastest driver" → 1 column (the driver name).
+Temporal/geographic scope phrases ("这些年", "历年", "近年来", "各省",
+"各地区") are range qualifiers that constrain WHICH rows to return — they
+do NOT request date/region columns as output attributes.  Do NOT flag
+a date or region column as missing just because the question mentions
+a time span or geographic scope.
 When in doubt about whether a value is a requested output or just a
 filter/ranking criterion, say "ok".
 
@@ -112,12 +123,22 @@ Only flag values that are MATHEMATICALLY impossible for the requested measure.
 Check 5 — NULL-filter leakage (only when a PRODUCING CODE section is present):
 The PRODUCING CODE section is provided ONLY for this null-filter check.
 Do not use producing code for extra, missing, row-count, or value checks.
-Reject a data-listing answer whose producing code drops NULL rows of a
-SUBMITTED column (`WHERE <col> IS NOT NULL`, `.dropna(`, `.notna()`)
-unless the question explicitly excludes empty values.  Instruction:
-rebuild keeping NULL rows; filter only on identity/key columns.
-NULL filters on non-submitted columns and inside aggregates
-(AVG/SUM/COUNT...) are fine — say "ok".
+FIRST check: does the QUESTION itself ask for non-null / non-empty /
+non-blank records (e.g., "非空数据", "非空记录", "不为空", "non-null",
+"not null", "not empty", "有数据的记录")?  If YES → the NULL filter is
+correct and required by the question.  This check PASSES — do NOT
+include "null_filter" in the checks array.
+Only if the question does NOT ask for non-null records, reject when a
+data-listing answer's producing code DROPS NULL rows of a SUBMITTED
+column (`WHERE <col> IS NOT NULL`, `.dropna(`, `.notna()`).
+Say "ok" in ALL of these cases — they are NOT null-filter leakage:
+- `.notna()` / `.isna()` / `IS NOT NULL` used in print/logging/counting
+  (e.g., `print(df.notna().sum())`, `COUNT(*)...WHERE x IS NOT NULL`).
+  Only reject when the filter controls which rows are WRITTEN to the
+  output file or returned as the answer.
+- NULL filters on non-submitted columns and inside aggregates
+  (AVG/SUM/COUNT...).
+NEVER reject an answer for INCLUDING NULL rows.
 
 Check 6 — UNIT SUFFIX in cell values:
 Scan the SAMPLE ROWS for numeric cells that carry a unit suffix —
@@ -130,15 +151,31 @@ If ANY numeric cell in the sample contains a unit suffix, reject with
 check="unit_suffix" and instruct: "Strip the unit suffix from cell
 values — column names keep the unit, cells must be bare numbers."
 
-Reply with a JSON object (no markdown fence):
-{"verdict": "ok"} — all checks pass.
-{"verdict": "reject", "check": "extra|missing|row_count|value|null_filter|unit_suffix", \
-"reason": "<25 words: name the bad columns/values and the fix, no reasoning>"}
+Check 7 — TRANSPOSED / PIVOTED layout:
+The grader matches columns by hashed value lists.  A transposed answer
+(metrics as rows instead of columns) produces the WRONG column hashes
+and scores 0.  Detect this pattern:
+- Exactly 2 columns where one is a label/metric-name column and the
+  other is a value column, AND multiple rows whose label column holds
+  names that SHOULD be separate result columns (e.g., "总资产最大值",
+  "max_revenue", "count", …).
+- A "wide" question asking for several named statistics/metrics at once
+  ("最大值和最小值", "max and min", "mean, median, and std") is a
+  strong signal the answer should have one column per statistic.
+If detected, reject with check="transposed" and instruct: "Pivot the
+table so each metric is its own column and values fill a single row."
 
-Be conservative: when in doubt, say "ok".  Only reject when you are
-confident the answer violates one of the checks above: extra/missing
-columns, row-count expectations, or mathematical value constraints.
-Never reject merely because a value seems surprising, high, low, or unlikely."""
+OUTPUT FORMAT — follow EXACTLY:
+Respond with a SINGLE JSON object and NOTHING ELSE.  No reasoning,
+no analysis, no "Wait", no "Let me re-evaluate", no chain-of-thought.
+Your first character must be `{` and your last character must be `}`.
+"checks" MUST list ONLY checks that FAILED — NEVER include a check
+that passed.
+
+{"verdict": "ok"}
+{"verdict": "reject", "checks": ["extra"], "reason": "<25 words per failed check>"}
+
+Be conservative: when in doubt, say "ok"."""
 
 _MAX_SAMPLE_ROWS = 5
 
@@ -153,7 +190,7 @@ class AnswerVerifier:
     """
 
     model: ModelAdapter
-    max_rejections: int = 1
+    max_rejections: int = 2
 
     def verify(
         self,
@@ -210,7 +247,12 @@ def verify_answer(
     if not columns:
         return None
 
-    sample = rows[:_MAX_SAMPLE_ROWS]
+    n = len(rows)
+    if n <= _MAX_SAMPLE_ROWS:
+        sample = rows
+    else:
+        step = max(1, n // _MAX_SAMPLE_ROWS)
+        sample = [rows[i * step] for i in range(_MAX_SAMPLE_ROWS) if i * step < n]
     user_content = (
         f"QUESTION: {question}\n\n"
         f"COLUMNS: {json.dumps(columns)}\n\n"
@@ -220,7 +262,10 @@ def verify_answer(
     )
     if producing_code:
         user_content += (
-            f"\n\nPRODUCING CODE (the final execute steps that built this table):\n{producing_code}"
+            f"\n\nPRODUCING CODE (for Check 5 null-filter analysis ONLY — "
+            f"do NOT use for extra/missing/row-count/value checks; "
+            f"SQL may SELECT columns not in the submitted COLUMNS list above, "
+            f"that is normal intermediate processing and NOT an extra-column issue):\n{producing_code}"
         )
 
     messages = [
@@ -242,19 +287,39 @@ def verify_answer(
     try:
         result = json.loads(text)
     except (json.JSONDecodeError, ValueError):
-        logger.debug("answer verifier returned unparseable response: %s", text[:200])
-        return None
+        # LLM may append reasoning after the JSON — extract first {...} block.
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                result = json.loads(text[start : end + 1])
+            except (json.JSONDecodeError, ValueError):
+                logger.debug("answer verifier returned unparseable response: %s", text[:200])
+                return None
+        else:
+            logger.debug("answer verifier returned unparseable response: %s", text[:200])
+            return None
 
     verdict = result.get("verdict")
     if verdict == "ok":
         return None
 
     if verdict == "reject":
-        check = result.get("check", "unknown")
+        checks_raw: object = result.get("checks", result.get("check", "unknown"))
+        if isinstance(checks_raw, list):
+            checks = ", ".join(str(c) for c in cast(list[Any], checks_raw))
+        else:
+            checks = str(checks_raw)
         reason = result.get("reason", "")
-        return (
-            f"ANSWER REJECTED by verifier (check={check}): {reason} "
-            "Fix the issue and resubmit with `answer`."
-        )
+        parts = [f"ANSWER REJECTED by verifier (checks={checks}): {reason}"]
+        if "null_filter" in str(checks):
+            parts.append(
+                "NULL-FILTER FIX: unless the question explicitly asks for "
+                "non-null/non-empty records, REMOVE every `WHERE col IS NOT NULL`, "
+                "`.dropna()`, `.notna()` on submitted columns — "
+                "the grader expects NULL rows as empty cells."
+            )
+        parts.append("Fix the issue and resubmit with `answer`.")
+        return " ".join(parts)
 
     return None

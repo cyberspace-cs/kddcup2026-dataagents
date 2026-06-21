@@ -14,7 +14,7 @@ from agents.tools import (
 from agents.verification.answer import AnswerVerifier
 
 _EXECUTE_ACTIONS = ("execute_python", "execute_context_sql")
-_PRODUCING_CODE_STEPS = 2
+_PRODUCING_CODE_STEPS = 1
 _PRODUCING_CODE_CHARS = 2000
 
 
@@ -22,8 +22,8 @@ def recent_execute_code(state: AgentRuntimeState | None) -> str | None:
     """Inputs of the most recent execute steps, for the answer verifier.
 
     The verifier's NULL-filter check needs to see the SQL/python that built
-    the submitted table; the last couple of execute steps before the answer
-    call are that code in practice. Returns None when no execute step exists.
+    the submitted table; the most recent execute step before the answer call
+    is that code in practice. Returns None when no execute step exists.
     """
     if state is None:
         return None

@@ -14,11 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from agents.config import RateLimitConfig
-from agents.etl.extractor import (
-    _ETL_MAX_OUTPUT_TOKENS,
-    _ETL_RESERVE_OUTPUT_TOKENS,
-    _make_text_adapter,
-)
+from agents.etl._constants import ETL_MAX_OUTPUT_TOKENS, ETL_RESERVE_OUTPUT_TOKENS
+from agents.etl.extractor import _make_text_adapter
 from agents.llm.openai import OpenAIModelAdapter
 from agents.llm.rate_limit import RateLimitedAdapter
 
@@ -37,7 +34,7 @@ def test_caps_output_tokens_on_plain_adapter() -> None:
     # 裸 adapter 默认 max_tokens=0（无上限）→ ETL 应收紧到有限上限
     result = _make_text_adapter(_bare_openai())
     assert isinstance(result, OpenAIModelAdapter)
-    assert result.max_tokens == _ETL_MAX_OUTPUT_TOKENS
+    assert result.max_tokens == ETL_MAX_OUTPUT_TOKENS
     assert result.max_tokens > 0
 
 
@@ -49,11 +46,11 @@ def test_shrinks_reserve_when_rate_limited(tmp_path: Path) -> None:
 
     assert isinstance(result, RateLimitedAdapter)
     # ETL 预扣按更小的量级计费，且严格小于全局 reserve
-    assert result.rate_limit_config.reserve_output_tokens == _ETL_RESERVE_OUTPUT_TOKENS
+    assert result.rate_limit_config.reserve_output_tokens == ETL_RESERVE_OUTPUT_TOKENS
     assert result.rate_limit_config.reserve_output_tokens < cfg.reserve_output_tokens
     # 内层输出上限同样被收紧
     assert isinstance(result.inner, OpenAIModelAdapter)
-    assert result.inner.max_tokens == _ETL_MAX_OUTPUT_TOKENS
+    assert result.inner.max_tokens == ETL_MAX_OUTPUT_TOKENS
 
 
 def test_preserves_other_rate_limit_fields(tmp_path: Path) -> None:
@@ -77,4 +74,4 @@ def test_preserves_other_rate_limit_fields(tmp_path: Path) -> None:
     assert rc.safety_factor == 0.95
     assert rc.max_retries == 6
     # 唯一被改写的字段
-    assert rc.reserve_output_tokens == _ETL_RESERVE_OUTPUT_TOKENS
+    assert rc.reserve_output_tokens == ETL_RESERVE_OUTPUT_TOKENS

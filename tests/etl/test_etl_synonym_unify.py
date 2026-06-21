@@ -2,7 +2,7 @@
 
 Covers the deterministic merge gates (`apply_synonym_merges`), adjudication
 response parsing, and the CSV-level repair orchestration
-(`_unify_csv_synonyms`) with a stubbed adapter.
+(`unify_csv_synonyms`) with a stubbed adapter.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from agents.etl._merge import apply_synonym_merges, column_fill_counts
-from agents.etl.extractor import _parse_alias_response, _unify_csv_synonyms
+from agents.etl._reconcile import _parse_alias_response, unify_csv_synonyms
 from agents.llm.types import ModelResponse
 
 
@@ -196,7 +196,7 @@ def test_parse_alias_response_unlisted_discovered_defaults_to_distinct() -> None
 
 
 # ---------------------------------------------------------------------------
-# _unify_csv_synonyms — orchestration on disk
+# unify_csv_synonyms — orchestration on disk
 # ---------------------------------------------------------------------------
 
 
@@ -262,7 +262,7 @@ def _run_unify(
     units_path = tmp_path / "lc_sharetransfer_units.json"
     if units is not None:
         units_path.write_text(json.dumps(units, ensure_ascii=False), encoding="utf-8")
-    applied = _unify_csv_synonyms(
+    applied = unify_csv_synonyms(
         adapter,  # type: ignore[arg-type]
         csv_path,
         "lc_sharetransfer",

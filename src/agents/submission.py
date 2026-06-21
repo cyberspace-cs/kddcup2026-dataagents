@@ -34,10 +34,8 @@ import time
 import traceback
 from concurrent.futures import (
     ThreadPoolExecutor,
-    as_completed,
-)
-from concurrent.futures import (
     TimeoutError as FuturesTimeout,
+    as_completed,
 )
 from dataclasses import replace
 from pathlib import Path
