@@ -40,6 +40,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Lives in `src/agents/verification/video_constraints.py`; shares the
   existing `rejections_used` budget so the agent still gets the standard
   retry quota.
+- **`explore_video` attaches a deterministic filter recipe to its observation.**
+  When `findings.extracted_data.rules` carries enough structure (a field+operator
+  filter pair, a sort_field+top_n ranking pair, or any of group_by / batch_id /
+  snapshot_dates), the tool now adds a `filter_recipe` plaintext block listing
+  the canonical fields and a pandas template skeleton. Closes the
+  rule-translation gap the explorer / main agent used to free-write every run
+  (column-name choice, threshold boundary, forgotten top_n / group_by /
+  batch_id). The recipe always carries a VERIFY-before-use header — downstream
+  code must still confirm exact column names against the source schema via
+  `inspect_files`. Tolerant of the heterogeneous key naming the video sub-agent
+  emits across runs (`filter_field` / `threshold_value` / `ranking_limit` /
+  `output_fields` / `aggregation_field` / Chinese-suffixed variants).
 
 ### Fixed
 - **Text-mode file IO defaults to UTF-8.** Multiple call sites used

@@ -66,6 +66,72 @@ def test_happy_path_returns_parsed_findings(
     assert seen["path"].name == "demo.mp4"
 
 
+def test_filter_recipe_attached_when_rules_have_filter_shape(
+    task: PublicTask, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rules with field+operator+threshold trigger a recipe attached to the observation."""
+
+    def fake_run(t, video_path, instructions, model, **kwargs):
+        return VideoAgentResult(
+            findings=json.dumps(
+                {
+                    "summary": "dashboard config",
+                    "extracted_data": {
+                        "rules": {
+                            "field": "dailybenchgr",
+                            "operator": ">",
+                            "threshold": "0.00%",
+                            "sort_field": "dailybenchgr",
+                            "sort_direction": "descending",
+                            "export_field": "SecuAbbr",
+                            "table": "mf_benchmarkgrowthrate",
+                        },
+                        "displayed_samples": {},
+                    },
+                }
+            ),
+            steps_used=2,
+            success=True,
+        )
+
+    monkeypatch.setattr(video_runner_mod, "run_video_agent", fake_run)
+    tool = create_explore_video_tool_definition(_StubAdapter())
+    result = tool.handler(task, ExploreVideoInput(**_args("demo.mp4")))
+    assert result.ok is True
+    recipe = result.content.get("filter_recipe")
+    assert recipe is not None
+    assert "dailybenchgr" in recipe
+    assert "VERIFY" in recipe
+    assert "ascending=False" in recipe
+
+
+def test_filter_recipe_absent_when_rules_too_sparse(
+    task: PublicTask, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rules with only metadata (no field/op/sort/structural anchor) → no recipe key."""
+
+    def fake_run(t, video_path, instructions, model, **kwargs):
+        return VideoAgentResult(
+            findings=json.dumps(
+                {
+                    "summary": "narration only",
+                    "extracted_data": {
+                        "rules": {"task_name": "Configure something", "status": "active"},
+                        "displayed_samples": {},
+                    },
+                }
+            ),
+            steps_used=1,
+            success=True,
+        )
+
+    monkeypatch.setattr(video_runner_mod, "run_video_agent", fake_run)
+    tool = create_explore_video_tool_definition(_StubAdapter())
+    result = tool.handler(task, ExploreVideoInput(**_args("demo.mp4")))
+    assert result.ok is True
+    assert "filter_recipe" not in result.content
+
+
 def test_missing_path_returns_error(task: PublicTask) -> None:
     tool = create_explore_video_tool_definition(_StubAdapter())
     result = tool.handler(task, ExploreVideoInput(**_args("nope.mp4")))

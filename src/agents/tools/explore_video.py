@@ -81,15 +81,33 @@ def create_explore_video_tool_definition(video_model: ModelAdapter) -> FunctionT
             findings: Any = json.loads(result.findings)
         except (json.JSONDecodeError, TypeError):
             findings = result.findings
-        return ToolExecutionResult(
-            ok=True,
-            content={
-                "video_status": "ok",
-                "path": args.path,
-                "findings": findings,
-                "video_steps_used": result.steps_used,
-            },
-        )
+        content: dict[str, Any] = {
+            "video_status": "ok",
+            "path": args.path,
+            "findings": findings,
+            "video_steps_used": result.steps_used,
+        }
+        # 把 video sub-agent 抽出的 rules 立刻翻译成可执行 pandas 模板,贴在
+        # observation 里 — 下游 agent 自由写 SQL/python 时经常误用规则(列名
+        # 选错、阈值边界、忘 top_n / group_by / batch_id),这一步把"翻译"
+        # 这一段从 LLM 主观判断变成 deterministic 预处理。
+        from typing import cast as _cast
+
+        from agents.video.rule_templater import synthesize_filter_recipe
+
+        rules: dict[str, Any] | None = None
+        if isinstance(findings, dict):
+            findings_dict = _cast(dict[str, Any], findings)
+            extracted = findings_dict.get("extracted_data")
+            if isinstance(extracted, dict):
+                extracted_dict = _cast(dict[str, Any], extracted)
+                rules_raw = extracted_dict.get("rules")
+                if isinstance(rules_raw, dict):
+                    rules = _cast(dict[str, Any], rules_raw)
+        recipe_text = synthesize_filter_recipe(rules)
+        if recipe_text is not None:
+            content["filter_recipe"] = recipe_text
+        return ToolExecutionResult(ok=True, content=content)
 
     return _FunctionTool(
         name="explore_video",
