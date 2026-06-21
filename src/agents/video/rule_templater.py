@@ -49,6 +49,7 @@ _SORT_FIELD_KEYS: tuple[str, ...] = (
     "order_by",
     "ranking_field",
 )
+_TOPN_SORT_FALLBACK_KEYS: tuple[str, ...] = ("aggregation_field", "metric")
 _SORT_DIR_KEYS: tuple[str, ...] = (
     "sort_direction",
     "sort_order",
@@ -358,12 +359,14 @@ def extract_filter_recipe(rules: dict[str, Any] | None) -> FilterRecipe | None:
     operator = _extract_operator(rules)
     threshold, threshold_unit = _extract_threshold(rules)
 
-    sort_field_raw = _first_value(rules, _SORT_FIELD_KEYS)
-    sort_field, _ = _clean_field_name(sort_field_raw)
-    sort_descending = _normalize_sort_direction(_first_value(rules, _SORT_DIR_KEYS))
-
     top_n = _coerce_int(_first_value(rules, _TOPN_KEYS))
     export_fields = _coerce_export_fields(_first_value(rules, _EXPORT_KEYS))
+
+    sort_field_raw = _first_value(rules, _SORT_FIELD_KEYS)
+    sort_field, _ = _clean_field_name(sort_field_raw)
+    if sort_field is None and top_n is not None:
+        sort_field, _ = _clean_field_name(_first_value(rules, _TOPN_SORT_FALLBACK_KEYS))
+    sort_descending = _normalize_sort_direction(_first_value(rules, _SORT_DIR_KEYS))
 
     group_by_raw = _first_value(rules, _GROUPBY_KEYS)
     group_by, _ = _clean_field_name(group_by_raw)

@@ -102,6 +102,7 @@ def test_extract_task_31_ranking_limit_and_output_fields_list() -> None:
     r = extract_filter_recipe(rules)
     assert r is not None
     assert r.field == "totalprofit"  # aggregation_field's paren ident
+    assert r.sort_field == "totalprofit"
     assert r.top_n == 10
     assert r.batch_id == "BATCH-2021-Q4"
     assert r.table_hint == "mf_mainfinancialindexq"
@@ -269,6 +270,7 @@ def test_render_top_n_without_threshold_keeps_template_meaningful() -> None:
     assert text is not None
     assert "top_n:        10" in text
     assert "BATCH-2021-Q4" in text
+    assert "sort_values('totalprofit', ascending=False)" in text
     assert "head(10)" in text
     assert "SecuAbbr" in text and "SecuCode" in text
 

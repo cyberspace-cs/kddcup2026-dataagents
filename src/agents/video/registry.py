@@ -66,7 +66,7 @@ class VideoReportInput(BaseModel):
             "real data; "
             "`displayed_samples` = numbers, distribution snapshots, TOP-N panels, "
             "preview rows the screen merely SHOWS — NOT the answer. "
-            "MUST be a structured object. FORBIDDEN: quoted JSON text. "
+            "MUST be a structured object OR array. FORBIDDEN: quoted JSON text. "
             "Transcribe all numbers exactly as shown. Same value may appear in BOTH "
             "keys with a `warnings` note if you cannot tell which it is."
         ),
