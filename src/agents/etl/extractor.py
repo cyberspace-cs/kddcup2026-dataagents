@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agents.config import ETL_SCRATCH_ROOT
-from agents.etl._compress import compress_prose
+from agents.etl._compress import compress_prose, sample_paragraphs_by_section
 from agents.etl._constants import (
     ETL_HTTP_TIMEOUT,
     ETL_MAX_OUTPUT_TOKENS,
@@ -47,6 +47,7 @@ from agents.etl._reconcile import (
     unify_csv_synonyms,
 )
 from agents.etl._schema import (
+    infer_field_units_from_prose,
     infer_schema_from_sample,
     merge_prose_schema_into_governance,
     parse_knowledge_schema,
@@ -177,6 +178,8 @@ def extract_prose_file(
         if not result:
             return None
         changed = False
+        if repair_csv_numeric_identities(csv_path):
+            changed = True
         if governance_columns:
             applied = unify_csv_synonyms(
                 adapter,
@@ -188,9 +191,8 @@ def extract_prose_file(
                 task.question,
                 cache_dir / f"{path.stem}_units.json",
             )
-            changed = bool(applied)
-        if repair_csv_numeric_identities(csv_path):
-            changed = True
+            if applied:
+                changed = True
         if changed:
             result = validate_csv(csv_path) or result
         header, row_count = result
@@ -415,6 +417,14 @@ def run_etl_for_task(
                     extra_cols,
                 )
             units.pop("_default", None)
+            prose_units = infer_field_units_from_prose(
+                adapter,
+                sample_paragraphs_by_section(text) if text else "",
+                schema,
+                defs,
+                units,
+            )
+            units.update(prose_units)
             if km_text and units:
                 targets = vote_target_units(adapter, km_text, units, question=task.question)
                 if targets:

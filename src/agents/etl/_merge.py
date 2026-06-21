@@ -579,10 +579,11 @@ def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
         return cleaned if DATE_SCALAR.match(cleaned) else ""
     if "boolean" in type_text:
         return normalize_boolean(cleaned) or ""
-    if approx:
-        normalized = cleaned.replace(",", "")
-        if NUMERIC_SCALAR.match(normalized):
-            return f"{APPROX_TAG}{normalized}"
+    normalized = cleaned.replace(",", "")
+    if approx and NUMERIC_SCALAR.match(normalized):
+        return f"{APPROX_TAG}{normalized}"
+    if normalized != cleaned and NUMERIC_SCALAR.match(normalized):
+        return normalized
     return clean_cell(val)
 
 

@@ -117,8 +117,12 @@ def _format_hard_type_rules(
     schema_columns: list[str] | None,
     schema_field_types: dict[str, str] | None,
 ) -> str:
+    lines = [
+        "HARD TYPE RULES:",
+        "- ALL numeric values: NEVER include thousand separators (commas). Write 7031834, NOT 7,031,834.",
+    ]
     if not schema_columns or not schema_field_types:
-        return ""
+        return "\n" + "\n".join(lines) + "\n"
 
     number_fields = [
         field
@@ -132,14 +136,13 @@ def _format_hard_type_rules(
     boolean_fields = [
         field for field in schema_columns if "boolean" in schema_field_types.get(field, "").lower()
     ]
-    if not number_fields and not date_fields and not boolean_fields:
-        return ""
 
-    lines = [
-        "HARD TYPE RULES:",
-        "- If a value has the wrong type for a field, leave the value blank.",
-        "- Do NOT put names, descriptions, or labels into number/date/boolean fields.",
-    ]
+    lines.extend(
+        [
+            "- If a value has the wrong type for a field, leave the value blank.",
+            "- Do NOT put names, descriptions, or labels into number/date/boolean fields.",
+        ]
+    )
     if number_fields:
         lines.append(
             "- number/integer fields: numeric values only (integers or decimals); "

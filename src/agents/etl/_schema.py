@@ -484,7 +484,7 @@ def parse_knowledge_schema(
         return None
 
     prose_section = ""
-    if prose_sample:
+    if prose_sample and not km_fields:
         prose_section = (
             f"\n\nSample paragraphs from EVERY SECTION of the prose file "
             f'"{prose_stem}.md" (use these to discover ALL numeric/categorical '
@@ -528,7 +528,9 @@ def parse_knowledge_schema(
         "tran_date"), NEVER a specific data value.
         - ANCHORS should include the PK and any name/label/secondary identifier \
         field that could be used to recognize the same entity across different \
-        sections of the document (e.g. a person's name, a record label).
+        sections of the document (e.g. a person's name, a record label). \
+        Numeric measure/amount fields (GDP, revenue, price, count, ratio) are \
+        NEVER anchors — anchors are identifiers, not data values.
         - MANDATORY: include EVERY column listed in the governance document's \
         table for the matched entity — even when the prose sample shows no \
         values for it (the sample covers a fraction of the document; absence \
@@ -642,6 +644,77 @@ def parse_knowledge_schema(
         columns,
     )
     return columns, anchor_keys, field_types, field_units, field_defs
+
+
+def infer_field_units_from_prose(
+    adapter: ModelAdapter,
+    prose_sample: str,
+    columns: list[str],
+    field_defs: dict[str, str],
+    existing_units: dict[str, str],
+) -> dict[str, str]:
+    """Identify units for *existing* schema fields by inspecting prose values.
+
+    Returns {field: unit} for fields where a unit was detected.  Only fields
+    already in ``columns`` may appear; no new fields are invented.  Entries
+    already present in ``existing_units`` are never overwritten.
+    """
+    if not prose_sample or not columns:
+        return {}
+    col_block = "\n".join(f"- {c}: {field_defs.get(c, '(no definition)')}" for c in columns)
+    prompt = textwrap.dedent(f"""\
+        Below are sample paragraphs from a prose data file AND a list of \
+        known schema fields.
+
+        For each field, inspect the actual numeric values in the prose \
+        sample and determine the unit suffix attached to them \
+        (e.g. 元, 万元, 亿元, 百万元, %, 万吨, 万人, 公斤). \
+        Output one field=unit pair per field where a concrete unit is \
+        visible. Omit fields with no visible unit suffix. \
+        A currency denomination statement (e.g. "denominated in Chinese \
+        Yuan", "currency: CNY", "以人民币计价", "values in Chinese Yuan") \
+        declares the CURRENCY, not the magnitude — it is NOT a unit. \
+        NEVER emit field=元 from such a statement; only tag a field 元 \
+        when its numeric values carry an explicit 元 suffix in the data.
+
+        ONLY output units for the fields listed below — do NOT invent \
+        new fields.
+
+        Schema fields:
+        {col_block}
+
+        Prose sample:
+        ---
+        {prose_sample}
+        ---""")
+    messages = [
+        ModelMessage(
+            role="system",
+            content="You identify units for known fields from prose data values. "
+            "Output field=unit lines only.",
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception as exc:
+        logger.warning("ETL prose unit inference failed: %s", exc)
+        return {}
+
+    col_lower = {c.lower(): c for c in columns}
+    result: dict[str, str] = {}
+    for line in response.content.strip().splitlines():
+        line = line.strip().lstrip("- ")
+        if "=" not in line:
+            continue
+        field, _, unit = line.partition("=")
+        field, unit = field.strip(), unit.strip()
+        canonical = col_lower.get(field.lower())
+        if canonical and unit and canonical not in existing_units:
+            result[canonical] = unit
+    if result:
+        logger.info("ETL prose unit inference: %s", result)
+    return result
 
 
 def _infer_schema_single(

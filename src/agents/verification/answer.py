@@ -36,7 +36,8 @@ NEVER look at PRODUCING CODE for this check.  The ONLY input is the
 submitted COLUMNS array.  SQL/Python may SELECT dozens of columns for
 intermediate processing — those are irrelevant.  A column is "extra"
 ONLY if it appears in the COLUMNS array AND the question did not ask
-for it.  Common mistakes:
+for it.  This check ONLY identifies columns to REMOVE — NEVER suggest
+adding columns here.  Common mistakes:
 - Row-ID / primary-key / code / rank columns (id, CustomerID, PostId,
   基金代码, fund_code, ticker, stock_code, 排名, rank, 序号, …) when
   the question does not ask for identifiers or rankings.
@@ -53,7 +54,8 @@ Check 2 — MISSING columns:
 NEVER look at PRODUCING CODE for this check.  Does the question
 EXPLICITLY name output attributes that the COLUMNS array does NOT
 include?  Only count attributes the question asks you to RETURN, not
-values used solely to filter or rank.  Words like "记录"/"records"/
+values used solely to filter or rank.  This check ONLY identifies
+columns to ADD — NEVER suggest removing columns here.  Words like "记录"/"records"/
 "数据"/"data" do NOT imply additional columns — they refer to rows of
 whatever attribute the question names.
 Examples:
@@ -63,6 +65,11 @@ Examples:
     is a ranking criterion, NOT a requested output — do NOT flag it
     as missing.
   "who is the fastest driver" → 1 column (the driver name).
+Temporal/geographic scope phrases ("这些年", "历年", "近年来", "各省",
+"各地区") are range qualifiers that constrain WHICH rows to return — they
+do NOT request date/region columns as output attributes.  Do NOT flag
+a date or region column as missing just because the question mentions
+a time span or geographic scope.
 When in doubt about whether a value is a requested output or just a
 filter/ranking criterion, say "ok".
 
@@ -159,10 +166,11 @@ If detected, reject with check="transposed" and instruct: "Pivot the
 table so each metric is its own column and values fill a single row."
 
 OUTPUT FORMAT — follow EXACTLY:
-Your entire response MUST be a single JSON object.  NEVER output
-reasoning, analysis, chain-of-thought, or any text before or after
-the JSON.  "checks" MUST list ONLY checks that FAILED — NEVER include
-a check that passed.
+Respond with a SINGLE JSON object and NOTHING ELSE.  No reasoning,
+no analysis, no "Wait", no "Let me re-evaluate", no chain-of-thought.
+Your first character must be `{` and your last character must be `}`.
+"checks" MUST list ONLY checks that FAILED — NEVER include a check
+that passed.
 
 {"verdict": "ok"}
 {"verdict": "reject", "checks": ["extra"], "reason": "<25 words per failed check>"}
@@ -279,8 +287,18 @@ def verify_answer(
     try:
         result = json.loads(text)
     except (json.JSONDecodeError, ValueError):
-        logger.debug("answer verifier returned unparseable response: %s", text[:200])
-        return None
+        # LLM may append reasoning after the JSON — extract first {...} block.
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                result = json.loads(text[start : end + 1])
+            except (json.JSONDecodeError, ValueError):
+                logger.debug("answer verifier returned unparseable response: %s", text[:200])
+                return None
+        else:
+            logger.debug("answer verifier returned unparseable response: %s", text[:200])
+            return None
 
     verdict = result.get("verdict")
     if verdict == "ok":

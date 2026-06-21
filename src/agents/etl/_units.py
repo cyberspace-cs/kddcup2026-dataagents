@@ -67,10 +67,13 @@ def vote_target_units(
         "current units as found in the source data.\n\n"
         f"Fields: {field_list}\n\n"
         "For each field, determine the TARGET unit that knowledge.md "
-        "says answers should use. If the document declares a default unit "
-        "(e.g. '万元'), apply it to all monetary fields. If a field's source "
+        "EXPLICITLY declares. The declared unit is AUTHORITATIVE — NEVER "
+        "override it with reporting conventions, domain knowledge, or common "
+        "practice. If knowledge.md says '百万元', the target is 百万元 even "
+        "when the source is 亿元. If the document declares a default unit "
+        "(e.g. '百万元'), apply it to all monetary fields. If a field's source "
         "unit already matches the target, repeat it unchanged. "
-        "Dimensionless fields (price indices, ranks) must keep their "
+        "Dimensionless fields (price indices, ranks, %) must keep their "
         "source unit as-is — do NOT replace with '_default' or any placeholder.\n\n"
         "PERCENTAGE RULE:\n"
         "1. If the QUESTION asks for a '比例' (proportion/ratio) and the "
@@ -87,15 +90,13 @@ def vote_target_units(
         "Mind the direction — converting to a LARGER unit needs a factor "
         "BELOW 1.\n\n"
         "Output format — one field per entry, comma-separated:\n"
-        "  field=target_unit*factor\n"
+        "  field*factor=target_unit\n"
         "If source == target (no conversion needed), omit the *factor part:\n"
         "  field=target_unit\n\n"
-        "Examples:\n"
-        "  gdp=万元*10000, deposits=万元*0.0001, rate=%\n"
-        "  (gdp source was 亿元, target is 万元, so factor=10000)\n"
-        "  (deposits source was 元, target is 万元 — larger unit, "
-        "so factor=0.0001)\n"
-        "  (rate source was %, target is %, so no factor)\n\n"
+        "Examples (derive actual units from knowledge.md, not from these examples):\n"
+        "  field_a*0.0001=万元, field_b=%\n"
+        "  (field_a: source was 元, target is 万元, factor=1/10000)\n"
+        "  (field_b: source was %, target is %, no conversion)\n\n"
         f"knowledge.md:\n{km_text}"
     )
     if question:
@@ -140,11 +141,21 @@ def _parse_unit_factor_response(
         if not sep:
             continue
         field = field.strip()
+        rest = rest.strip()
+        # Support both formats:
+        #   new: field*factor=target_unit  (field already has * stripped)
+        #   old: field=target_unit*factor
+        if "*" in field:
+            field, _, factor_part = field.rpartition("*")
+            field = field.strip()
+            unit_part = rest
+            star = True
+        else:
+            unit_part, star_sep, factor_part = rest.partition("*")
+            star = bool(star_sep)
+            unit_part = unit_part.strip()
         if field not in source_fields:
             continue
-        rest = rest.strip()
-        unit_part, star, factor_part = rest.partition("*")
-        unit_part = unit_part.strip()
         if not unit_part or unit_part.startswith("_"):
             continue
         if unit_part == source_fields[field]:

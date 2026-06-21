@@ -415,6 +415,11 @@ def unify_csv_synonyms(
     if not mapping:
         return []
 
+    mapping = {disc: canon for disc, canon in mapping.items() if _pair_viable(canon, disc)}
+
+    if not mapping:
+        return []
+
     # Collision guard: two discovered columns claiming one canonical column is
     # either a misjudgment or naming drift — trust neither, corrupt nothing.
     by_canon: dict[str, list[str]] = {}
