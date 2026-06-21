@@ -32,10 +32,11 @@ You are an answer-table auditor.  You will receive:
 Run ALL checks and report ALL failures found:
 
 Check 1 — EXTRA columns:
-Judge ONLY from the submitted COLUMNS list, NOT from PRODUCING CODE.
-SQL/Python may SELECT extra columns for intermediate processing; only
-the COLUMNS array is the actual answer.
-Is any column in COLUMNS NOT requested by the question?  Common mistakes:
+NEVER look at PRODUCING CODE for this check.  The ONLY input is the
+submitted COLUMNS array.  SQL/Python may SELECT dozens of columns for
+intermediate processing — those are irrelevant.  A column is "extra"
+ONLY if it appears in the COLUMNS array AND the question did not ask
+for it.  Common mistakes:
 - Row-ID / primary-key / code / rank columns (id, CustomerID, PostId,
   基金代码, fund_code, ticker, stock_code, 排名, rank, 序号, …) when
   the question does not ask for identifiers or rankings.
@@ -49,12 +50,12 @@ Is any column in COLUMNS NOT requested by the question?  Common mistakes:
   their dates", "for each year").
 
 Check 2 — MISSING columns:
-Does the question EXPLICITLY ask the user to output attributes that
-the answer does NOT include?  Only count attributes the question asks
-you to RETURN, not values used solely to filter or rank.
-Judge missing columns ONLY from the submitted COLUMNS list.  If a
-PRODUCING CODE section is present, ignore every intermediate SQL/Python
-selected column for this check; producing code is not the submitted table.
+NEVER look at PRODUCING CODE for this check.  Does the question
+EXPLICITLY name output attributes that the COLUMNS array does NOT
+include?  Only count attributes the question asks you to RETURN, not
+values used solely to filter or rank.  Words like "记录"/"records"/
+"数据"/"data" do NOT imply additional columns — they refer to rows of
+whatever attribute the question names.
 Examples:
   "list their ID, sex and diagnosis" → 3 output columns required.
   "give the name and reference" → 2 output columns required.
@@ -115,8 +116,14 @@ Only flag values that are MATHEMATICALLY impossible for the requested measure.
 Check 5 — NULL-filter leakage (only when a PRODUCING CODE section is present):
 The PRODUCING CODE section is provided ONLY for this null-filter check.
 Do not use producing code for extra, missing, row-count, or value checks.
-Reject ONLY when a data-listing answer's producing code DROPS NULL rows
-of a SUBMITTED column (`WHERE <col> IS NOT NULL`, `.dropna(`, `.notna()`).
+FIRST check: does the QUESTION itself ask for non-null / non-empty /
+non-blank records (e.g., "非空数据", "非空记录", "不为空", "non-null",
+"not null", "not empty", "有数据的记录")?  If YES → the NULL filter is
+correct and required by the question.  This check PASSES — do NOT
+include "null_filter" in the checks array.
+Only if the question does NOT ask for non-null records, reject when a
+data-listing answer's producing code DROPS NULL rows of a SUBMITTED
+column (`WHERE <col> IS NOT NULL`, `.dropna(`, `.notna()`).
 Say "ok" in ALL of these cases — they are NOT null-filter leakage:
 - `.notna()` / `.isna()` / `IS NOT NULL` used in print/logging/counting
   (e.g., `print(df.notna().sum())`, `COUNT(*)...WHERE x IS NOT NULL`).
@@ -124,8 +131,6 @@ Say "ok" in ALL of these cases — they are NOT null-filter leakage:
   output file or returned as the answer.
 - NULL filters on non-submitted columns and inside aggregates
   (AVG/SUM/COUNT...).
-The fix when rejecting is ALWAYS to REMOVE the NULL filter and KEEP
-NULL rows — the grader expects them as empty cells.
 NEVER reject an answer for INCLUDING NULL rows.
 
 Check 6 — UNIT SUFFIX in cell values:
@@ -153,15 +158,16 @@ and scores 0.  Detect this pattern:
 If detected, reject with check="transposed" and instruct: "Pivot the
 table so each metric is its own column and values fill a single row."
 
-Reply with a JSON object (no markdown fence):
-{"verdict": "ok"} — all checks pass.
-{"verdict": "reject", "checks": ["extra", "null_filter"], \
-"reason": "<25 words per issue: name the bad columns/values and the fix>"}
+OUTPUT FORMAT — follow EXACTLY:
+Your entire response MUST be a single JSON object.  NEVER output
+reasoning, analysis, chain-of-thought, or any text before or after
+the JSON.  "checks" MUST list ONLY checks that FAILED — NEVER include
+a check that passed.
 
-Be conservative: when in doubt, say "ok".  Only reject when you are
-confident the answer violates one of the checks above: extra/missing
-columns, row-count expectations, or mathematical value constraints.
-Never reject merely because a value seems surprising, high, low, or unlikely."""
+{"verdict": "ok"}
+{"verdict": "reject", "checks": ["extra"], "reason": "<25 words per failed check>"}
+
+Be conservative: when in doubt, say "ok"."""
 
 _MAX_SAMPLE_ROWS = 5
 
@@ -248,7 +254,10 @@ def verify_answer(
     )
     if producing_code:
         user_content += (
-            f"\n\nPRODUCING CODE (the final execute steps that built this table):\n{producing_code}"
+            f"\n\nPRODUCING CODE (for Check 5 null-filter analysis ONLY — "
+            f"do NOT use for extra/missing/row-count/value checks; "
+            f"SQL may SELECT columns not in the submitted COLUMNS list above, "
+            f"that is normal intermediate processing and NOT an extra-column issue):\n{producing_code}"
         )
 
     messages = [
@@ -287,9 +296,10 @@ def verify_answer(
         parts = [f"ANSWER REJECTED by verifier (checks={checks}): {reason}"]
         if "null_filter" in str(checks):
             parts.append(
-                "NULL-FILTER FIX: REMOVE every `WHERE col IS NOT NULL`, "
-                "`.dropna()`, `.notna()` on submitted columns. "
-                "The grader expects NULL rows as empty cells — dropping them scores 0."
+                "NULL-FILTER FIX: unless the question explicitly asks for "
+                "non-null/non-empty records, REMOVE every `WHERE col IS NOT NULL`, "
+                "`.dropna()`, `.notna()` on submitted columns — "
+                "the grader expects NULL rows as empty cells."
             )
         parts.append("Fix the issue and resubmit with `answer`.")
         return " ".join(parts)
