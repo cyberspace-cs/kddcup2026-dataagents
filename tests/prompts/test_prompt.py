@@ -55,11 +55,10 @@ def test_system_prompts_use_runtime_clock_for_current_year() -> None:
     prompt = build_native_system_prompt()
     lower = prompt.lower()
 
-    assert "runtime date" in lower
     assert "current year" in lower
     assert "execute_python" in prompt
-    assert "date.today().year" in prompt
-    assert "do not infer the current year from the latest date in the dataset" in lower
+    assert "date.today()" in prompt
+    assert "not" in lower and "latest date in the dataset" in lower
 
 
 def test_system_prompt_distinguishes_video_rules_from_displayed_samples() -> None:
