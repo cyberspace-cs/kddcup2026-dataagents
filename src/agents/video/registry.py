@@ -31,11 +31,12 @@ class VideoExtractedData(BaseModel):
             "batch IDs, statistical periods, and table names."
         ),
     )
-    displayed_samples: dict[str, Any] = Field(
+    displayed_samples: dict[str, Any] | list[Any] = Field(
         default_factory=dict,
         description=(
             "Numbers, distribution snapshots, TOP-N panels, preview rows, and other "
-            "values the screen merely shows. These are not direct answer values."
+            "values the screen merely shows. These are not direct answer values. Use "
+            "an object for keyed samples or an array for natural TOP-N/list panels."
         ),
     )
 
