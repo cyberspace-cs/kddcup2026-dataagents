@@ -513,20 +513,38 @@ def verify_field_values(
 
         corrections: dict[str, str] = {}
         col_by_lower = {c.lower(): c for c in verify_cols}
+
+        def _parse_correction(field: str, raw_val: str) -> str | None:
+            val = raw_val.strip()
+            if not val:
+                return None
+            if val.upper() == "NONE":
+                return ""
+            type_text = types.get(field, "").lower()
+            if "number" in type_text or "integer" in type_text:
+                normalized = val.replace(",", "")
+                try:
+                    float(normalized)
+                except ValueError:
+                    return None
+                return normalized
+            return val
+
         for line in reply.splitlines():
             if ":" not in line:
                 continue
             key, _, val = line.partition(":")
             key = col_by_lower.get(key.strip().lower())
-            val = val.strip().replace(",", "")
-            if key and val:
-                try:
-                    float(val)
-                    current = row.get(key, "").strip().replace(",", "")
-                    if val != current:
-                        corrections[key] = val
-                except ValueError:
-                    continue
+            if not key:
+                continue
+            parsed = _parse_correction(key, val)
+            if parsed is None:
+                continue
+            current = row.get(key, "").strip()
+            if "number" in types.get(key, "").lower() or "integer" in types.get(key, "").lower():
+                current = current.replace(",", "")
+            if parsed != current:
+                corrections[key] = parsed
         return rid, corrections
 
     all_corrections: dict[str, dict[str, str]] = {}

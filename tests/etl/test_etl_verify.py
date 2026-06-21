@@ -45,3 +45,35 @@ def test_verify_field_values_matches_mixed_case_reply_keys() -> None:
     )
 
     assert result == "RecordID: 1 | PersonalCode: 456 "
+
+
+def test_verify_field_values_clears_field_when_reply_says_none() -> None:
+    text = "RecordID: 1 | TotalAssets: 123"
+
+    result = verify_field_values(
+        cast(Any, _ReplyAdapter("totalassets: NONE")),
+        text,
+        schema_columns=["RecordID", "TotalAssets"],
+        primary_key="RecordID",
+        anchor_keys=["RecordID"],
+        entity_groups={"1": ["RecordID 1 does not mention TotalAssets."]},
+        schema_field_types={"TotalAssets": "number"},
+    )
+
+    assert result == "RecordID: 1 | TotalAssets:  "
+
+
+def test_verify_field_values_accepts_string_corrections() -> None:
+    text = "RecordID: 1 | Status: open"
+
+    result = verify_field_values(
+        cast(Any, _ReplyAdapter("status: closed")),
+        text,
+        schema_columns=["RecordID", "Status"],
+        primary_key="RecordID",
+        anchor_keys=["RecordID"],
+        entity_groups={"1": ["RecordID 1 has status closed."]},
+        schema_field_types={"Status": "category"},
+    )
+
+    assert result == "RecordID: 1 | Status: closed "
