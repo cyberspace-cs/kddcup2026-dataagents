@@ -408,6 +408,15 @@ Plan B if Phase 2 + 3 fall short: revisit the deferred Phase 4 (port `video_stru
 
 (Populated by Phase 5 — one row per A/B run.)
 
+All `mean` columns are per-video-task mean (over 30 video tasks) after the scorer's GB18030 fallback fix in this branch's `scripts/score_predictions.py` (commit `3c696e8`). Pre-fix numbers are quoted in italics for reference.
+
 | date | phase | description | baseline mean | new mean | Δ | walltime/task | decision |
 |---|---|---|---|---|---|---|---|
-| | | | | | | | |
+| 2026-06-23 | Phase 1 | pristine main + thinking=true + max_tokens=16384 (run 20260623-001) | — | 0.7233 (_pre-fix 0.690_) | n/a | — | reference |
+| 2026-06-23 | Phase 1 | same config; warm rerun (run 20260623-002) — code accidentally had Phase 2 active at kickoff | 0.7233 | 0.7078 (_pre-fix 0.6745_) | -0.0155 | — | within ±0.017 noise band; not signal |
+| 2026-06-23 | Phase 1 | switch to nothink per user request; Phase 2+3 active (run 20260623-003 in flight) | — | TBD | TBD | TBD | TBD |
+
+Notes:
+- Run `20260623-001` is the only pristine-main reference; Phase 2 commits landed before run 002, and Phase 3 was added before run 003.
+- The `thinking=true` accidental Phase 2 isolation (#1 → #2) lands in the noise band so far; a proper isolation under `thinking=false` (the chosen production config) is the next A/B (`video_filter_audit: disabled` vs default).
+- Reference points from prior runs: `20260621-018` (thinking=false on `feat/video-rule-templater`, pre-fix scorer) had per-video mean 0.745; not directly comparable to post-fix runs because the scorer bug suppressed task_1 in that run too.
