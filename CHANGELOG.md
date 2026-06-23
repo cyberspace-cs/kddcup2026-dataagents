@@ -9,6 +9,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **`agent.enable_answer_verifier` config field.** When `false`, skips the
   LLM answer-verifier pass entirely. Default `true` (current behavior).
+- **Answer verifier drops value-sanity check.** The former "Check 4 — VALUE
+  sanity" (magnitude/percentage-range heuristics) is removed; it rejected
+  valid edge-case answers (100%, 0%, large growth rates) more often than it
+  caught real errors. Remaining checks renumbered 5→4, 6→5, 7→6.
 - **`explore_video` sub-agent tool (explorer-only).** On tasks whose context
   contains a video, the explorer can launch a video sub-agent that sees the raw
   video in the leaf context only and returns a validated structured report;

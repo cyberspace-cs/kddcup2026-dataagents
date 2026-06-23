@@ -107,20 +107,7 @@ Check 3 — ROW COUNT sanity:
   multi-row answer just because the question sounds like a single value.
 - When in doubt about expected plurality, say "ok".
 
-Check 4 — VALUE sanity (only flag MATHEMATICAL impossibilities):
-- A percentage that clearly represents a share/proportion of a whole
-  must be in [0, 100] (0% and 100% are valid).
-- Growth rates / change-rate percentages may be negative or exceed 100%;
-  when unsure whether a percentage is a proportion or a change rate, say "ok".
-- A count that clearly represents a discrete item total is impossible
-  if negative or fractional.
-- A ratio "X times" is impossible if negative.
-NEVER judge whether a value is "too high", "too low", or "unlikely"
-based on domain knowledge or common sense — you do not have access to
-the data.  Values like 100%, 0%, or 99.95% are perfectly valid.
-Only flag values that are MATHEMATICALLY impossible for the requested measure.
-
-Check 5 — NULL-filter leakage (only when a PRODUCING CODE section is present):
+Check 4 — NULL-filter leakage (only when a PRODUCING CODE section is present):
 The PRODUCING CODE section is provided ONLY for this null-filter check.
 Do not use producing code for extra, missing, row-count, or value checks.
 FIRST check: does the QUESTION itself ask for non-null / non-empty /
@@ -140,7 +127,7 @@ Say "ok" in ALL of these cases — they are NOT null-filter leakage:
   (AVG/SUM/COUNT...).
 NEVER reject an answer for INCLUDING NULL rows.
 
-Check 6 — UNIT SUFFIX in cell values:
+Check 5 — UNIT SUFFIX in cell values:
 Scan the SAMPLE ROWS for numeric cells that carry a unit suffix —
 common suffixes: %, 万, 亿, 元, USD, kg, km, m², etc.  A cell like
 "48.706%" or "3.5万" is WRONG — the column name may contain the unit
@@ -151,7 +138,7 @@ If ANY numeric cell in the sample contains a unit suffix, reject with
 check="unit_suffix" and instruct: "Strip the unit suffix from cell
 values — column names keep the unit, cells must be bare numbers."
 
-Check 7 — TRANSPOSED / PIVOTED layout:
+Check 6 — TRANSPOSED / PIVOTED layout:
 The grader matches columns by hashed value lists.  A transposed answer
 (metrics as rows instead of columns) produces the WRONG column hashes
 and scores 0.  Detect this pattern:

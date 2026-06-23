@@ -42,6 +42,7 @@ agent:
   # enable_preact: true adds a planning instruction on the first turn.
   # Benchmarked: slightly worse than false with current max_steps=28 (costs 1 extra turn).
   enable_preact: false
+  enable_answer_verifier: true               # bool；false 跳过 LLM 答案校验，节省 token
 
   # ---- 推荐：多 Key 池 + 跨进程限速 ----
   # 强烈建议启用——消除 429 限流导致的任务失败 (单次 run 可丢 4-6 题)。
