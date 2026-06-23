@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 from agents.benchmark.schema import AnswerTable, PublicTask
 from agents.runtime.state import AgentRuntimeState
@@ -14,6 +14,9 @@ from agents.tools import (
 from agents.verification.answer import AnswerVerifier
 from agents.verification.video_constraints import evaluate_video_constraints
 from agents.verification.video_filter_audit import AuditFinding, audit_answer_table
+from agents.verification.video_findings import (
+    extract_video_rules_and_samples as _extract_video_rules_and_samples,
+)
 
 _EXECUTE_ACTIONS = ("execute_python", "execute_context_sql")
 _PRODUCING_CODE_STEPS = 1
@@ -45,53 +48,9 @@ def recent_execute_code(state: AgentRuntimeState | None) -> str | None:
     return "\n\n".join(reversed(snippets))
 
 
-def _extract_video_rules_and_samples(
-    state: AgentRuntimeState | None,
-) -> tuple[dict[str, Any] | None, dict[str, Any] | list[Any] | None]:
-    """Pull (rules, displayed_samples) from the latest explore_video step.
-
-    Walks ``state.steps`` backward for an ``explore_video`` action whose
-    observation carries ``findings.extracted_data.{rules, displayed_samples}``.
-    Returns (None, None) when no such step is found or the shape is missing.
-    """
-    if state is None:
-        return None, None
-    for step in reversed(state.steps):
-        if getattr(step, "action", None) != "explore_video":
-            continue
-        if not getattr(step, "ok", False):
-            continue
-        observation = getattr(step, "observation", None)
-        if not isinstance(observation, dict):
-            continue
-        observation_dict = cast(dict[str, Any], observation)
-        findings = observation_dict.get("findings")
-        if not isinstance(findings, dict):
-            continue
-        findings_dict = cast(dict[str, Any], findings)
-        extracted = findings_dict.get("extracted_data")
-        if not isinstance(extracted, dict):
-            continue
-        extracted_dict = cast(dict[str, Any], extracted)
-        rules_raw = extracted_dict.get("rules")
-        samples_raw = extracted_dict.get("displayed_samples")
-        rules: dict[str, Any] | None = (
-            cast(dict[str, Any], rules_raw) if isinstance(rules_raw, dict) else None
-        )
-        samples: dict[str, Any] | list[Any] | None
-        if isinstance(samples_raw, dict):
-            samples = cast(dict[str, Any], samples_raw)
-        elif isinstance(samples_raw, list):
-            samples = cast(list[Any], samples_raw)
-        else:
-            samples = None
-        return rules, samples
-    return None, None
-
-
-def _format_audit_rejections(rejects: list[AuditFinding]) -> str:
-    lines = ["Answer rejected by video_filter_audit:"]
-    for f in rejects:
+def _format_audit_findings(title: str, findings: list[AuditFinding]) -> str:
+    lines = [title]
+    for f in findings:
         lines.append(f"- [{f.code}] {f.message}")
         if f.evidence:
             lines.append(f"  evidence: {f.evidence}")
@@ -157,13 +116,34 @@ class TerminalAnswerPolicy:
             rules, samples = _extract_video_rules_and_samples(state)
             findings = audit_answer_table(candidate, rules, samples)
             rejects = [f for f in findings if f.severity == "reject"]
+            warnings = [f for f in findings if f.severity == "warn"]
             if rejects:
                 self.rejections_used += 1
                 if candidate.columns and candidate.rows:
                     self.fallback_answer = candidate
                     self.fallback_answer_arguments = dict(arguments)
                 return TerminalAnswerRejection(
-                    content={"answer_rejected": _format_audit_rejections(rejects)}
+                    content={
+                        "answer_rejected": _format_audit_findings(
+                            "Answer rejected by video_filter_audit:",
+                            rejects,
+                        )
+                    }
+                )
+            if warnings:
+                self.rejections_used += 1
+                if candidate.columns and candidate.rows:
+                    self.fallback_answer = candidate
+                    self.fallback_answer_arguments = dict(arguments)
+                return TerminalAnswerRejection(
+                    content={
+                        "answer_rejected": _format_audit_findings(
+                            "Answer flagged by video_filter_audit warnings. "
+                            "Re-check these issues; if the answer is intentional, "
+                            "resubmit the same answer unchanged.",
+                            warnings,
+                        )
+                    }
                 )
 
         if self.verifier is None:

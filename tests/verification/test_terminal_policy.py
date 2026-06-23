@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agents.benchmark.schema import AnswerTable
-from agents.runtime.state import AgentRuntimeState
+from agents.runtime.state import AgentRuntimeState, StepRecord
 from agents.verification.terminal_policy import TerminalAnswerPolicy, recent_execute_code
 from agents.verification.video_filter_audit import AuditFinding
 
@@ -153,7 +153,7 @@ def test_maybe_reject_skips_auditor_when_flag_disabled(monkeypatch: Any) -> None
     assert policy.rejections_used == 0
 
 
-def test_maybe_reject_auditor_warns_do_not_block(monkeypatch: Any) -> None:
+def test_maybe_reject_surfaces_auditor_warnings(monkeypatch: Any) -> None:
     from agents.verification import terminal_policy as tp
 
     monkeypatch.setattr(
@@ -187,32 +187,128 @@ def test_maybe_reject_auditor_warns_do_not_block(monkeypatch: Any) -> None:
         remaining_steps=5,
         state=None,
     )
-    assert result is None
-    assert policy.rejections_used == 0
+    assert result is not None
+    assert "boundary_ambiguous" in result.content["answer_rejected"]
+    assert "resubmit the same answer unchanged" in result.content["answer_rejected"]
+    assert policy.rejections_used == 1
 
 
-def test_extract_video_rules_and_samples_pulls_from_latest_explore_video() -> None:
+def test_extract_video_rules_and_samples_pulls_from_real_explore_video_record() -> None:
     from agents.verification.terminal_policy import _extract_video_rules_and_samples
 
     state = AgentRuntimeState()
-    state.steps.extend(
-        SimpleNamespace(  # type: ignore[arg-type]
+    state.steps.append(
+        StepRecord(
+            step_index=1,
+            thought="",
             action="explore_video",
+            action_input={},
+            raw_response="",
             ok=True,
             observation={
-                "findings": {
-                    "extracted_data": {
-                        "rules": {"field": "value", "operator": ">"},
-                        "displayed_samples": {"total_count": 7},
+                "ok": True,
+                "tool": "explore_video",
+                "content": {
+                    "findings": {
+                        "extracted_data": {
+                            "rules": {"field": "value", "operator": ">"},
+                            "displayed_samples": {"total_count": 7},
+                        }
                     }
-                }
+                },
             },
         )
-        for _ in range(1)
     )
     rules, samples = _extract_video_rules_and_samples(state)
     assert rules == {"field": "value", "operator": ">"}
     assert samples == {"total_count": 7}
+
+
+def test_extract_video_rules_and_samples_pulls_from_nested_explore_video_findings() -> None:
+    from agents.verification.terminal_policy import _extract_video_rules_and_samples
+
+    state = AgentRuntimeState()
+    state.steps.append(
+        StepRecord(
+            step_index=1,
+            thought="",
+            action="explore",
+            action_input={},
+            raw_response="",
+            ok=True,
+            observation={
+                "ok": True,
+                "tool": "explore",
+                "content": {
+                    "video_findings": [
+                        {
+                            "video_status": "ok",
+                            "path": "video/demo.mp4",
+                            "findings": {
+                                "extracted_data": {
+                                    "rules": {"export_fields": ["SecuAbbr"]},
+                                    "displayed_samples": [{"name": "A"}],
+                                }
+                            },
+                        }
+                    ]
+                },
+            },
+        )
+    )
+    rules, samples = _extract_video_rules_and_samples(state)
+    assert rules == {"export_fields": ["SecuAbbr"]}
+    assert samples == [{"name": "A"}]
+
+
+def test_maybe_reject_auditor_uses_real_video_record_shape(monkeypatch: Any) -> None:
+    from agents.verification import terminal_policy as tp
+
+    state = AgentRuntimeState()
+    state.steps.append(
+        StepRecord(
+            step_index=1,
+            thought="",
+            action="explore_video",
+            action_input={},
+            raw_response="",
+            ok=True,
+            observation={
+                "ok": True,
+                "tool": "explore_video",
+                "content": {
+                    "findings": {
+                        "extracted_data": {
+                            "rules": {"export_fields": ["x"]},
+                            "displayed_samples": {"total_count": 1},
+                        }
+                    }
+                },
+            },
+        )
+    )
+    monkeypatch.setattr(
+        tp,
+        "build_answer_table_without_side_effects",
+        lambda task, args: AnswerTable(columns=["x"], rows=[["a"], ["a"]]),
+    )
+    monkeypatch.setattr(
+        tp,
+        "evaluate_video_constraints",
+        lambda state, q, n: None,
+    )
+
+    policy = tp.TerminalAnswerPolicy(verifier=None, filter_audit_enabled=True)
+    result = policy.maybe_reject(
+        task=_stub_task(),
+        arguments={},
+        is_terminal=True,
+        remaining_steps=5,
+        state=state,
+    )
+    assert result is not None
+    assert "duplicate_export_rows" in result.content["answer_rejected"]
+    assert policy.rejections_used == 1
 
 
 def test_extract_video_rules_and_samples_returns_none_on_missing() -> None:
