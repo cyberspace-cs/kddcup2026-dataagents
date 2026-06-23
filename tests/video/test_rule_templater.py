@@ -405,3 +405,37 @@ def test_extract_prefer_abbr_column_false_for_full_name_question() -> None:
     assert r is not None
     assert r.prefer_abbr_column is False
 
+
+# ---------- render_filter_recipe: abbreviation hint ----------------------------
+
+
+def test_render_filter_recipe_includes_abbr_hint_when_flag_set() -> None:
+    from agents.video.rule_templater import render_filter_recipe, FilterRecipe
+
+    recipe = FilterRecipe(
+        field="dailybenchgr",
+        operator=">",
+        threshold="0.00%",
+        sort_field="dailybenchgr",
+        sort_descending=True,
+        top_n=10,
+        prefer_abbr_column=True,
+    )
+    text = render_filter_recipe(recipe)
+    assert "prefer_column_kind: abbreviation" in text
+
+
+def test_render_filter_recipe_omits_abbr_hint_when_flag_unset() -> None:
+    from agents.video.rule_templater import render_filter_recipe, FilterRecipe
+
+    recipe = FilterRecipe(
+        field="dailybenchgr",
+        operator=">",
+        threshold="0.00%",
+        sort_field="dailybenchgr",
+        sort_descending=True,
+        top_n=10,
+    )
+    text = render_filter_recipe(recipe)
+    assert "prefer_column_kind" not in text
+

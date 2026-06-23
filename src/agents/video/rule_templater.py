@@ -453,6 +453,11 @@ def render_filter_recipe(recipe: FilterRecipe) -> str:
     lines: list[str] = [
         "[video-rule recipe — VERIFY each name against actual schema before use]",
     ]
+    if recipe.prefer_abbr_column:
+        lines.append(
+            "  prefer_column_kind: abbreviation — when both 'XxxAbbr' and "
+            "full-name columns exist, use the *Abbr column"
+        )
     if recipe.field:
         label_tail = f" (label: {recipe.field_label})" if recipe.field_label else ""
         lines.append(f"  field:        {recipe.field}{label_tail}")
