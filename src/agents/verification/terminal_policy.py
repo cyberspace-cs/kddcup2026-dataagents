@@ -57,6 +57,9 @@ class TerminalAnswerPolicy:
     rejections_used: int = 0
     fallback_answer: AnswerTable | None = None
     fallback_answer_arguments: dict[str, Any] | None = field(default=None)
+    # When True, run audit_answer_table between evaluate_video_constraints and
+    # the LLM verifier. Default False keeps existing call sites unchanged.
+    filter_audit_enabled: bool = False
 
     def maybe_reject(
         self,

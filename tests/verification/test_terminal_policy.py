@@ -45,3 +45,20 @@ def test_recent_execute_code_skips_empty_inputs_and_handles_absence() -> None:
     code = recent_execute_code(state)
     assert code is not None
     assert "real = 1" in code
+
+
+# ---------- filter_audit_enabled field ----------------------------------------
+
+
+from agents.verification.terminal_policy import TerminalAnswerPolicy
+
+
+def test_terminal_policy_filter_audit_enabled_defaults_false() -> None:
+    # Backward-compatible default: existing call sites don't pass it.
+    policy = TerminalAnswerPolicy(verifier=None)
+    assert policy.filter_audit_enabled is False
+
+
+def test_terminal_policy_filter_audit_enabled_can_be_true() -> None:
+    policy = TerminalAnswerPolicy(verifier=None, filter_audit_enabled=True)
+    assert policy.filter_audit_enabled is True
