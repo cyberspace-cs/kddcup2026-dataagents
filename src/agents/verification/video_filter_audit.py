@@ -160,6 +160,68 @@ def _check_boundary_ambiguous(
     )
 
 
+_SAMPLES_TOTAL_KEYS: tuple[str, ...] = (
+    "total_count",
+    "row_count",
+    "total",
+    "count",
+    "n",
+)
+
+
+def _extract_samples_total(samples: dict[str, Any] | list[Any] | None) -> int | None:
+    """Best-effort: pull a credible small total from displayed_samples.
+
+    Two shapes accepted:
+    - dict: look for known total keys with int value
+    - list: use list length as the proxy total
+    Anything else returns None - the check is then silent.
+    """
+    if samples is None:
+        return None
+    if isinstance(samples, list):
+        return len(samples) if samples else None
+    if not isinstance(samples, dict):
+        return None
+    for key in _SAMPLES_TOTAL_KEYS:
+        value = samples.get(key)
+        if isinstance(value, bool):  # bool is int subclass - exclude
+            continue
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, str):
+            text = value.strip().replace(",", "").replace("，", "")
+            if text.isdigit():
+                n = int(text)
+                if n > 0:
+                    return n
+    return None
+
+
+def _check_row_count_overflow(
+    table: AnswerTable,
+    samples: dict[str, Any] | list[Any] | None,
+) -> AuditFinding | None:
+    samples_total = _extract_samples_total(samples)
+    if samples_total is None:
+        return None
+    df_rows = len(table.rows)
+    if df_rows <= 2 * samples_total:
+        return None
+    return AuditFinding(
+        code="row_count_overflow",
+        severity="warn",
+        message=(
+            f"prediction has {df_rows} rows but displayed_samples implies ~{samples_total}; "
+            "double-check the filter is not over-permissive"
+        ),
+        evidence={
+            "samples_total": samples_total,
+            "df_rows": df_rows,
+        },
+    )
+
+
 def _check_duplicate_export_rows(
     table: AnswerTable,
     rules: dict[str, Any],
@@ -218,4 +280,7 @@ def audit_answer_table(
     boundary = _check_boundary_ambiguous(table, rules)
     if boundary is not None:
         findings.append(boundary)
+    overflow = _check_row_count_overflow(table, samples)
+    if overflow is not None:
+        findings.append(overflow)
     return findings

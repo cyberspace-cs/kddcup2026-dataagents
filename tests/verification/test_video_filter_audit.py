@@ -138,3 +138,50 @@ def test_boundary_ambiguous_silent_when_field_absent_in_table() -> None:
     rules = {"field": "v", "operator": ">", "threshold": "100.0"}
     findings = audit_answer_table(table, rules=rules, samples=None)
     assert findings == []
+
+
+# ---------- row_count_overflow -------------------------------------------------
+
+
+def test_row_count_overflow_triggers_when_pred_much_larger_than_samples_total() -> None:
+    table = AnswerTable(columns=["x"], rows=[[i] for i in range(50)])
+    rules = {"field": "x"}
+    samples = {"total_count": 10}  # video says ~10 items, pred has 50
+    findings = audit_answer_table(table, rules=rules, samples=samples)
+    warns = [f for f in findings if f.code == "row_count_overflow"]
+    assert len(warns) == 1
+    assert warns[0].severity == "warn"
+    assert warns[0].evidence["samples_total"] == 10
+    assert warns[0].evidence["df_rows"] == 50
+
+
+def test_row_count_overflow_triggers_when_pred_at_least_double_list_length() -> None:
+    table = AnswerTable(columns=["x"], rows=[[i] for i in range(20)])
+    rules = {"field": "x"}
+    samples = ["a", "b", "c", "d", "e"]  # 5 items - pred 20 (>= 2x)
+    findings = audit_answer_table(table, rules=rules, samples=samples)
+    warns = [f for f in findings if f.code == "row_count_overflow"]
+    assert len(warns) == 1
+
+
+def test_row_count_overflow_silent_when_within_2x() -> None:
+    table = AnswerTable(columns=["x"], rows=[[i] for i in range(8)])
+    rules = {"field": "x"}
+    samples = {"total_count": 5}  # 8 < 2*5
+    findings = audit_answer_table(table, rules=rules, samples=samples)
+    assert [f for f in findings if f.code == "row_count_overflow"] == []
+
+
+def test_row_count_overflow_silent_when_samples_unparseable() -> None:
+    table = AnswerTable(columns=["x"], rows=[[i] for i in range(50)])
+    rules = {"field": "x"}
+    samples = {"description": "many rows of data"}  # no number
+    findings = audit_answer_table(table, rules=rules, samples=samples)
+    assert [f for f in findings if f.code == "row_count_overflow"] == []
+
+
+def test_row_count_overflow_silent_when_samples_none() -> None:
+    table = AnswerTable(columns=["x"], rows=[[i] for i in range(50)])
+    rules = {"field": "x"}
+    findings = audit_answer_table(table, rules=rules, samples=None)
+    assert findings == []
