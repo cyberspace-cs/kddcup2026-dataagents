@@ -270,17 +270,31 @@ def audit_answer_table(
     rules: dict[str, Any] | None,
     samples: dict[str, Any] | list[Any] | None,
 ) -> list[AuditFinding]:
-    """Run all auditor checks; return accumulated findings (empty when nothing trips)."""
+    """Run all auditor checks; never raises.
+
+    Internal exceptions become a single warn-severity finding so that an auditor
+    bug never blocks an otherwise-valid answer.
+    """
     findings: list[AuditFinding] = []
-    if rules is None:
+    if rules is None or not isinstance(rules, dict):
         return findings
-    dup = _check_duplicate_export_rows(table, rules)
-    if dup is not None:
-        findings.append(dup)
-    boundary = _check_boundary_ambiguous(table, rules)
-    if boundary is not None:
-        findings.append(boundary)
-    overflow = _check_row_count_overflow(table, samples)
-    if overflow is not None:
-        findings.append(overflow)
+    try:
+        dup = _check_duplicate_export_rows(table, rules)
+        if dup is not None:
+            findings.append(dup)
+        boundary = _check_boundary_ambiguous(table, rules)
+        if boundary is not None:
+            findings.append(boundary)
+        overflow = _check_row_count_overflow(table, samples)
+        if overflow is not None:
+            findings.append(overflow)
+    except Exception as exc:  # noqa: BLE001 — fall-through is intentional
+        findings.append(
+            AuditFinding(
+                code="audit_internal_error",
+                severity="warn",
+                message=f"auditor internal error: {type(exc).__name__}: {exc}",
+                evidence={"exception_type": type(exc).__name__},
+            )
+        )
     return findings

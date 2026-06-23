@@ -185,3 +185,47 @@ def test_row_count_overflow_silent_when_samples_none() -> None:
     rules = {"field": "x"}
     findings = audit_answer_table(table, rules=rules, samples=None)
     assert findings == []
+
+
+# ---------- aggregator: never raises -------------------------------------------
+
+from typing import Any as _Any
+
+
+def test_audit_answer_table_swallows_internal_exception(monkeypatch: _Any) -> None:
+    """If a check raises, the auditor must catch it and emit a warn finding."""
+    from agents.verification import video_filter_audit as vfa
+
+    def boom(*_args: _Any, **_kwargs: _Any) -> _Any:
+        raise RuntimeError("forced check failure")
+
+    monkeypatch.setattr(vfa, "_check_duplicate_export_rows", boom)
+    table = AnswerTable(columns=["x"], rows=[["a"]])
+    findings = audit_answer_table(table, rules={"export_fields": ["x"]}, samples=None)
+    assert any(f.code == "audit_internal_error" and f.severity == "warn" for f in findings)
+
+
+def test_audit_answer_table_rejects_non_dict_rules_safely() -> None:
+    """Rules of an unexpected shape (e.g. accidentally a string) yield no findings."""
+    table = AnswerTable(columns=["x"], rows=[["a"]])
+    bogus: _Any = "not a dict"
+    findings = audit_answer_table(table, rules=bogus, samples=None)
+    assert findings == []
+
+
+def test_audit_answer_table_returns_multiple_findings() -> None:
+    """Duplicate export rows + boundary ambiguity accumulate into one finding list."""
+    table = AnswerTable(
+        columns=["company", "value"],
+        rows=[["A", 100.0], ["A", 100.0], ["B", 150.0]],
+    )
+    rules = {
+        "export_fields": ["company"],
+        "field": "value",
+        "operator": ">",
+        "threshold": "100.0",
+    }
+    findings = audit_answer_table(table, rules=rules, samples=None)
+    codes = {f.code for f in findings}
+    assert "duplicate_export_rows" in codes
+    assert "boundary_ambiguous" in codes
