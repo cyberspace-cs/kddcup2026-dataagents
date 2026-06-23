@@ -104,7 +104,7 @@ def create_explore_video_tool_definition(video_model: ModelAdapter) -> FunctionT
                 rules_raw = extracted_dict.get("rules")
                 if isinstance(rules_raw, dict):
                     rules = _cast(dict[str, Any], rules_raw)
-        recipe_text = synthesize_filter_recipe(rules)
+        recipe_text = synthesize_filter_recipe(rules, question=task.question)
         if recipe_text is not None:
             content["filter_recipe"] = recipe_text
         return ToolExecutionResult(ok=True, content=content)
