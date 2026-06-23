@@ -57,6 +57,7 @@ WORKDIR /app
 # Configs first (rarely change), then code (changes most). .dockerignore
 # excludes configs/*.local.yaml so dev secrets never leak into the image.
 COPY configs ./configs
+COPY docs/assets/mamba-agent.avif ./mamba-agent.avif
 COPY src/agents ./agents
 RUN <<'PYEOF' python
 import json

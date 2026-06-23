@@ -33,6 +33,7 @@ data/
 artifacts/
 assets/
 docs/
+!docs/assets/mamba-agent.avif
 tests/
 scripts/
 openspec/
