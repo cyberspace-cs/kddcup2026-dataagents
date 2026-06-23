@@ -59,6 +59,7 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
             continue
 
         col_conversions = {c.field: c.label for c in conversions}
+        conv_by_field = {c.field: c for c in conversions}
         stem = units_path.stem.removesuffix("_units")
 
         for key, raw_entry in schema_map.items():
@@ -74,6 +75,19 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
                     existing[col] = note
             if existing:
                 entry["column_conversions"] = existing
+            columns_dict: dict[str, Any] | None = entry.get("columns")  # type: ignore[assignment]
+            if isinstance(columns_dict, dict):
+                for col, conv in conv_by_field.items():
+                    col_info: dict[str, Any] | None = columns_dict.get(col)  # type: ignore[assignment]
+                    if not isinstance(col_info, dict):
+                        continue
+                    suffix = (
+                        f" [UNIT: stored as {conv.source},"
+                        f" submit as {conv.target} — multiply by {conv.factor}]"
+                    )
+                    for desc_key in ("description", "semantic"):
+                        if desc_key in col_info:
+                            col_info[desc_key] = str(col_info[desc_key]) + suffix
 
         by_group: dict[tuple[str, str, float], list[str]] = {}
         for c in conversions:

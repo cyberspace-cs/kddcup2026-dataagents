@@ -306,6 +306,18 @@ def group_paragraphs_by_entity(
     if adapter is not None:
         verified, llm_responded = group_paragraphs_by_llm(adapter, paras)
         if verified:
+            recovered = 0
+            for i, para in enumerate(paras, start=1):
+                m = first_standalone_match(RECORD_ID_INLINE, para)
+                if m and m.group(1) in verified and i not in verified[m.group(1)]:
+                    verified[m.group(1)].append(i)
+                    recovered += 1
+            if recovered:
+                logger.info(
+                    "ETL compress: deterministic recovery added %d paragraphs "
+                    "missed by LLM grouping",
+                    recovered,
+                )
             ordered = sorted(verified.items(), key=lambda kv: kv[1][0])
             grouped = {rid: [paras[i - 1] for i in idxs] for rid, idxs in ordered}
             assigned = {i for idxs in verified.values() for i in idxs}
