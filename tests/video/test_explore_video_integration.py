@@ -71,6 +71,7 @@ def _invoke_handler(
             return_value=_StubVideoResult(_findings_dict()),
         ),
     ):
+        assert tool_def.input_model is not None
         return tool_def.handler(
             task,
             tool_def.input_model.model_validate({"path": "demo.mp4", "instructions": "x"}),
