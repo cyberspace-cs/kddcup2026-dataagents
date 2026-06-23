@@ -68,6 +68,98 @@ def _first_export_key(rules: dict[str, Any]) -> tuple[str, ...]:
     return ()
 
 
+_FIELD_KEYS: tuple[str, ...] = (
+    "field",
+    "filter_field",
+    "metric",
+    "column",
+    "attribute",
+    "aggregation_field",
+)
+_THRESHOLD_KEYS: tuple[str, ...] = (
+    "threshold",
+    "threshold_value",
+    "value",
+    "condition_value",
+)
+
+
+def _first_present(rules: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in rules and rules[key] not in (None, ""):
+            return rules[key]
+    return None
+
+
+def _coerce_float(raw: Any) -> float | None:
+    if isinstance(raw, bool):  # bool is a subclass of int — exclude
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip().replace(",", "").replace("，", "").rstrip("%")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _row_value_at(table: AnswerTable, col_index: int, row_index: int) -> Any:
+    row = table.rows[row_index]
+    if col_index >= len(row):
+        return None
+    return row[col_index]
+
+
+def _check_boundary_ambiguous(
+    table: AnswerTable,
+    rules: dict[str, Any],
+) -> AuditFinding | None:
+    operator_raw = _first_present(rules, ("operator", "comparator", "op"))
+    if operator_raw not in (">", ">=", "<", "<="):
+        return None
+    raw_field = _first_present(rules, _FIELD_KEYS)
+    if not isinstance(raw_field, str):
+        return None
+    if raw_field not in table.columns:
+        return None
+    threshold = _coerce_float(_first_present(rules, _THRESHOLD_KEYS))
+    if threshold is None:
+        return None
+    col_index = table.columns.index(raw_field)
+    equal_count = 0
+    strict_count = 0
+    inclusive_count = 0
+    for row_index in range(len(table.rows)):
+        cell = _row_value_at(table, col_index, row_index)
+        value = _coerce_float(cell)
+        if value is None:
+            continue
+        inclusive_count += 1
+        if value > threshold or value < threshold:
+            strict_count += 1
+        if value == threshold:
+            equal_count += 1
+    if equal_count == 0:
+        return None
+    return AuditFinding(
+        code="boundary_ambiguous",
+        severity="warn",
+        message=(
+            f"{equal_count} row(s) equal the threshold {threshold}; "
+            f"operator '{operator_raw}' is ambiguous — verify >= vs > against the video"
+        ),
+        evidence={
+            "operator_chosen": operator_raw,
+            "threshold": threshold,
+            "rows_at_threshold": equal_count,
+            "count_if_strict": strict_count,
+            "count_if_inclusive": inclusive_count,
+        },
+    )
+
+
 def _check_duplicate_export_rows(
     table: AnswerTable,
     rules: dict[str, Any],
@@ -123,4 +215,7 @@ def audit_answer_table(
     dup = _check_duplicate_export_rows(table, rules)
     if dup is not None:
         findings.append(dup)
+    boundary = _check_boundary_ambiguous(table, rules)
+    if boundary is not None:
+        findings.append(boundary)
     return findings

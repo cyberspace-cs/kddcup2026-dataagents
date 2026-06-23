@@ -79,3 +79,62 @@ def test_duplicate_export_rows_silent_when_export_col_absent_in_table() -> None:
     findings = audit_answer_table(table, rules=rules, samples=None)
     # export field not in table columns - auditor cannot judge, stays silent
     assert findings == []
+
+
+# ---------- boundary_ambiguous -------------------------------------------------
+
+
+def test_boundary_ambiguous_triggers_when_row_equals_threshold() -> None:
+    table = AnswerTable(
+        columns=["company", "value"],
+        rows=[["A", 100.0], ["B", 200.0], ["C", 100.0]],
+    )
+    rules = {
+        "field": "value",
+        "operator": ">",
+        "threshold": "100.0",
+    }
+    findings = audit_answer_table(table, rules=rules, samples=None)
+    warns = [f for f in findings if f.code == "boundary_ambiguous"]
+    assert len(warns) == 1
+    assert warns[0].severity == "warn"
+    ev = warns[0].evidence
+    assert ev["operator_chosen"] == ">"
+    assert ev["rows_at_threshold"] == 2
+    assert ev["count_if_strict"] == 1
+    assert ev["count_if_inclusive"] == 3
+
+
+def test_boundary_ambiguous_silent_when_no_equal_row() -> None:
+    table = AnswerTable(columns=["v"], rows=[[150.0], [200.0]])
+    rules = {"field": "v", "operator": ">", "threshold": "100.0"}
+    findings = audit_answer_table(table, rules=rules, samples=None)
+    assert [f for f in findings if f.code == "boundary_ambiguous"] == []
+
+
+def test_boundary_ambiguous_silent_when_operator_not_inequality() -> None:
+    table = AnswerTable(columns=["v"], rows=[[100.0]])
+    rules = {"field": "v", "operator": "==", "threshold": "100.0"}
+    findings = audit_answer_table(table, rules=rules, samples=None)
+    assert [f for f in findings if f.code == "boundary_ambiguous"] == []
+
+
+def test_boundary_ambiguous_silent_when_threshold_missing() -> None:
+    table = AnswerTable(columns=["v"], rows=[[100.0]])
+    rules = {"field": "v", "operator": ">"}
+    findings = audit_answer_table(table, rules=rules, samples=None)
+    assert findings == []
+
+
+def test_boundary_ambiguous_silent_when_threshold_unparseable() -> None:
+    table = AnswerTable(columns=["v"], rows=[[100.0]])
+    rules = {"field": "v", "operator": ">", "threshold": "high"}
+    findings = audit_answer_table(table, rules=rules, samples=None)
+    assert findings == []
+
+
+def test_boundary_ambiguous_silent_when_field_absent_in_table() -> None:
+    table = AnswerTable(columns=["other"], rows=[[100.0]])
+    rules = {"field": "v", "operator": ">", "threshold": "100.0"}
+    findings = audit_answer_table(table, rules=rules, samples=None)
+    assert findings == []
