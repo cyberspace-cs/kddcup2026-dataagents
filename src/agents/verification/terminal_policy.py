@@ -59,9 +59,9 @@ def check_unit_conversions(
         if not vals:
             continue
         median: float = sorted(vals)[len(vals) // 2]
-        if (conv.factor < 1 and median > 1 and median * conv.factor < 1) or (
-            conv.factor > 1 and median < conv.factor * 0.1
-        ):
+        log_m = math.log10(median)
+        midpoint = abs(math.log10(abs(conv.factor))) / 2
+        if (conv.factor > 1 and log_m < midpoint) or (conv.factor < 1 and log_m > midpoint):
             violations.append(conv.label.replace("CONVERT: ", ""))
 
     if not violations:
