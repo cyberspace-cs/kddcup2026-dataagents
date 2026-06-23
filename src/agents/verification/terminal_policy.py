@@ -13,6 +13,7 @@ from agents.tools import (
 )
 from agents.verification.answer import AnswerVerifier
 from agents.verification.video_constraints import evaluate_video_constraints
+from agents.verification.video_filter_audit import AuditFinding, audit_answer_table
 
 _EXECUTE_ACTIONS = ("execute_python", "execute_context_sql")
 _PRODUCING_CODE_STEPS = 1
@@ -42,6 +43,49 @@ def recent_execute_code(state: AgentRuntimeState | None) -> str | None:
     if not snippets:
         return None
     return "\n\n".join(reversed(snippets))
+
+
+def _extract_video_rules_and_samples(
+    state: AgentRuntimeState | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | list[Any] | None]:
+    """Pull (rules, displayed_samples) from the latest explore_video step.
+
+    Walks ``state.steps`` backward for an ``explore_video`` action whose
+    observation carries ``findings.extracted_data.{rules, displayed_samples}``.
+    Returns (None, None) when no such step is found or the shape is missing.
+    """
+    if state is None:
+        return None, None
+    for step in reversed(state.steps):
+        if getattr(step, "action", None) != "explore_video":
+            continue
+        if not getattr(step, "ok", False):
+            continue
+        observation = getattr(step, "observation", None)
+        if not isinstance(observation, dict):
+            continue
+        findings = observation.get("findings")
+        if not isinstance(findings, dict):
+            continue
+        extracted = findings.get("extracted_data")
+        if not isinstance(extracted, dict):
+            continue
+        rules = extracted.get("rules")
+        samples = extracted.get("displayed_samples")
+        return (
+            rules if isinstance(rules, dict) else None,
+            samples if isinstance(samples, (dict, list)) else None,
+        )
+    return None, None
+
+
+def _format_audit_rejections(rejects: list[AuditFinding]) -> str:
+    lines = ["Answer rejected by video_filter_audit:"]
+    for f in rejects:
+        lines.append(f"- [{f.code}] {f.message}")
+        if f.evidence:
+            lines.append(f"  evidence: {f.evidence}")
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +142,19 @@ class TerminalAnswerPolicy:
                 self.fallback_answer = candidate
                 self.fallback_answer_arguments = dict(arguments)
             return TerminalAnswerRejection(content={"answer_rejected": deterministic_rejection})
+
+        if self.filter_audit_enabled and candidate is not None:
+            rules, samples = _extract_video_rules_and_samples(state)
+            findings = audit_answer_table(candidate, rules, samples)
+            rejects = [f for f in findings if f.severity == "reject"]
+            if rejects:
+                self.rejections_used += 1
+                if candidate.columns and candidate.rows:
+                    self.fallback_answer = candidate
+                    self.fallback_answer_arguments = dict(arguments)
+                return TerminalAnswerRejection(
+                    content={"answer_rejected": _format_audit_rejections(rejects)}
+                )
 
         if self.verifier is None:
             return None
