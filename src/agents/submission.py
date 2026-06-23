@@ -135,6 +135,7 @@ def _run_one_task(config: AppConfig, task_id: str, output_root: Path, logs_root:
     subprocess hard timeout → prediction.csv, identical to the CLI path.
     """
     task_started = time.monotonic()
+    _log(logs_root, f"task={task_id} started")
 
     artifact = None
     failure_reason: str | None = None
@@ -153,9 +154,15 @@ def _run_one_task(config: AppConfig, task_id: str, output_root: Path, logs_root:
 
     wrote = artifact is not None and artifact.prediction_csv_path is not None
 
+    rows = 0
+    if artifact is not None and artifact.prediction_csv_path is not None:
+        with contextlib.suppress(OSError):
+            rows = artifact.prediction_csv_path.read_text().count("\n")
+
     elapsed = time.monotonic() - task_started
     status = "ok" if wrote else f"no_answer ({failure_reason or 'unknown'})"
-    _log(logs_root, f"task={task_id} status={status} elapsed={elapsed:.1f}s")
+    rows_info = f" rows={rows}" if wrote else ""
+    _log(logs_root, f"task={task_id} status={status}{rows_info} elapsed={elapsed:.1f}s")
     return wrote
 
 
@@ -185,6 +192,13 @@ def main() -> int:
     global_budget = float(os.environ.get("GLOBAL_WALL_SECONDS", DEFAULT_GLOBAL_BUDGET_SECONDS))
 
     config = _build_config(input_root)
+    a = config.agent
+    _log(
+        logs_root,
+        f"config model={a.model} api_base={a.api_base} max_steps={a.max_steps} "
+        f"max_tokens={a.max_tokens} enable_thinking={a.enable_thinking} "
+        f"task_timeout={config.run.task_timeout_seconds}s",
+    )
     tasks = DABenchPublicDataset(config.dataset.root_path).iter_tasks()
     workers = max(1, int(os.environ.get("MAX_WORKERS", config.run.max_workers)))
     _log(
@@ -214,15 +228,25 @@ def main() -> int:
             # eat into the deadline observed by `as_completed`.
             timeout = max(0.0, global_budget - (time.monotonic() - started))
             for future in as_completed(futures, timeout=timeout):
-                # `_run_one_task` already swallows task-level exceptions and
-                # returns False; suppress() only fires on unexpected
-                # executor-level failures, leaving `wrote` at its default.
                 wrote = False
                 with contextlib.suppress(Exception):
                     wrote = future.result()
                 if wrote:
                     written += 1
                 completed += 1
+                remaining_s = global_budget - (time.monotonic() - started)
+                pending = len(futures) - completed
+                _log(
+                    logs_root,
+                    f"progress completed={completed}/{len(futures)} "
+                    f"written={written} pending={pending} "
+                    f"remaining={remaining_s:.0f}s",
+                )
+                if pending > 0 and remaining_s < global_budget * 0.2:
+                    _log(
+                        logs_root,
+                        f"WARNING budget<20% remaining={remaining_s:.0f}s pending={pending}",
+                    )
         except FuturesTimeout:
             pending = sum(1 for future in futures if not future.done())
             _log(
