@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`agent.enable_answer_verifier` config field.** When `false`, skips the
+  LLM answer-verifier pass entirely. Default `true` (current behavior).
 - **`explore_video` sub-agent tool (explorer-only).** On tasks whose context
   contains a video, the explorer can launch a video sub-agent that sees the raw
   video in the leaf context only and returns a validated structured report;

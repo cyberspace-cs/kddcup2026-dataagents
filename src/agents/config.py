@@ -293,6 +293,7 @@ class AgentConfig:
     rate_limit: RateLimitConfig | None = None
     max_empty_tool_call_retries: StrictInt = 8
     enable_preact: StrictBool = False
+    enable_answer_verifier: StrictBool = True
     # Video sub-agent report tool_choice mode:
     # - "auto" (default): works with thinking enabled everywhere; DashScope compatible-mode
     #   rejects named tool_choice in thinking mode (400).

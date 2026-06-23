@@ -337,7 +337,7 @@ def build_application(
 
     model_adapter = model if model is not None else build_model_adapter(config, tools=registry)
     verifier = answer_verifier
-    if verifier is None and model is None:
+    if verifier is None and model is None and config.agent.enable_answer_verifier:
         verifier = build_answer_verifier(config)
     agent_config = ReActAgentConfig(
         max_steps=config.agent.max_steps,
