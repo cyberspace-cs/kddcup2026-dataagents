@@ -1,5 +1,13 @@
 # KDD Cup 2026 Data Agents
 
+<div align="center">
+  <img src="docs/assets/mamba-agent.avif" alt="Mamba Agent" width="760">
+  <br>
+  <strong>Mamba Agent</strong>
+  <br>
+  <em>In memory of basketball legend Kobe Bryant.</em>
+</div>
+
 ReAct-style data agent for the DABench benchmark. The runner reads tasks from
 `data/public/input/`, drives an OpenAI-compatible LLM through a fixed tool inventory, and
 writes per-task `prediction.csv` files plus a per-run `summary.json`. Optional SQLite
