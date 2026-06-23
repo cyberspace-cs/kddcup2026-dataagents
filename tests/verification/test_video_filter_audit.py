@@ -5,6 +5,8 @@ Each check is asserted in isolation: trigger case, no-trigger case, safe-edge ca
 
 from __future__ import annotations
 
+from typing import Any as _Any
+
 from agents.benchmark.schema import AnswerTable
 from agents.verification.video_filter_audit import (
     AuditFinding,
@@ -188,8 +190,6 @@ def test_row_count_overflow_silent_when_samples_none() -> None:
 
 
 # ---------- aggregator: never raises -------------------------------------------
-
-from typing import Any as _Any
 
 
 def test_audit_answer_table_swallows_internal_exception(monkeypatch: _Any) -> None:

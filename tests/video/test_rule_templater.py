@@ -11,6 +11,7 @@ from __future__ import annotations
 from agents.video.rule_templater import (
     FilterRecipe,
     extract_filter_recipe,
+    render_filter_recipe,
     synthesize_filter_recipe,
 )
 
@@ -361,6 +362,7 @@ def test_top_n_zero_or_negative_rejected() -> None:
     assert r.top_n is None
     assert not r.is_sufficient()  # sort_field alone isn't enough
 
+
 # ---------- prefer_abbr_column hint -------------------------------------------
 
 
@@ -410,8 +412,6 @@ def test_extract_prefer_abbr_column_false_for_full_name_question() -> None:
 
 
 def test_render_filter_recipe_includes_abbr_hint_when_flag_set() -> None:
-    from agents.video.rule_templater import render_filter_recipe, FilterRecipe
-
     recipe = FilterRecipe(
         field="dailybenchgr",
         operator=">",
@@ -426,8 +426,6 @@ def test_render_filter_recipe_includes_abbr_hint_when_flag_set() -> None:
 
 
 def test_render_filter_recipe_omits_abbr_hint_when_flag_unset() -> None:
-    from agents.video.rule_templater import render_filter_recipe, FilterRecipe
-
     recipe = FilterRecipe(
         field="dailybenchgr",
         operator=">",
@@ -438,4 +436,3 @@ def test_render_filter_recipe_omits_abbr_hint_when_flag_unset() -> None:
     )
     text = render_filter_recipe(recipe)
     assert "prefer_column_kind" not in text
-

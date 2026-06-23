@@ -62,13 +62,15 @@ def _invoke_handler(
     tool_def = create_explore_video_tool_definition(video_model=None)  # type: ignore[arg-type]
     task = _make_task_with_question(question, video_file)
 
-    with patch("agents.runtime.media.VIDEO_EXTENSIONS", (".mp4",)), \
-         patch("agents.runtime.media.VIDEO_MAX_BYTES", 10 * 1024 * 1024), \
-         patch("agents.tools.context.resolve_context_path", return_value=video_file), \
-         patch(
-             "agents.video.runner.run_video_agent",
-             return_value=_StubVideoResult(_findings_dict()),
-         ):
+    with (
+        patch("agents.runtime.media.VIDEO_EXTENSIONS", (".mp4",)),
+        patch("agents.runtime.media.VIDEO_MAX_BYTES", 10 * 1024 * 1024),
+        patch("agents.tools.context.resolve_context_path", return_value=video_file),
+        patch(
+            "agents.video.runner.run_video_agent",
+            return_value=_StubVideoResult(_findings_dict()),
+        ),
+    ):
         return tool_def.handler(
             task,
             tool_def.input_model.model_validate({"path": "demo.mp4", "instructions": "x"}),

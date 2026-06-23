@@ -5,8 +5,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from agents.benchmark.schema import AnswerTable
 from agents.runtime.state import AgentRuntimeState
-from agents.verification.terminal_policy import recent_execute_code
+from agents.verification.terminal_policy import TerminalAnswerPolicy, recent_execute_code
+from agents.verification.video_filter_audit import AuditFinding
 
 
 def _state(*steps: tuple[str, dict[str, Any]]) -> AgentRuntimeState:
@@ -50,9 +52,6 @@ def test_recent_execute_code_skips_empty_inputs_and_handles_absence() -> None:
 # ---------- filter_audit_enabled field ----------------------------------------
 
 
-from agents.verification.terminal_policy import TerminalAnswerPolicy
-
-
 def test_terminal_policy_filter_audit_enabled_defaults_false() -> None:
     # Backward-compatible default: existing call sites don't pass it.
     policy = TerminalAnswerPolicy(verifier=None)
@@ -65,10 +64,6 @@ def test_terminal_policy_filter_audit_enabled_can_be_true() -> None:
 
 
 # ---------- maybe_reject + auditor wiring -------------------------------------
-
-
-from agents.benchmark.schema import AnswerTable
-from agents.verification.video_filter_audit import AuditFinding
 
 
 def _stub_task() -> Any:
@@ -139,7 +134,9 @@ def test_maybe_reject_skips_auditor_when_flag_disabled(monkeypatch: Any) -> None
         tp,
         "audit_answer_table",
         lambda table, rules, samples: [
-            AuditFinding(code="duplicate_export_rows", severity="reject", message="dup", evidence={})
+            AuditFinding(
+                code="duplicate_export_rows", severity="reject", message="dup", evidence={}
+            )
         ],
     )
 

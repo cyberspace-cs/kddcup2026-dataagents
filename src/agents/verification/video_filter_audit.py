@@ -288,7 +288,7 @@ def audit_answer_table(
         overflow = _check_row_count_overflow(table, samples)
         if overflow is not None:
             findings.append(overflow)
-    except Exception as exc:  # noqa: BLE001 — fall-through is intentional
+    except Exception as exc:  # fall-through is intentional
         findings.append(
             AuditFinding(
                 code="audit_internal_error",
