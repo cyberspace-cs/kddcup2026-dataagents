@@ -200,3 +200,43 @@ def test_build_video_adapter_rate_limit_reserves_video_max_tokens(
     assert adapter.rate_limit_config.reserve_output_tokens == 16384
     assert isinstance(adapter.inner, NativeToolsOpenAIAdapter)
     assert adapter.inner.max_tokens == 16384
+
+
+# ---------- video_filter_audit flag threading ---------------------------------
+
+
+def _make_config_with_filter_audit(
+    *,
+    tmp_path: Path,
+    video_filter_audit: str = "enabled",
+) -> AppConfig:
+    """Variant of _make_config that exposes the new toggle."""
+    return AppConfig(
+        dataset=DatasetConfig(root_path=tmp_path / "data"),
+        agent=AgentConfig(
+            model="m",
+            api_base="http://x",
+            api_key="primary-key",
+            video_filter_audit=video_filter_audit,  # type: ignore[arg-type]
+        ),
+        run=RunConfig(
+            output_dir=tmp_path / "runs",
+            run_id=None,
+            max_workers=1,
+            task_timeout_seconds=0,
+        ),
+    )
+
+
+def test_new_agent_carries_filter_audit_enabled_true(tmp_path: Path) -> None:
+    cfg = _make_config_with_filter_audit(tmp_path=tmp_path, video_filter_audit="enabled")
+    app = build_application(cfg)
+    agent = app.new_agent()
+    assert agent.filter_audit_enabled is True
+
+
+def test_new_agent_carries_filter_audit_enabled_false(tmp_path: Path) -> None:
+    cfg = _make_config_with_filter_audit(tmp_path=tmp_path, video_filter_audit="disabled")
+    app = build_application(cfg)
+    agent = app.new_agent()
+    assert agent.filter_audit_enabled is False
