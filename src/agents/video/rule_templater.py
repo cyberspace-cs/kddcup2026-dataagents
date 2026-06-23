@@ -158,6 +158,22 @@ _PAREN_IDENT_RE = re.compile(r"\(([A-Za-z_][A-Za-z0-9_]*)\)")
 # 不带 ASCII 标识符的情况下,先 trim 括号注释再返回原文。
 _PAREN_ANY_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
+# 当 task question 含这些关键词时,模板渲染顶部加 prefer_column_kind: abbreviation 提示。
+# 大小写不敏感的子串匹配（lower() 后比较），覆盖中英 + 业务别名。
+_ABBR_QUESTION_KEYWORDS: tuple[str, ...] = (
+    "简称",
+    "代号",
+    "abbreviation",
+    "abbr",
+)
+
+
+def _question_prefers_abbr(question: str | None) -> bool:
+    if not isinstance(question, str) or not question:
+        return False
+    text = question.lower()
+    return any(k.lower() in text for k in _ABBR_QUESTION_KEYWORDS)
+
 
 @dataclass(frozen=True, slots=True)
 class FilterRecipe:
@@ -176,6 +192,7 @@ class FilterRecipe:
     table_hint: str | None = None
     batch_id: str | None = None
     snapshot_dates: tuple[str, ...] = ()
+    prefer_abbr_column: bool = False
 
     def is_sufficient(self) -> bool:
         """True when the recipe has enough structure to be worth surfacing.
@@ -341,11 +358,20 @@ def _extract_operator(rules: dict[str, Any]) -> str | None:
     return None
 
 
-def extract_filter_recipe(rules: dict[str, Any] | None) -> FilterRecipe | None:
+def extract_filter_recipe(
+    rules: dict[str, Any] | None,
+    *,
+    question: str | None = None,
+) -> FilterRecipe | None:
     """Walk a video rules dict, return a canonical FilterRecipe or None if empty.
 
     The function is deliberately tolerant: any single key may be missing. The
     caller decides whether the result is meaningful via ``recipe.is_sufficient()``.
+
+    ``question`` (optional): when supplied and it mentions abbreviation keywords
+    (``简称`` / ``代号`` / ``abbreviation`` / ``abbr``), sets
+    ``recipe.prefer_abbr_column=True`` so ``render_filter_recipe`` emits the hint.
+    Does not affect ``is_sufficient`` gating.
     """
     if not isinstance(rules, dict):
         return None
@@ -396,6 +422,7 @@ def extract_filter_recipe(rules: dict[str, Any] | None) -> FilterRecipe | None:
         table_hint=table_hint,
         batch_id=batch_id,
         snapshot_dates=snapshot_dates,
+        prefer_abbr_column=_question_prefers_abbr(question),
     )
     return (
         recipe
@@ -426,6 +453,11 @@ def render_filter_recipe(recipe: FilterRecipe) -> str:
     lines: list[str] = [
         "[video-rule recipe — VERIFY each name against actual schema before use]",
     ]
+    if recipe.prefer_abbr_column:
+        lines.append(
+            "  prefer_column_kind: abbreviation — when both 'XxxAbbr' and "
+            "full-name columns exist, use the *Abbr column"
+        )
     if recipe.field:
         label_tail = f" (label: {recipe.field_label})" if recipe.field_label else ""
         lines.append(f"  field:        {recipe.field}{label_tail}")
@@ -505,13 +537,17 @@ def _render_pandas_template(recipe: FilterRecipe) -> list[str]:
     return out
 
 
-def synthesize_filter_recipe(rules: dict[str, Any] | None) -> str | None:
+def synthesize_filter_recipe(
+    rules: dict[str, Any] | None,
+    *,
+    question: str | None = None,
+) -> str | None:
     """One-shot convenience: rules dict → rendered hint or None.
 
     Returns None when no recipe can be extracted OR when the extracted recipe
     is too sparse to be worth surfacing — callers can use truthiness to gate.
     """
-    recipe = extract_filter_recipe(rules)
+    recipe = extract_filter_recipe(rules, question=question)
     if recipe is None or not recipe.is_sufficient():
         return None
     return render_filter_recipe(recipe)

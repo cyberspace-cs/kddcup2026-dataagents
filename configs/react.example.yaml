@@ -11,6 +11,7 @@ agent:
   enable_thinking: true                    # bool | null；null = 不下发 extra_body
   video_tool_choice: auto                  # "auto" | "forced"; forced 仅给已验证后端 opt-in
   video_max_tokens: 16384                  # int >= 0 | null；null=沿用 max_tokens
+  video_filter_audit: enabled              # "enabled" | "disabled"; 在 evaluate_video_constraints 与 LLM verifier 之间跑 AnswerTable 确定性后置检查 (重复行 / 阈值边界 / displayed_samples 总数 overflow)，复用 verifier 的 rejection 预算
 
   # backend_kind 决定思考模式参数在 extra_body 里的位置：
   # - "vllm":      enable_thinking 嵌套到 chat_template_kwargs

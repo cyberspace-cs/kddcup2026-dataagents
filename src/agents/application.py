@@ -293,6 +293,7 @@ class AgentApp:
     model_adapter: ModelAdapter
     answer_verifier: AnswerVerifier | None
     agent_config: ReActAgentConfig
+    filter_audit_enabled: bool = False
 
     def new_agent(self, step_callback: StepCallback | None = None) -> ReActAgent:
         """生成一个使用本 App 共享依赖的新 ReAct 实例。"""
@@ -302,6 +303,7 @@ class AgentApp:
             config=self.agent_config,
             step_callback=step_callback,
             answer_verifier=self.answer_verifier,
+            filter_audit_enabled=self.filter_audit_enabled,
         )
 
 
@@ -350,6 +352,7 @@ def build_application(
         model_adapter=model_adapter,
         answer_verifier=verifier,
         agent_config=agent_config,
+        filter_audit_enabled=(config.agent.video_filter_audit == "enabled"),
     )
 
 

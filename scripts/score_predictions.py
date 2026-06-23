@@ -172,7 +172,16 @@ class TaskScore:
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path, dtype=str, keep_default_na=False)
+    # Gold CSVs in the public dataset are mostly UTF-8 but some are GB18030
+    # (e.g. task_1). Pred CSVs are produced by the agent and are always UTF-8.
+    # Try UTF-8 first; fall back to GB18030 to cover the legacy gold files.
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            return pd.read_csv(path, dtype=str, keep_default_na=False, encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    # Last resort: let pandas raise its own decode error with a clear message.
+    return pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8")
 
 
 def score_task(

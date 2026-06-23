@@ -216,3 +216,19 @@ def test_greedy_decoding_warning_matrix(tmp_path: Path, body: str, expects_warni
 def test_video_tool_choice_default_auto() -> None:
     assert AgentConfig().video_tool_choice == "auto"
     assert AgentConfig(video_tool_choice="forced").video_tool_choice == "forced"
+
+
+# ---------- video_filter_audit toggle ----------------------------------------
+
+
+def test_agent_config_video_filter_audit_default_enabled() -> None:
+    assert AgentConfig().video_filter_audit == "enabled"
+
+
+def test_agent_config_video_filter_audit_accepts_disabled() -> None:
+    assert AgentConfig(video_filter_audit="disabled").video_filter_audit == "disabled"
+
+
+def test_agent_config_video_filter_audit_rejects_unknown() -> None:
+    with pytest.raises(ValidationError, match="video_filter_audit"):
+        AgentConfig(video_filter_audit="maybe")  # type: ignore[arg-type]
