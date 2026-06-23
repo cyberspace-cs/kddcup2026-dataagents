@@ -8,21 +8,18 @@ agent:
   max_steps: 32                            # int >= 1; 28 gives enough budget for complex multi-step tasks
   allow_parallel_tool_calls: true          # bool；个别后端不支持 parallel_tool_calls 时设 false
   max_tokens: 16384                        # int >= 0；0=不下发上限走服务端默认
-  enable_thinking: false                   # bool | null；null = 不下发 extra_body
+  enable_thinking: true                    # bool | null；null = 不下发 extra_body
   video_tool_choice: auto                  # "auto" | "forced"; forced 仅给已验证后端 opt-in
   video_max_tokens: 16384                  # int >= 0 | null；null=沿用 max_tokens
 
   # backend_kind 决定思考模式参数在 extra_body 里的位置：
   # - "vllm":      enable_thinking 嵌套到 chat_template_kwargs
   # - "dashscope": enable_thinking 走顶层（DashScope OpenAI 兼容模式约定）
-  # - "deepseek":  thinking 对象走顶层（DeepSeek V4 API 协议）
   # - null:        按 api_base 主机名自动推断（openai.resolve_backend_kind）
   # NEVER 硬编码 vllm：DashScope 演练时 chat_template_kwargs 会被静默忽略，
-  # thinking 开关全部失效（ETL 关不掉思考，单调用慢 10×）。
-  backend_kind: null                       # "vllm" | "dashscope" | "deepseek" | null
+  backend_kind: null                       # always null is fine
 
-  # ---- 最优采样参数 (benchmarked: avg 0.80, best 0.82) ----
-  # temp=0.6 在 Qwen3 thinking 模���下平衡了质量与稳定性：
+  # temp=0.6 在 Qwen3 thinking 模式下平衡了质量与稳定性：
   # - 低于 0.6 (如 0.3) 会触发 repetition，复杂任务 max_steps 耗尽
   # - 高于 0.6 (如 0.7) 增加 run-to-run variance，翻转题变多
   temperature: 0.6                         # float in [0, 2]
@@ -33,16 +30,10 @@ agent:
 
   seed: 1024                               # int；与评测机 vLLM `--seed 1024` 对齐
 
-  # ---- DeepSeek V4 思考模式（与 enable_thinking 互斥）----
-  # thinking_mode: "enabled"               # "enabled" | "disabled" | null
-  # reasoning_effort: "high"               # "high" | "max"；仅 thinking_mode="enabled" 时有效
-  # 注意：DeepSeek thinking enabled 时 temperature/top_p 被服务端忽略。
-
   # ---- Pre-Act Planning (optional) ----
   # enable_preact: true adds a planning instruction on the first turn.
-  # Benchmarked: slightly worse than false with current max_steps=28 (costs 1 extra turn).
   enable_preact: false
-  enable_answer_verifier: true               # bool；false 跳过 LLM 答案校验，节省 token
+  enable_answer_verifier: true             # bool；false 跳过 LLM 答案校验，节省 token
 
   # ---- 推荐：多 Key 池 + 跨进程限速 ----
   # 强烈建议启用——消除 429 限流导致的任务失败 (单次 run 可丢 4-6 题)。
@@ -71,5 +62,5 @@ run:
   blocklist:
 
 tracing:
-  enabled: false                         # bool；默认关闭，开启后写 SQLite spans 供 dashboard 调试
-  db_path: artifacts/traces.db           # 相对路径以 PROJECT_ROOT 为基锚定
+  enabled: false                           # bool；默认关闭，开启后写 SQLite spans 供 dashboard 调试
+  db_path: artifacts/traces.db             # 相对路径以 PROJECT_ROOT 为基锚定
