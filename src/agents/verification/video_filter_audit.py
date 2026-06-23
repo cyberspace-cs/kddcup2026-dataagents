@@ -15,7 +15,7 @@ Internal exceptions are caught and surfaced as a 'warn'-severity finding.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from agents.benchmark.schema import AnswerTable
 
@@ -54,8 +54,9 @@ def _coerce_export_fields(raw: Any) -> tuple[str, ...]:
         return (text,) if text else ()
     if not isinstance(raw, (list, tuple)):
         return ()
+    items: list[Any] = list(cast(list[Any], raw))
     out: list[str] = []
-    for item in raw:
+    for item in items:
         if isinstance(item, str) and item.strip() and item.strip() not in out:
             out.append(item.strip())
     return tuple(out)
@@ -181,7 +182,7 @@ def _extract_samples_total(samples: dict[str, Any] | list[Any] | None) -> int | 
         return None
     if isinstance(samples, list):
         return len(samples) if samples else None
-    if not isinstance(samples, dict):
+    if not isinstance(samples, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
         return None
     for key in _SAMPLES_TOTAL_KEYS:
         value = samples.get(key)
@@ -276,7 +277,7 @@ def audit_answer_table(
     bug never blocks an otherwise-valid answer.
     """
     findings: list[AuditFinding] = []
-    if rules is None or not isinstance(rules, dict):
+    if rules is None or not isinstance(rules, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
         return findings
     try:
         dup = _check_duplicate_export_rows(table, rules)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from agents.benchmark.schema import AnswerTable, PublicTask
 from agents.runtime.state import AgentRuntimeState
@@ -64,18 +64,28 @@ def _extract_video_rules_and_samples(
         observation = getattr(step, "observation", None)
         if not isinstance(observation, dict):
             continue
-        findings = observation.get("findings")
+        observation_dict = cast(dict[str, Any], observation)
+        findings = observation_dict.get("findings")
         if not isinstance(findings, dict):
             continue
-        extracted = findings.get("extracted_data")
+        findings_dict = cast(dict[str, Any], findings)
+        extracted = findings_dict.get("extracted_data")
         if not isinstance(extracted, dict):
             continue
-        rules = extracted.get("rules")
-        samples = extracted.get("displayed_samples")
-        return (
-            rules if isinstance(rules, dict) else None,
-            samples if isinstance(samples, (dict, list)) else None,
+        extracted_dict = cast(dict[str, Any], extracted)
+        rules_raw = extracted_dict.get("rules")
+        samples_raw = extracted_dict.get("displayed_samples")
+        rules: dict[str, Any] | None = (
+            cast(dict[str, Any], rules_raw) if isinstance(rules_raw, dict) else None
         )
+        samples: dict[str, Any] | list[Any] | None
+        if isinstance(samples_raw, dict):
+            samples = cast(dict[str, Any], samples_raw)
+        elif isinstance(samples_raw, list):
+            samples = cast(list[Any], samples_raw)
+        else:
+            samples = None
+        return rules, samples
     return None, None
 
 
