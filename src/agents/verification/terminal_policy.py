@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +15,65 @@ from agents.tools import (
 )
 from agents.verification.answer import AnswerVerifier
 from agents.verification.video_constraints import evaluate_video_constraints
+
+logger = logging.getLogger(__name__)
+
+
+def check_unit_conversions(
+    task: PublicTask,
+    columns: list[str],
+    rows: list[list[Any]],
+) -> str | None:
+    """Reject when a submitted column clearly hasn't been unit-converted."""
+    from agents.config import ETL_SCRATCH_ROOT
+    from agents.tools.units import load_conversions
+
+    cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
+    if not cache_dir.is_dir():
+        return None
+
+    col_to_conv: dict[str, Any] = {}
+    for units_path in cache_dir.glob("*_units.json"):
+        for c in load_conversions(units_path):
+            col_to_conv[c.field] = c
+
+    if not col_to_conv:
+        return None
+
+    violations: list[str] = []
+    for ci, col in enumerate(columns):
+        conv = col_to_conv.get(col)
+        if conv is None or conv.factor == 1 or conv.factor == 0:
+            continue
+        if abs(math.log10(abs(conv.factor))) < 1:
+            continue
+        vals: list[float] = []
+        for row in rows:
+            if ci < len(row) and row[ci] is not None:
+                try:
+                    v = float(row[ci])
+                    if v != 0:
+                        vals.append(abs(v))
+                except (ValueError, TypeError):
+                    pass
+        if not vals:
+            continue
+        median: float = sorted(vals)[len(vals) // 2]
+        log_m = math.log10(median)
+        midpoint = abs(math.log10(abs(conv.factor))) / 2
+        if (conv.factor > 1 and log_m < midpoint) or (conv.factor < 1 and log_m > midpoint):
+            violations.append(conv.label.replace("CONVERT: ", ""))
+
+    if not violations:
+        return None
+    hint = "; ".join(violations)
+    logger.info("answer verifier: unit conversion not applied: %s", hint)
+    return (
+        f"UNIT CONVERSION NOT APPLIED — the explore tool returned unit_conversion "
+        f"entries that you did not apply. {hint}. "
+        f"Multiply the listed columns by the factor in execute_python, then resubmit."
+    )
+
 
 _EXECUTE_ACTIONS = ("execute_python", "execute_context_sql")
 _PRODUCING_CODE_STEPS = 1
@@ -89,6 +150,10 @@ class TerminalAnswerPolicy:
             task.question,
             row_count,
         )
+        if deterministic_rejection is None and candidate is not None:
+            deterministic_rejection = check_unit_conversions(
+                task, candidate.columns, candidate.rows
+            )
         if deterministic_rejection is not None:
             self.rejections_used += 1
             if candidate is not None and candidate.columns and candidate.rows:
