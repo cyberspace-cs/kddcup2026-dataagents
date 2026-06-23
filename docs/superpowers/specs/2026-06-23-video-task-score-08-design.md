@@ -99,7 +99,8 @@ The four targeted modification points (numbered for cross-reference with §4):
 | ① | new `scripts/triage_failures.py` | diagnostic-only script, reads traces.db + scores.json | Phase 1 measurement |
 | ② | new `verification/video_filter_audit.py` + hook in `verification/terminal_policy.py` | deterministic checks on `AnswerTable` between existing video_constraints check and LLM verifier | threshold/boundary (4/7) |
 | ③ | `video/rule_templater.py` extend with `question` param; `tools/explore_video.py` threads `task.question` through | abbreviation column preference hint | abbr (2/7) |
-| ④ | port the uncommitted `video_structured_outputs` work from the user's working tree onto this branch | GCD on video.report boundary (CRANE pattern) | online-only, ~0 local on DashScope |
+
+**Phase 4 (GCD port) — explicitly deferred.** Per user decision on 2026-06-23: skip the `video_structured_outputs` port for this design. The 0.80 target rests on Phase 2 + 3 alone; Phase 4 may be revisited if those fall short.
 
 **Out of architecture scope**:
 
@@ -202,12 +203,11 @@ Pass `task.question` into `extract_filter_recipe` so the templater can branch on
 ```yaml
 agent:
   video_filter_audit: enabled        # "enabled" | "disabled"; new in Phase 2
-  video_structured_outputs: enabled  # added in Phase 4 alongside ported GCD wiring
 ```
 
-`react.local.yaml` is **not** edited via PR (contains real API keys); these toggles default to the new values for online deploy.
+`react.local.yaml` is **not** edited via PR (contains real API keys); the toggle defaults to `enabled` for online deploy.
 
-**Important on `video_structured_outputs`**: this field and the supporting `_video_structured_outputs(config)` helper + `agents/llm/openai.py:OpenAIModelAdapter.structured_outputs` parameter are **NOT on `main@746b343`**. They live as uncommitted modifications in the user's original working tree on branch `feat/video-rule-templater`. Phase 4 will port that work onto `worktree-feat-video-score-08` as a clean, isolated commit (no API-key bleed) before the toggle is meaningful. If the port is deferred, Phase 4 is a no-op and the toggle is not added.
+`video_structured_outputs` is intentionally **not** introduced in this design (Phase 4 deferred). The GCD-on-`report` work lives as uncommitted modifications in the user's original `feat/video-rule-templater` working tree; revisiting it is a follow-up if Phase 2 + 3 do not reach the 0.80 target.
 
 ### 4.6 `scripts/triage_failures.py` (new, diagnostic-only)
 
@@ -266,22 +266,11 @@ No toggle — output text-only change.
 
 **A/B gate**: must show delta ≥ +0.03 mean vs Phase 2 cumulative; otherwise revert.
 
-### Phase 4 — Port GCD wiring (CRANE boundary) (1-2 days, conditional)
+### Phase 4 — Deferred (out of scope for this design)
 
-**Implements**: §4.5 final state.
+Phase 4 (port `video_structured_outputs` GCD wiring) was explicitly deferred by the user on 2026-06-23. The 0.80 target rests on Phase 2 + 3 alone.
 
-The `video_structured_outputs` switch + `OpenAIModelAdapter.structured_outputs` plumbing is not on `main@746b343`; it sits as uncommitted edits in the user's original working tree. This phase is gated on the user confirming the port is wanted (the design's user-review gate).
-
-If approved:
-
-1. Read the uncommitted diffs of `src/agents/{application.py, config.py, llm/openai.py}` from the original working tree
-2. Re-apply them as a clean commit on `worktree-feat-video-score-08`, ensuring no API-key contamination
-3. Verify DashScope path: grep for `backend_kind == "dashscope"` behavior around `structured_outputs` injection; if DashScope silently drops the field, document local A/B will not measure this change (online vLLM is the beneficiary)
-4. Set `video_structured_outputs: enabled` default in `react.example.yaml`
-
-**Acceptance**: code-review only (no A/B gate). Online vLLM may show effect; local DashScope may not.
-
-If deferred: Phase 4 is no-op, the design's 0.80 target rests entirely on Phase 2 + 3.
+If after Phase 2 + 3 the cumulative mean is < 0.80, Phase 4 is the next planned follow-up (separate spec).
 
 ### Phase 5 — Cumulative validation (continuous)
 
@@ -359,20 +348,17 @@ Per Phase, after implementation:
 | Question says "简称" but schema has only full-name column | agent falls back to full-name | hint is advisory; no reject path attached |
 | Question says "名称" but means abbreviation | hint silent | no regression |
 
-### 7.3 GCD path divergence (Phase 4)
-
-- vLLM rejects schema → sub-agent retries unconstrained → original behavior
-- DashScope silently drops `structured_outputs` → local A/B sees no Phase 4 delta → documented, not blocking
-
-### 7.4 Per-task wall-clock budget
+### 7.3 Per-task wall-clock budget
 
 Online ceiling: ~960 s/task at 8 workers (2h / 60 / 8 × 60). Local red line: **800 s/task** averaged.
 
 If Phase 2 retry path pushes wall-clock past red line on the A/B run, the Phase is reverted regardless of score delta.
 
-### 7.5 max_tokens=8192 with thinking=true
+### 7.4 max_tokens=8192 with thinking=true
 
-Phase 1 must record any task where the model hit `finish_reason='length'`. If ≥ 5 tasks hit the cap, a config-level experiment (raise to 16384 in `react.local.yaml` for testing only — not committed) precedes coding Phase 2.
+Pre-approved by user (2026-06-23): the Phase 1 baseline run uses `react.local.yaml` with `max_tokens: 16384` (raised from 8192 to give thinking-mode reasoning headroom). This change is local-only, never committed (the file holds real API keys).
+
+Phase 1 still records any task that hits `finish_reason='length'` at the raised cap — that would indicate a deeper budget problem and gate the rest of the design.
 
 ---
 
@@ -383,11 +369,10 @@ Phase 1 must record any task where the model hit `finish_reason='length'`. If �
 | Phase 1 baseline already ≥ 0.80 (project done) | low | celebrate, write up findings |
 | Phase 1 reveals different dominant failure modes than §2 | medium | pause coding, revise Phase 2/3 priorities |
 | Score variance dominates measured delta (doc §1.1 lesson) | high | N=2 A/B + +0.03 threshold (~2σ over noise band) |
-| max_tokens cap suppresses reasoning quality | medium | Phase 1 instruments cap-hits; raise locally if needed |
+| max_tokens cap suppresses reasoning quality at 16384 | medium | Phase 1 records `finish_reason='length'` count; if still hit, deeper budget problem flagged before coding |
 | `react.local.yaml` API key leak via PR | high | never commit `react.local.yaml`; only `react.example.yaml` carries toggles |
 | Phase 2 auditor regresses 1 task while fixing 2 | medium | A/B mean delta catches net effect; per-task diff in attempt log |
 | Auditor reject pushes `rejections_used` past budget on a borderline task | low | budget is shared, not new; existing behavior preserved |
-| Phase 4 GCD path not active on DashScope | low | documented, online vLLM still benefits |
 
 ---
 
@@ -407,14 +392,15 @@ Phase 1 must record any task where the model hit `finish_reason='length'`. If �
 
 | phase | expected mean Δ | cumulative |
 |---|---|---|
-| Phase 1 (rebaseline, no code) | — | 0.74-0.78 (new ground truth, not a gain) |
-| Phase 2 (filter audit) | +0.03 ~ +0.07 | 0.77-0.85 |
-| Phase 3 (abbr preference) | +0.03 ~ +0.06 | 0.80-0.91 |
-| Phase 4 (GCD confirm) | local ~0; online +0.01-0.02 | — |
+| Phase 1 (rebaseline, no code) | — | new ground truth (the 0.745 anchor is from thinking=false; Phase 1 establishes the thinking=true baseline) |
+| Phase 2 (filter audit) | +0.03 ~ +0.07 | baseline + Phase 2 |
+| Phase 3 (abbr preference) | +0.03 ~ +0.06 | baseline + Phase 2 + 3 |
 
-Median path to 0.80: Phase 2 lands ~+0.05, Phase 3 lands ~+0.04 → 0.745 + 0.09 = 0.835. Worst plausible: both halved → +0.045 → 0.79 (one tenth short of target).
+Median path: Phase 2 lands ~+0.05, Phase 3 lands ~+0.04 → roughly +0.09 cumulative on top of the Phase 1 baseline.
 
-Plan B if Phase 2 + 3 fall short: Phase 4 (GCD) is the last unexplored lever; beyond that, the design has exhausted what can be done without violating non-goals.
+Worst plausible (both deltas halved): +0.045 cumulative. If the Phase 1 baseline lands at 0.745, that puts the median path at ~0.835 and the worst-case at ~0.79.
+
+Plan B if Phase 2 + 3 fall short: revisit the deferred Phase 4 (port `video_structured_outputs`) as a separate spec.
 
 ---
 
