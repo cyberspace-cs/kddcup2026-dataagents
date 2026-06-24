@@ -59,11 +59,11 @@ class _RecordingAdapter:
         self.tools_seen: list[Any] = []
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
         self.seen.append(messages)
         self.tools_seen.append(tools)
-        return self.inner.complete(messages, tools=tools)
+        return self.inner.complete(messages, tools=tools, **kwargs)
 
 
 def _advertised_names_per_turn(adapter: _RecordingAdapter) -> list[set[str]]:

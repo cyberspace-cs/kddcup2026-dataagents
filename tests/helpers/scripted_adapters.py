@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from agents.llm.types import ModelMessage, ModelResponse
 
 
@@ -27,10 +29,10 @@ class ScriptedModelAdapter:
         self.tools_seen: list[object | None] = []
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
         # messages 对预置响应无用，显式 del 提示读者（也能在启用严格 linter 时消除未用警告）
-        del messages
+        del messages, kwargs
         self.tools_seen.append(tools)
         if not self._responses:
             raise RuntimeError("No scripted model responses remaining.")
@@ -57,9 +59,9 @@ class ScriptedNativeModelAdapter:
         self.tools_seen: list[object | None] = []
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
-        del messages
+        del messages, kwargs
         self.tools_seen.append(tools)
         if not self._responses:
             raise RuntimeError("No scripted model responses remaining.")

@@ -21,6 +21,7 @@ from __future__ import annotations
 import types
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openai import APIError
@@ -94,9 +95,9 @@ class _ScriptedInnerAdapter:
         self.calls = 0
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
-        del messages, tools
+        del messages, tools, kwargs
         self.calls += 1
         if not self._script:
             raise RuntimeError("Scripted inner adapter exhausted.")
