@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -74,9 +75,9 @@ class _ScriptedVerifierAdapter:
         self.messages: list[list[ModelMessage]] = []
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
-        del tools
+        del tools, kwargs
         self.messages.append(messages)
         if not self.responses:
             raise RuntimeError("No verifier responses remaining.")
@@ -92,10 +93,10 @@ class _RecordingAdapter:
         self.seen: list[list[ModelMessage]] = []
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
         self.seen.append(messages)
-        return self.inner.complete(messages, tools=tools)
+        return self.inner.complete(messages, tools=tools, **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -253,9 +254,9 @@ def test_native_parallel_tool_calls_share_turn_index(task: PublicTask) -> None:
     captured_messages: list[list] = []
 
     class CapturingAdapter(ScriptedNativeModelAdapter):
-        def complete(self, messages, *, tools=None):
+        def complete(self, messages, *, tools=None, **kwargs):
             captured_messages.append(messages)
-            return super().complete(messages, tools=tools)
+            return super().complete(messages, tools=tools, **kwargs)
 
     adapter = CapturingAdapter(
         [
@@ -773,9 +774,9 @@ def test_native_tool_call_parse_error_preserves_partial_trace_and_recovers(
             self.messages: list[list[ModelMessage]] = []
 
         def complete(
-            self, messages: list[ModelMessage], *, tools: object | None = None
+            self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
         ) -> ModelResponse:
-            del tools
+            del tools, kwargs
             self.messages.append(messages)
             self.calls += 1
             if self.calls == 1:
@@ -949,9 +950,9 @@ def test_budget_warning_injected_at_75_percent(task: PublicTask) -> None:
     captured_messages: list[list] = []
 
     class CapturingAdapter(ScriptedNativeModelAdapter):
-        def complete(self, messages, *, tools=None):
+        def complete(self, messages, *, tools=None, **kwargs):
             captured_messages.append(messages)
-            return super().complete(messages, tools=tools)
+            return super().complete(messages, tools=tools, **kwargs)
 
     adapter = CapturingAdapter(responses)
     agent = ReActAgent(
@@ -981,9 +982,9 @@ def test_preact_planning_message_injection(
     captured_messages: list[list] = []
 
     class CapturingAdapter(ScriptedNativeModelAdapter):
-        def complete(self, messages, *, tools=None):
+        def complete(self, messages, *, tools=None, **kwargs):
             captured_messages.append(messages)
-            return super().complete(messages, tools=tools)
+            return super().complete(messages, tools=tools, **kwargs)
 
     adapter = CapturingAdapter(
         [

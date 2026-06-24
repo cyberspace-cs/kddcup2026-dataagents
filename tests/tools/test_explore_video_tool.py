@@ -15,7 +15,9 @@ from agents.video.runner import VideoAgentResult
 
 
 class _StubAdapter:
-    def complete(self, messages, *, tools=None):  # pragma: no cover - never called in these tests
+    def complete(
+        self, messages, *, tools=None, **kwargs
+    ):  # pragma: no cover - never called in these tests
         raise AssertionError("video model must not be called")
 
 

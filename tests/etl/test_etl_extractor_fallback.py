@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 
@@ -13,7 +13,7 @@ from agents.llm import ModelMessage, ModelResponse
 
 class NoFallbackAdapter:
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
         raise AssertionError("ETL should not make any post-compression LLM CSV calls")
 

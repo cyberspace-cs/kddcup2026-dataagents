@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,14 +19,14 @@ from agents.llm import ModelMessage, ModelResponse
 
 class ExplodingAdapter:
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
         raise AssertionError("empty extracted text should not call the LLM")
 
 
 class StaticAdapter:
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
         return ModelResponse(content="ID: 1 | value: fresh")
 

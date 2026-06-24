@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from agents.llm.types import ModelMessage, ModelResponse
 from agents.verification.answer import verify_answer
 
@@ -9,7 +11,7 @@ class _ScriptedVerifier:
         self.response = response
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
         return ModelResponse(content=self.response, raw_response=self.response)
 
@@ -50,7 +52,7 @@ class _CapturingVerifier:
         self.seen_content: object = None
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
         del tools
         self.seen_content = messages[-1].content
