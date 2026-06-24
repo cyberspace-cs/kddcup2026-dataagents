@@ -55,7 +55,11 @@ Call `report` with these **separate parameters** (NOT a single JSON string):
   Example: `[{{"path": "csv/foo.csv", "format": "CSV", "row_count": 100, "key_columns": ["id"]}}]`
 - `schema_map`: per-table/file schema with columns, dtypes, semantics. If `inspect_files` returned `column_conversions` for a file, copy them verbatim into that file's schema_map entry.
   Example: `{{"foo": {{"columns": {{...}}, "column_conversions": {{...}}}}}}`
-- `knowledge`: extracted mappings, formulas, units, thresholds from docs.
+- `knowledge`: extracted mappings, formulas, units, thresholds from docs. `knowledge.md` is authoritative where it explicitly defines a field; observed data wins on conflict.
+  - Formula: when `knowledge.md` provides a formula (e.g., `average = DIVIDE(SUM(X), COUNT(Y))`), extract that exact formula if it applies to the observed schema/data — do not substitute your own interpretation.
+  - Column mapping: when `knowledge.md` maps a term to a column (e.g., `R language refers to TagName = 'r'`), extract that exact column and value.
+  - Value mapping: when `knowledge.md` defines value codes (e.g., `normal RNP refers to '-', '+-'`), extract those exact codes.
+  - Conflict: if sampling proves the mapping cannot apply or conflicts with actual values, observed data wins.
 - `join_paths`: discovered relationships. Example: `[{{"left": "a.col", "right": "b.col"}}]`
 - `value_samples`: sampled distinct values for filter-relevant TABULAR columns. Keys MUST be `file.column`; values MUST be flat `list[Any]` preserving the source scalar types. NEVER use video paths or bare file paths as keys. Example: `{{"foo.csv.region": ["北京", "上海"], "foo.csv.amount": [1.5, 2.0]}}`.
 - `warnings`: objective data-quality observations ONLY — unit mismatches, ambiguous column names, missing/NULL values in specific columns, inconsistent date formats, duplicate rows. Each warning must be ONE atomic fact. Do not chain multiple observations with semicolons; write separate warnings instead. Do not append any inference, implication, or suggestion after the fact. In the `warnings` field specifically, never use hedge words (可能/might/possibly/perhaps/likely/也许/或许) — if you cannot state something as a verified fact, omit it.
