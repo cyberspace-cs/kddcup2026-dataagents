@@ -114,33 +114,67 @@ def create_explorer_tool_registry(
     """
     definitions: list[FunctionTool] = [
         inspect_files.with_description(
-            "One-shot summary of every file under context "
-            "(columns, dtypes, row counts, table schemas, column_conversions).",
+            "Use FIRST to bootstrap discovery. Returns a one-shot summary of "
+            "every file under context: {path, size, format, schema} where schema "
+            "contains columns, dtypes, row_count, profile (min/max/null_rate/ "
+            "distinct values) for CSV/SQLite, keys/length for JSON, line_count/ "
+            "head for docs. Includes column_conversions when unit metadata is "
+            "available. Does NOT read full data — use the per-file preview tools "
+            "or execute_context_sql for deeper inspection.",
         ),
         read_csv.with_description(
-            "Preview a CSV file: columns, dtypes, row_count, "
-            "head (20 rows), tail (5 rows). Sample only.",
+            "Preview a single CSV file: returns {columns, dtypes, row_count, "
+            "head (first 20 rows), tail (last 5 rows)}. Use when you need to "
+            "inspect sample values or dtypes for one CSV after inspect_files. "
+            "Sample only — rows between head and tail are not returned. Do NOT "
+            "use for aggregation or filtering — use execute_context_sql or note "
+            "in report that the main agent should use execute_python. "
+            'Example: read_csv({"path": "csv/member.csv"})',
         ),
         read_doc.with_description(
-            "Preview a text document (md/txt). Without keyword: paging. "
-            "With keyword: returns ALL matching paragraphs across the file.",
+            "Preview a text document (md/txt). Two modes: (1) Paging — returns "
+            "a line window; use has_more + next start_line to continue. "
+            "(2) Keyword — returns ALL matching paragraphs across the whole file "
+            "(capped at 20 matches / 8KB). ALWAYS prefer keyword mode when "
+            "searching for an ID/name/term — one call replaces a sequential "
+            "scan. Do NOT use for full-document structured parsing — note in "
+            "report that the main agent should use execute_python. "
+            'Example: read_doc({"path": "knowledge.md", "keyword": "利率"})',
         ),
         read_json.with_description(
-            "Preview a JSON file: kind (array/object/scalar), length/keys, "
-            "sample values. Sample only.",
+            "Preview a single JSON file. Returns a structured summary keyed by "
+            "kind: array → {length, head (first 20 items)}, object → {key_count, "
+            "keys (first 50), value_preview (first 20)}, scalar → {value}. Use "
+            "when you need to inspect structure or sample values for one JSON. "
+            "Sample only — does NOT load the full file for deep traversal. "
+            'Example: read_json({"path": "json/Patient.json"})',
         ),
         inspect_sqlite_schema.with_description(
-            "View SQLite database table structures (columns, row counts). "
-            "Do NOT call on .csv/.json/.md/.txt paths.",
+            "View CREATE TABLE statements for all tables in a SQLite database. "
+            "Returns {tables: [{name, create_sql}]}. Use to learn exact column "
+            "names and types before writing SQL with execute_context_sql. Does "
+            "NOT return row counts or sample data — use inspect_files for "
+            "profiles. Do NOT call on .csv/.json/.md/.txt paths. "
+            'Example: inspect_sqlite_schema({"path": "db/clinical.sqlite"})',
         ),
         execute_context_sql.with_description(
-            "Run read-only SQL on a SQLite database. Use for SELECT DISTINCT, "
-            "MIN/MAX, sample queries. Do NOT call on .csv/.json/.md/.txt paths.",
+            "Run a read-only SQL query (SELECT/WITH/PRAGMA) on a SQLite database. "
+            "Returns {columns, rows, row_count, truncated}; default limit 200. "
+            "Use for SELECT DISTINCT, MIN/MAX, sample queries, and aggregations "
+            "to discover value distributions or verify join keys. Do NOT call on "
+            ".csv/.json/.md/.txt paths. "
+            'Example: execute_context_sql({"path": "db/sales.db", '
+            '"sql": "SELECT DISTINCT category FROM products"})',
         ),
         grep_context.with_description(
-            "Search for a regex pattern across ALL context files at once: "
-            "CSV values, JSON fields, Markdown text, and SQLite text columns. "
-            "Use this to check whether a value exists in any file.",
+            "Search for a regex pattern across ALL context files at once: CSV "
+            "values, JSON fields, Markdown text, and SQLite text columns. Use "
+            "to check whether a specific value exists in any file without "
+            "reading each one. Do NOT use for counting or aggregation — use "
+            "execute_context_sql for that. Returns up to 30 matches with file "
+            "path and location; for SQLite reports {table, column, "
+            "total_matches, samples}. "
+            'Example: grep_context({"pattern": "全国"})',
         ),
     ]
     if video_tool is not None:
@@ -151,8 +185,12 @@ def create_explorer_tool_registry(
             description=(
                 "Submit your exploration findings. This is the ONLY way to complete "
                 "the exploration — call it when you have mapped the data landscape. "
-                "Pass each field (files, schema_map, knowledge, join_paths, "
-                "value_samples, warnings) as a separate parameter."
+                "Pass each field as a separate parameter: files (flat list of file "
+                "entries), schema_map (per-table/file columns with dtypes and "
+                "semantics), knowledge (extracted mappings/formulas/units from docs), "
+                "join_paths (discovered relationships), value_samples (sampled "
+                "distinct values for filter-relevant columns), warnings (data-quality "
+                "observations)."
             ),
             json_schema=REPORT_SCHEMA,
             handler=handle_report,

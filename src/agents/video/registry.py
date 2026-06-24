@@ -147,10 +147,12 @@ def create_video_tool_registry() -> ToolRegistry:
     report = FunctionTool(
         name="report",
         description=(
-            "Submit your video analysis findings. This is your ONLY tool and the only "
-            "way to complete the task — call it exactly once with complete findings. "
-            "Nested fields MUST stay structured. FORBIDDEN: stringified objects or "
-            "stringified arrays."
+            "Submit your video analysis findings. This is the ONLY way to "
+            "complete the task — call it exactly once with complete findings. "
+            "Pass each field as a separate parameter: summary, timeline, "
+            "extracted_data (with tables/rules/text), coverage, warnings. "
+            "Nested fields MUST stay structured objects/arrays. FORBIDDEN: "
+            "stringified objects or stringified arrays."
         ),
         json_schema=VIDEO_REPORT_SCHEMA,
         handler=handle_video_report,

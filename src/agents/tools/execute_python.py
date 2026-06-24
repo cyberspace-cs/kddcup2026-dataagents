@@ -195,17 +195,25 @@ def _answer_dir_for(task: PublicTask) -> Path:
 
 @function_tool(
     description=(
-        "Use when you need computation, aggregation, cross-file joins, or "
-        "large-file scans beyond the preview tools. Working directory: the "
-        "task context dir; stdout returns as `output`. "
+        "Execute arbitrary Python in a subprocess. Returns {success, output "
+        "(stdout), stderr, error, traceback}. Use when you need computation, "
+        "aggregation, cross-file joins, or full-file scans beyond what the "
+        "preview tools (read_csv, read_json, execute_context_sql) provide. "
+        "Do NOT use for simple lookups that a single SQL query or preview "
+        "tool can answer — those are faster and cheaper. "
+        "Working directory: the task context dir. "
         f"Timeout: {EXECUTE_PYTHON_TIMEOUT_SECONDS} s per call. "
-        "Default to `pandas` for tabular work — projections, filters, and "
+        "Default to pandas for tabular work — projections, filters, and "
         "joins are idiomatic and types are preserved automatically. "
         "Available libs: pandas, numpy, pyarrow, polars, openpyxl, sqlalchemy. "
-        "The `csv` module is fine only for trivial reads (a handful of rows). "
-        "For `.db` / `.sqlite` files, either use the pandas URI form "
-        '(`pd.read_sql_query(query, "sqlite:///path")`) or '
-        "`sqlite3.connect(path)` + `pd.read_sql_query(query, conn)`."
+        "The csv module is fine only for trivial reads (a handful of rows). "
+        "For .db/.sqlite files, either use the pandas URI form "
+        '(pd.read_sql_query(query, "sqlite:///path")) or '
+        "sqlite3.connect(path) + pd.read_sql_query(query, conn). "
+        "Use os.environ['DABENCH_ANSWER_DIR'] to write answer CSV artifacts. "
+        'Example: execute_python({"code": "import pandas as pd\\n'
+        "df = pd.read_csv('csv/sales.csv')\\n"
+        "print(df.groupby('region')['amount'].sum())\"})"
     ),
 )
 def execute_python(

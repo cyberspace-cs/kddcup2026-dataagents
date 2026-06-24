@@ -61,10 +61,14 @@ def execute_context_sql(
         positive_int_field(description="Maximum number of rows to return."),
     ] = 200,
 ) -> ToolExecutionResult:
-    """Use when data in a sqlite/db file (`.db` / `.sqlite` / `.sqlite3`)
-    can be answered with read-only SQL queries or aggregations. Call
-    inspect_sqlite_schema first for an unknown database.
-    do NOT call on `.csv` / `.json` / `.md` / `.txt` paths."""
+    """Run a read-only SQL query (SELECT/WITH/PRAGMA) on a SQLite database.
+    Returns {columns, rows, row_count, truncated}; default limit 200 rows.
+    Call inspect_sqlite_schema first for an unknown database to learn table
+    and column names. For complex multi-table JOINs across heterogeneous
+    files or write operations, use execute_python instead.
+    Do NOT call on .csv/.json/.md/.txt paths.
+    Example: execute_context_sql({"path": "db/sales.db",
+    "sql": "SELECT product, SUM(amount) FROM orders GROUP BY product LIMIT 10"})"""
     resolved = resolve_context_path(task, path)
     content = execute_read_only_sql(resolved, sql, limit=limit)
     if content.get("row_count", -1) == 0:

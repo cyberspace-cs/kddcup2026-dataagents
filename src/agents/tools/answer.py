@@ -307,14 +307,18 @@ def _inline_threshold_error(columns: list[str], rows: list[list[Any]]) -> str | 
 
 @function_tool(
     description=(
-        "Use this when the final answer table is determined. This is the only "
-        "way to submit; plain text answers are ignored. "
+        "Submit the final answer table. This is the ONLY way to submit; plain "
+        "text answers are ignored. Returns {status, column_count, row_count}. "
         f"For small answers ({inline_answer_size_phrase()}): pass inline columns/rows. "
         f"For {artifact_answer_size_phrase()}: write CSV in execute_python first, "
         "then pass from_csv (inline is rejected at this threshold). "
         "IMPORTANT: for content-entity questions "
         '("what is the comment/post/message/title"), columns must contain '
-        "the text body (Text/Body/Title), NOT a surrogate key (Id/Code)."
+        "the text body (Text/Body/Title), NOT a surrogate key (Id/Code). "
+        'Inline example: answer({"columns": ["name", "total"], '
+        '"rows": [["Alice", 100], ["Bob", 200]]}) '
+        'CSV example: answer({"from_csv": '
+        '"/tmp/dabench/<task_id>/_answer/answer.csv"})'
     ),
     input_model=AnswerInput,
     is_terminal=True,

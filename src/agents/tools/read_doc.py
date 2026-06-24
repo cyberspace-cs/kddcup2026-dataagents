@@ -186,15 +186,16 @@ def read_doc(
         ),
     ] = None,
 ) -> ToolExecutionResult:
-    """Use when you need to preview a text-like document (md/txt). Two
-    modes: (1) paging — without `keyword`, returns a fixed line window;
-    use `has_more` + next `start_line` to continue. (2) keyword search
-    — with `keyword`, returns ALL paragraphs containing the keyword
-    across the whole file (capped at 20 matches / 8KB total). Prefer
-    keyword mode when looking for an ID/name/term — one call replaces
-    a sequential scan. This is a SAMPLE preview, not full data access.
-    For full-document regex extraction, cross-paragraph aggregation,
-    or structured parsing, use execute_python instead."""
+    """Preview a text document (md/txt). Two modes:
+    (1) Paging — without keyword, returns a fixed line window; use
+    has_more + next start_line to continue.
+    (2) Keyword — with keyword, returns ALL paragraphs containing the
+    keyword across the whole file (start_line/line_count ignored),
+    capped at 20 matches / 8KB total. ALWAYS prefer keyword mode when
+    searching for an ID/name/term — one call replaces a sequential scan.
+    For full-document regex or structured parsing, use execute_python.
+    Example paging: read_doc({"path": "knowledge.md", "start_line": 1})
+    Example keyword: read_doc({"path": "knowledge.md", "keyword": "利率"})"""
     kw = keyword if keyword else None
     return ToolExecutionResult(
         ok=True,

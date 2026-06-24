@@ -196,8 +196,13 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
 
 @function_tool
 def inspect_files(task: PublicTask) -> ToolExecutionResult:
-    """Use first to bootstrap context exploration: returns a one-shot summary
-    of every file under context (columns, dtypes, row counts, table schemas).
-    This replaces the usual sequence of read_csv / read_json /
-    inspect_sqlite_schema calls for initial discovery."""
+    """Use FIRST to bootstrap context exploration. Returns a one-shot summary
+    of every file under context: {path, size, format, schema} where schema
+    contains columns, dtypes, row_count, profile (min/max/null_rate/distinct
+    values) for CSV/SQLite, keys/length for JSON, line_count/head for docs,
+    and page_count/head for PDF. Also includes column_conversions when unit
+    metadata is available. This replaces the usual sequence of read_csv /
+    read_json / inspect_sqlite_schema calls for initial discovery. Does NOT
+    read full data — for filtering, aggregation, or full-file scans, use
+    execute_python or the per-file preview tools."""
     return ToolExecutionResult(ok=True, content=inspect_context_files(task))

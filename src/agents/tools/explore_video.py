@@ -112,12 +112,16 @@ def create_explore_video_tool_definition(video_model: ModelAdapter) -> FunctionT
     return _FunctionTool(
         name="explore_video",
         description=(
-            "Launch the video analysis sub-agent on one video file from context. Use "
-            "ONLY on video files listed by `inspect_files`. Write `instructions` as "
-            "an analysis brief tied to the task question: which charts, tables, "
-            "values, or text to transcribe. Call once per video. The findings return "
-            "to you AND pass through to the main agent verbatim — reference key facts "
-            "in your report's knowledge field but do not re-transcribe numbers."
+            "Launch the video analysis sub-agent on one video file from context. "
+            "Returns {video_status, path, findings, video_steps_used, "
+            "filter_recipe}. Use ONLY on video files listed by inspect_files. "
+            "Write instructions as an analysis brief tied to the task question: "
+            "which charts, tables, values, or text to transcribe. Call once per "
+            "video. Findings pass through to the main agent verbatim — reference "
+            "key facts in your report's knowledge field but do NOT re-transcribe "
+            "numbers. "
+            'Example: explore_video({"path": "video.mp4", '
+            '"instructions": "Extract the bar chart values for Q1-Q4 revenue"})'
         ),
         json_schema=EXPLORE_VIDEO_SCHEMA,
         handler=handler,

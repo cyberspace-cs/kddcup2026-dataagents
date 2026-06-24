@@ -173,10 +173,13 @@ def read_csv(
         path_field(file_kind="CSV file", examples=("csv/member.csv", "data/train.csv")),
     ],
 ) -> ToolExecutionResult:
-    """Use when you need to inspect a single CSV file: returns columns,
-    approximate dtypes, row_count, head (first 20 data rows), and tail
-    (last 5 data rows that are not already in head). This is a SAMPLE
-    preview, not full data access. For filtering, aggregation, joins, or
-    any full-file scan, use execute_python instead — the head/tail will
-    miss rows in between."""
+    """Preview a single CSV file: returns {columns, dtypes, row_count,
+    head (first 20 data rows), tail (last 5 data rows)}. Use when you
+    need to inspect column names, data types, or sample values for one
+    CSV before deciding on a query strategy. This is a SAMPLE preview,
+    not full data access — rows between head and tail are not returned.
+    For filtering, aggregation, joins, or any full-file scan, use
+    execute_python instead. The path parameter is relative to the task
+    context directory (e.g. 'csv/member.csv', not 'context/csv/member.csv').
+    Example: read_csv({"path": "csv/member.csv"})"""
     return ToolExecutionResult(ok=True, content=read_csv_preview(task, path))
