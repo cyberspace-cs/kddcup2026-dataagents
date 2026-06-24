@@ -209,7 +209,11 @@ class RateLimitedAdapter:
         )
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+        self,
+        messages: list[ModelMessage],
+        *,
+        tools: ToolSchemaSource | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         """预扣 → 调 inner → 对账 → 返回；429/5xx 走内部重试，其他异常原样上抛。"""
         reserved_tpm = (
@@ -225,7 +229,7 @@ class RateLimitedAdapter:
         # 循环 max_retries+1 次（初次 + 最多 max_retries 次重试）
         for attempt in range(self.rate_limit_config.max_retries + 1):
             try:
-                response = self.inner.complete(messages, tools=tools)
+                response = self.inner.complete(messages, tools=tools, **kwargs)
             except RuntimeError as exc:
                 if not _is_retriable(exc):
                     self.bucket.refund(rpm=0, tpm=reserved_tpm)

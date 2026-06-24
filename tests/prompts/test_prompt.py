@@ -74,6 +74,28 @@ def test_system_prompt_distinguishes_video_rules_from_displayed_samples() -> Non
     assert "df.columns" in prompt
 
 
+def test_system_prompt_empty_result_recovery_preserves_question_conditions() -> None:
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "never submit an empty result" in lower
+    assert "re-check column/value mapping" in lower
+    assert "formats, units, joins, and time grain" in lower
+    assert "do not drop or weaken explicit question conditions" in lower
+    assert "broaden filters or relax conditions" not in lower
+
+
+def test_system_prompt_observed_data_overrides_conflicting_knowledge() -> None:
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "authoritative starting point" in lower
+    assert "matches observed schema/data" in lower
+    assert "if sampling or computation proves a conflict" in lower
+    assert "observed data wins" in lower
+    assert "re-derive from evidence" in lower
+
+
 # ---------- build_observation_prompt: ok parameter & recovery hints ----------
 
 

@@ -166,63 +166,78 @@ logger = logging.getLogger(__name__)
 
 _VERIFIER_SYSTEM = """\
 You are an answer-table auditor.  You will receive:
-1. The original QUESTION the agent was asked.
-2. The COLUMNS the agent is about to submit.
-3. A SAMPLE of rows (up to 5) and the TOTAL row count.
+1. The original **QUESTION** the agent was asked.
+2. The **COLUMNS** the agent is about to submit.
+3. A **SAMPLE** of rows (up to 5) and the **TOTAL** row count.
 
-Run ONLY the three checks below — no other checks.
+Run **ONLY** the three checks below — no other checks.
 
-Check 1 — EXTRA columns (label: "extra"):
+### Check 1 — EXTRA columns (label: `extra`)
+
 The ONLY input is the submitted COLUMNS array.  A column is "extra"
 ONLY if it appears in the COLUMNS array AND the question did not ask
-for it.  This check ONLY identifies columns to REMOVE — NEVER suggest
+for it.  This check ONLY identifies columns to **REMOVE** — NEVER suggest
 adding columns here.  Common mistakes:
-- Row-ID / primary-key / code / rank columns (id, CustomerID, PostId,
-  基金代码, fund_code, ticker, stock_code, 排名, rank, 序号, …) when
+- Row-ID / primary-key / code / rank columns (`id`, `CustomerID`, `PostId`,
+  `基金代码`, `fund_code`, `ticker`, `stock_code`, `排名`, `rank`, `序号`, …) when
   the question does not ask for identifiers or rankings.
 - Filter / WHERE columns whose value is constant across all rows.
 - Join-key columns needed for computation but not for the answer.
-- Source-table dimension columns (Province, Date, EndDate, Year, Region,
-  Category, …) that provide context but are NOT the attribute the question
+- Source-table dimension columns (`Province`, `Date`, `EndDate`, `Year`, `Region`,
+  `Category`, …) that provide context but are NOT the attribute the question
   asks about.  When the question says "show me X" / "X的记录/数据", only
   X is the result column.  Date/region/category columns are extra unless
   the question explicitly names them (e.g., "show X by province", "X and
   their dates", "for each year").
 
-Check 2 — UNIT SUFFIX in cell values (label: "unit_suffix"):
-Scan the SAMPLE ROWS for numeric cells that carry a unit suffix —
-common suffixes: %, 万, 亿, 元, USD, kg, km, m², etc.  A cell like
-"48.706%" or "3.5万" is WRONG — the column name may contain the unit
-indicator (e.g., "收益率(%)"), but every cell value MUST be a bare
-number (e.g., 48.706).  The grader compares normalized numeric values;
-a trailing suffix causes a hash mismatch and scores 0.
-If ANY numeric cell in the sample contains a unit suffix, reject with
-check="unit_suffix" and instruct: "Strip the unit suffix from cell
+### Check 2 — UNIT SUFFIX in cell values (label: `unit_suffix`)
+
+Scan the SAMPLE ROWS for numeric cells that carry a **non-numeric** unit
+suffix — common suffixes: `%`, `万`, `亿`, `元`, `USD`, `kg`, `km`, `m²`, etc.
+A cell like `"48.706%"` or `"3.5万"` is **WRONG** — the column name may
+contain the unit indicator (e.g., "收益率(%)"), but every cell value MUST
+be a bare number (e.g., `48.706`).  The grader compares normalized numeric
+values; a trailing suffix causes a hash mismatch and scores 0.
+
+If ANY numeric cell in the sample contains a non-numeric suffix, reject
+with `check="unit_suffix"` and instruct: "Strip the unit suffix from cell
 values — column names keep the unit, cells must be bare numbers."
 
-Check 3 — TRANSPOSED / PIVOTED layout (label: "transposed"):
+> **IMPORTANT — do NOT flag bare decimal numbers.**  Values like
+> `5385049.999999999`, `26898879.05`, `0.0000000001` are valid numeric
+> precision from the source data, **not** unit suffixes. NEVER flag them.
+> Only flag cells where a **non-numeric character** appears after the digits.
+
+### Check 3 — TRANSPOSED / PIVOTED layout (label: `transposed`)
+
 The grader matches columns by hashed value lists.  A transposed answer
 (metrics as rows instead of columns) produces the WRONG column hashes
 and scores 0.  Detect this pattern:
 - Exactly 2 columns where one is a label/metric-name column and the
   other is a value column, AND multiple rows whose label column holds
-  names that SHOULD be separate result columns (e.g., "总资产最大值",
-  "max_revenue", "count", …).
+  names that SHOULD be separate result columns (e.g., `"总资产最大值"`,
+  `"max_revenue"`, `"count"`, …).
 - A "wide" question asking for several named statistics/metrics at once
   ("最大值和最小值", "max and min", "mean, median, and std") is a
   strong signal the answer should have one column per statistic.
-If detected, reject with check="transposed" and instruct: "Pivot the
+
+If detected, reject with `check="transposed"` and instruct: "Pivot the
 table so each metric is its own column and values fill a single row."
 
-OUTPUT FORMAT — respond with a SINGLE JSON object and NOTHING ELSE.
-No reasoning, no analysis, no chain-of-thought.
-"checks" lists ONLY failed checks using these exact labels: \
-"extra", "unit_suffix", "transposed".
+## Output format
 
+Respond with a **single JSON object** and NOTHING ELSE.
+No reasoning, no analysis, no chain-of-thought.
+
+`"checks"` lists ONLY failed checks using these exact labels:
+`"extra"`, `"unit_suffix"`, `"transposed"`.
+
+```json
 {"verdict": "ok"}
 {"verdict": "reject", "checks": ["extra"], "reason": "<25 words per failed check>"}
+```
 
-Be conservative: when in doubt, say "ok"."""
+Be conservative: **when in doubt, say "ok".**"""
 
 _MAX_SAMPLE_ROWS = 5
 
@@ -323,7 +338,9 @@ def verify_answer(
     ]
 
     try:
-        response: ModelResponse = adapter.complete(messages)
+        response: ModelResponse = adapter.complete(
+            messages, response_format={"type": "json_object"}
+        )
     except Exception:
         logger.debug("answer verifier LLM call failed, allowing submission", exc_info=True)
         return None

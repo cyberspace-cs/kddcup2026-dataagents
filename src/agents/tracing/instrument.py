@@ -46,12 +46,16 @@ class TracedModelAdapter:
         return self._inner
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+        self,
+        messages: list[ModelMessage],
+        *,
+        tools: ToolSchemaSource | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         model_name = getattr(self._inner, "model", None)
         with generation_span(model=model_name) as span:
             span.span_data.input = _serialize_messages(messages)
-            response = self._inner.complete(messages, tools=tools)
+            response = self._inner.complete(messages, tools=tools, **kwargs)
             span.span_data.usage = {
                 "input_tokens": response.usage.prompt_tokens,
                 "output_tokens": response.usage.completion_tokens,

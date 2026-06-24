@@ -214,7 +214,11 @@ class _BaseOpenAIAdapter(abc.ABC):
 
     @abc.abstractmethod
     def complete(
-        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+        self,
+        messages: list[ModelMessage],
+        *,
+        tools: ToolSchemaSource | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         raise NotImplementedError
 
@@ -399,14 +403,22 @@ class OpenAIModelAdapter(_BaseOpenAIAdapter):
     """
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+        self,
+        messages: list[ModelMessage],
+        *,
+        tools: ToolSchemaSource | None = None,
+        response_format: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。
 
         非 native 工具协议：请求体没有 tools 字段，``tools`` 参数接受但忽略。
+        ``response_format`` 透传给 API（如 ``{"type": "json_object"}``）。
         """
-        del tools
+        del tools, kwargs
         request_kwargs = self._build_request_kwargs(messages)
+        if response_format is not None:
+            request_kwargs["response_format"] = response_format
         base_response, _ = self._call_and_parse_base(request_kwargs)
         return base_response
 
@@ -517,7 +529,11 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
         return request_kwargs
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+        self,
+        messages: list[ModelMessage],
+        *,
+        tools: ToolSchemaSource | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         """发起一次 chat.completions 请求，返回解析好的 `ModelResponse`。"""
         request_kwargs = self._build_request_kwargs(messages, tools=tools)

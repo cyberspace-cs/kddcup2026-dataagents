@@ -70,6 +70,10 @@ class ModelAdapter(Protocol):
     """
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+        self,
+        messages: list[ModelMessage],
+        *,
+        tools: ToolSchemaSource | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         raise NotImplementedError
