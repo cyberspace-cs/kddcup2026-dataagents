@@ -16,13 +16,10 @@ stability.
 | Tool | Arguments | Purpose |
 | --- | --- | --- |
 | `inspect_files` | _(none)_ | One-shot summary of every file under `context/`: columns, dtypes, row counts, table schemas. |
-| `read_csv` | `path` | CSV sample preview (schema + head 20 rows + tail 5 rows). |
-| `read_doc` | `path`, `start_line`, `line_count`, `keyword` | Paged text reader; with `keyword`, returns all matching paragraphs (capped at 20 / 8KB). |
-| `read_json` | `path` | Structured JSON preview (kind + length/keys + sample values, 100MB load cap; >100MB returns streamed schema via ijson). |
-| `inspect_sqlite_schema` | `path` | List tables and columns of a SQLite/DB file. |
+| `preview_file` | `path` | Single-file preview by extension: CSV head/tail, JSON structure, SQLite CREATE TABLE statements, or text head. |
 | `execute_context_sql` | `path`, `sql`, `limit` | Read-only SQL against a SQLite/DB file in `context/`. |
 | `execute_python` | `code` | Run arbitrary Python with cwd pinned to the task `context/`. |
-| `answer` | `columns`, `rows` | Submit the final answer table. **Terminal**: halts the loop on success. |
+| `answer` | `columns`, `rows`, `from_csv` | Submit the final answer table inline or from a CSV artifact. **Terminal**: halts the loop on success. |
 
 All `path` fields are resolved relative to the task's `context_dir`. Path traversal,
 absolute paths, and symlinks escaping the sandbox are rejected.
@@ -75,8 +72,8 @@ Each `steps` entry:
   "step_index": 0,
   "turn_index": 0,
   "thought": "...",
-  "action": "read_csv",
-  "action_input": { "path": "data.csv", "max_rows": 5 },
+  "action": "preview_file",
+  "action_input": { "path": "data.csv" },
   "observation": { "ok": true, "content": {...} },
   "error_payload": null,
   "usage": { ... },
@@ -91,7 +88,7 @@ Error steps have `action == "__error__"` and a populated `error_payload`:
   "step_index": 3,
   "turn_index": 3,
   "action": "__error__",
-  "error_payload": { "kind": "tool_error", "tool": "read_csv", "error": "..." }
+  "error_payload": { "kind": "tool_error", "tool": "preview_file", "error": "..." }
 }
 ```
 

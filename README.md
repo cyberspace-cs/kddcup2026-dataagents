@@ -104,13 +104,10 @@ The agent calls into the default tool inventory (registered in `src/agents/tools
 | Tool | Inputs |
 | --- | --- |
 | `inspect_files` | _(none)_ |
-| `read_csv` | `path` |
-| `read_json` | `path` |
-| `read_doc` | `path`, `start_line`, `line_count`, `keyword` |
-| `inspect_sqlite_schema` | `path` |
+| `preview_file` | `path` |
 | `execute_context_sql` | `path`, `sql`, `limit` |
 | `execute_python` | `code` |
-| `answer` | `columns`, `rows` |
+| `answer` | `columns`, `rows`, `from_csv` |
 
 All `path` arguments are relative to the task `context/` directory.
 

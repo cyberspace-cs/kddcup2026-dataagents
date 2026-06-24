@@ -183,6 +183,36 @@ def _synthesize_findings(steps: list[Any]) -> str:
                 }
             elif "tables" in content:
                 sections.setdefault("sqlite_schemas", {})[key] = content["tables"]
+            elif "kind" in content:
+                json_preview_keys = (
+                    "kind",
+                    "key_count",
+                    "keys",
+                    "keys_truncated",
+                    "value_preview",
+                    "length",
+                    "head",
+                    "head_truncation",
+                    "first_item_kind",
+                    "sample_value_kinds",
+                    "value",
+                    "value_kind",
+                    "value_truncated",
+                    "streamed",
+                    "truncated",
+                    "reason",
+                )
+                sections.setdefault("json_previews", {})[key] = {
+                    k: content[k] for k in json_preview_keys if k in content
+                }
+            elif content.get("format") == "text" or (
+                "total_lines" in content and "head" in content
+            ):
+                sections.setdefault("text_previews", {})[key] = {
+                    "total_lines": content.get("total_lines"),
+                    "head": content.get("head", []),
+                    "has_more": content.get("has_more"),
+                }
 
         elif action == "grep_context":
             sections.setdefault("grep_results", []).append(
