@@ -191,8 +191,9 @@ def grep_context(
         Field(
             min_length=1,
             description=(
-                "Regex pattern to search for across all context files. "
-                "Case-insensitive. Supports full Python regex syntax."
+                "Regex pattern (case-insensitive). "
+                "E.g. '\\d{4}-\\d{2}-\\d{2}' for dates, "
+                "'(?:Alice|Bob)' for names, '价格|金额' for keywords."
             ),
         ),
     ],

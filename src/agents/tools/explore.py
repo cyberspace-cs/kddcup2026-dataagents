@@ -161,7 +161,8 @@ def create_explore_tool_definition(
             "samples key values, identifies join paths, and analyzes videos if "
             "present — all in one call. Returns {files, schema_map, knowledge, "
             "join_paths, value_samples, warnings, unit_conversion}. No parameters "
-            "needed. This replaces manual multi-step discovery."
+            "needed. This replaces manual multi-step discovery. "
+            "Example: explore({})"
         ),
         json_schema=EXPLORE_SCHEMA,
         handler=handler,

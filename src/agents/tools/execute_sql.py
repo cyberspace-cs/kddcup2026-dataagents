@@ -9,7 +9,6 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
-from agents.tools._fields import positive_int_field
 from agents.tools._sqlite_common import connect_read_only, maybe_raise_non_sqlite_path_error
 from agents.tools.context import resolve_context_path
 from agents.tools.contracts import PATH_CONVENTION_NOTE
@@ -54,10 +53,13 @@ def execute_context_sql(
             ),
         ),
     ],
-    sql: Annotated[str, Field(description="Read-only SQL query to execute.")],
+    sql: Annotated[
+        str,
+        Field(description="SELECT, WITH, or PRAGMA statement. DML/DDL is rejected."),
+    ],
     limit: Annotated[
         int,
-        positive_int_field(description="Maximum number of rows to return."),
+        Field(ge=1, le=10000, description="Maximum rows to return (default 200)."),
     ] = 200,
 ) -> ToolExecutionResult:
     """Run a read-only SQL query (SELECT/WITH/PRAGMA) on a SQLite database.

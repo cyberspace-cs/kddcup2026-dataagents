@@ -204,5 +204,6 @@ def inspect_files(task: PublicTask) -> ToolExecutionResult:
     metadata is available. This replaces calling preview_file on each file
     individually for initial discovery. Does NOT read full data — for
     deeper inspection use preview_file, for filtering or aggregation use
-    execute_context_sql or execute_python."""
+    execute_context_sql or execute_python.
+    Example: inspect_files({})"""
     return ToolExecutionResult(ok=True, content=inspect_context_files(task))
