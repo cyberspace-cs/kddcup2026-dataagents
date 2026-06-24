@@ -10,7 +10,11 @@ from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
 from agents.tools._fields import path_field
-from agents.tools._sqlite_common import connect_read_only, maybe_raise_non_sqlite_path_error
+from agents.tools._sqlite_common import (
+    auto_quote_identifiers,
+    connect_read_only,
+    maybe_raise_non_sqlite_path_error,
+)
 from agents.tools.context import resolve_context_path
 from agents.tools.decorator import function_tool
 from agents.tools.registry import ToolExecutionResult
@@ -22,9 +26,18 @@ def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str
     if not normalized_sql.startswith(("select", "with", "pragma")):
         raise ValueError("Only read-only SQL statements are allowed.")
 
+    auto_quoted = False
     try:
         with connect_read_only(path) as conn:
-            cursor = conn.execute(sql)
+            try:
+                cursor = conn.execute(sql)
+            except sqlite3.OperationalError:
+                quoted_sql = auto_quote_identifiers(sql, conn)
+                if quoted_sql == sql:
+                    raise
+                cursor = conn.execute(quoted_sql)
+                auto_quoted = True
+                sql = quoted_sql
             column_names = [item[0] for item in cursor.description or []]
             rows = cursor.fetchmany(limit + 1)
     except sqlite3.DatabaseError as exc:
@@ -33,12 +46,20 @@ def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str
 
     truncated = len(rows) > limit
     limited_rows = rows[:limit]
-    return {
+    result: dict[str, Any] = {
         "columns": column_names,
         "rows": [list(row) for row in limited_rows],
         "row_count": len(limited_rows),
         "truncated": truncated,
     }
+    if auto_quoted:
+        result["auto_quoted_sql"] = sql
+        result["hint"] = (
+            "Original SQL failed — column/table names containing special "
+            "characters (parentheses, spaces, slashes) must be wrapped in "
+            "double quotes. Auto-fixed query shown in auto_quoted_sql."
+        )
+    return result
 
 
 @function_tool

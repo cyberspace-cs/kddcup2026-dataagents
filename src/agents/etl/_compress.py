@@ -403,12 +403,59 @@ def _generate_compress_guide(
            paragraph (large share count, large pct ~1-50%), NEVER from the
            transaction paragraph (small transfer count, tiny ratio ~0.001-0.01%).
 
-        4. FUZZY NUMBER MARKING: if any values use approximate language
+        4. MULTIPLE NAME FORMS: when the document provides MULTIPLE
+           names or abbreviations for the same entity (e.g. a short trading
+           name "国投金地ETF" AND a longer official name "国投瑞银沪深300金融
+           地产ETF"), instruct the extractor to ALWAYS pick the SHORTEST form
+           for abbreviation fields (secuabbr, chinamabbr, etc.). The short
+           form is typically labeled "证券简称" or "市场简称"; the longer form
+           is "官方简称" or "法定名称". Map each name form to the correct field.
+
+        5. FUZZY NUMBER MARKING: if any values use approximate language
            ("约", "大约", "近", Chinese number words like "六百九十七万"),
            instruct the extractor to convert the numeral mechanically and
            prefix it with ~ (e.g. "约六百九十七万" → ~6970000) — never to
            attempt arithmetic on it; a downstream deterministic pass
            recomputes exact values from sibling fields.
+
+        Your generated guide MUST incorporate these NON-NEGOTIABLE rules
+        verbatim — do NOT rephrase, weaken, or omit any of them:
+
+        A. PERCENTAGES: strip the "%" suffix and output the number as-is.
+           "2.0%" → 2.0, "-1.55%" → -1.55.
+           NEVER divide by 100 to convert to decimal form.
+
+        B. ABBREVIATION FIELDS (secuabbr, chinamabbr, etc.): when the
+           document provides MULTIPLE names for the same entity, ALWAYS
+           use the SHORTEST form. The short form is typically labeled
+           "证券简称" / "交易简称" / "市场简称"; the longer form is labeled
+           "官方简称" / "简称" (without qualifier) / "法定名称".
+           Example: "证券简称为'大成有色金属ETF'" AND "简称为'大成有色金属期货
+           ETF'" → secuabbr = "大成有色金属ETF" (the shorter one).
+
+        C. CORRECTED VALUES: when a value is stated as "initially X,
+           confirmed/corrected to Y", output Y only. Never output X.
+
+        D. FIELD TYPE DISCIPLINE: NEVER put a numeric ID/code into a text
+           name/abbreviation field, or vice versa. Name/abbreviation fields
+           (secuabbr, fund_name, etc.) contain readable text (Chinese,
+           English, or mixed, e.g. "中银国企ETF", "S&P 500 ETF"), NEVER a
+           pure numeric code like "510270". Code/ID fields (secucode,
+           innercode) contain numeric identifiers only.
+           Example: "证券代码为 510270...交易简称为中银国企ETF" →
+           secucode=510270, secuabbr=中银国企ETF.
+
+        E. FUZZY DATES: ALWAYS convert natural-language date descriptions
+           to YYYY-MM-DD format. NEVER leave a date field empty when the
+           text describes it in words.
+           "2021年终" / "2021日历年结束" / "2021年末" → 2021-12-31
+           "2021年第三季度末" / "截至2021年Q3" → 2021-09-30
+           "2021年第二季度收官日" → 2021-06-30
+           "2021年第一季度末" → 2021-03-31
+           "基于2020日历年结束时的数据" → 2020-12-31
+           Only leave a date field empty when the text explicitly says
+           data is missing/unavailable — NOT when it uses a verbal date
+           description instead of YYYY-MM-DD digits.
 
         Output ONLY the system prompt text (under 1200 words), no wrapping
         or commentary.""")
@@ -698,6 +745,21 @@ def compress_chunk(
         - For corrections: output the FINAL corrected value directly — e.g. \
         "label: positive", not "label: positive (placeholder)".
         - Preserve URLs, names, dates, times, categories, classifications.
+        - FIELD TYPE DISCIPLINE: NEVER put a pure numeric code into a \
+        name/abbreviation field. Name fields (secuabbr, fund_name) contain \
+        readable text (Chinese, English, or mixed), NEVER a pure digit \
+        string like "510270". Code fields (secucode, innercode) contain \
+        numeric IDs only.
+        - FUZZY DATES: ALWAYS convert natural-language date descriptions to \
+        YYYY-MM-DD. "2021年终"/"2021日历年结束" → 2021-12-31; "第三季度末" \
+        → MM-30 of that quarter (09-30); "第二季度收官日" → 06-30. NEVER \
+        leave a date field empty when the text describes the date in words.
+        - MULTIPLE NAME FORMS: when the document provides MULTIPLE names/abbreviations \
+        for the same entity (e.g. a short trading abbreviation "国投金地ETF" AND a \
+        longer official name "国投瑞银沪深300金融地产ETF"), ALWAYS prefer the SHORTEST \
+        form for abbreviation/简称 fields. The short form is typically labeled \
+        "证券简称" or "trading name"; the longer form is "官方简称" or "full name". \
+        Do NOT use the longer form for a field defined as "abbreviated name".
         - Strip only narrative filler that contains no structured field, schema field, \
         ID, value, date, unit, label, status, or question-relevant fact.
         - If NOTHING in this input qualifies for extraction under these rules, \
