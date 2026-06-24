@@ -16,9 +16,14 @@ PREVIEW_DOC_HEAD_LINES = 100
 
 
 def _preview_doc(path: Path) -> dict[str, Any]:
-    """Head-only preview for text documents."""
+    """Preview for text documents.  knowledge.md is returned in full."""
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     total = len(lines)
+    if (
+        path.name.lower() == "knowledge.md"
+        and path.stat().st_size <= constants.KNOWLEDGE_MD_PRELOAD_LIMIT
+    ):
+        return {"format": "text", "total_lines": total, "lines": lines}
     head = lines[:PREVIEW_DOC_HEAD_LINES]
     return {
         "format": "text",
@@ -46,7 +51,8 @@ def preview_file(
     (keys + value_preview), scalar (value). Files >100MB streamed.
     SQLite (.db/.sqlite) → {tables: [{name, create_sql}]} showing
     CREATE TABLE statements for all tables.
-    Text (md/txt) → {total_lines, head (first 100 lines), has_more}.
+    Text (md/txt) → {total_lines, head (first 100 lines), has_more};
+    knowledge.md is returned in full (never truncated).
     Use when you need to inspect one file's structure or sample values
     after inspect_files. This is a SAMPLE preview, not full data access
     — for filtering, aggregation, joins, or full-file scans, use
