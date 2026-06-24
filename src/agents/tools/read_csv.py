@@ -100,7 +100,6 @@ def read_csv_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
 
     if not rows:
         return {
-            "path": relative_path,
             "columns": [],
             "dtypes": [],
             "row_count": 0,
@@ -125,7 +124,6 @@ def read_csv_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
         dtypes.append(classify_dtype(column_values))
 
     return {
-        "path": relative_path,
         "columns": header,
         "dtypes": dtypes,
         "row_count": row_count,

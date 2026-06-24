@@ -35,7 +35,6 @@ def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str
     truncated = len(rows) > limit
     limited_rows = rows[:limit]
     return {
-        "path": str(path),
         "columns": column_names,
         "rows": [list(row) for row in limited_rows],
         "row_count": len(limited_rows),
@@ -63,9 +62,9 @@ def execute_context_sql(
 ) -> ToolExecutionResult:
     """Run a read-only SQL query (SELECT/WITH/PRAGMA) on a SQLite database.
     Returns {columns, rows, row_count, truncated}; default limit 200 rows.
-    Call inspect_sqlite_schema first for an unknown database to learn table
-    and column names. For complex multi-table JOINs across heterogeneous
-    files or write operations, use execute_python instead.
+    Call inspect_sqlite_schema first for an unknown database to learn
+    table and column names. For complex multi-table JOINs across
+    heterogeneous files or write operations, use execute_python instead.
     Do NOT call on .csv/.json/.md/.txt paths.
     Example: execute_context_sql({"path": "db/sales.db",
     "sql": "SELECT product, SUM(amount) FROM orders GROUP BY product LIMIT 10"})"""

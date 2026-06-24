@@ -173,7 +173,8 @@ def _synthesize_findings(steps: list[Any]) -> str:
             sections["files"] = files_summary
 
         elif action == "read_csv":
-            key: str = str(content.get("path", "csv"))
+            action_input = cast(dict[str, Any], getattr(step, "action_input", {}))
+            key: str = str(action_input.get("path", "csv"))
             sections.setdefault("csv_previews", {})[key] = {
                 "columns": content.get("columns", []),
                 "dtypes": content.get("dtypes", []),

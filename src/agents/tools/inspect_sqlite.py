@@ -38,7 +38,6 @@ def inspect_sqlite_database(path: Path) -> dict[str, Any]:
             }
         )
     return {
-        "path": str(path),
         "tables": tables,
     }
 
@@ -55,7 +54,7 @@ def inspect_sqlite_schema(
     ],
 ) -> ToolExecutionResult:
     """View CREATE TABLE statements for all tables in a SQLite database.
-    Returns {path, tables: [{name, create_sql}]}. Use this to learn exact
+    Returns {tables: [{name, create_sql}]}. Use this to learn exact
     column names and types before writing SQL with execute_context_sql.
     Does NOT return row counts or sample data — use inspect_files for
     profiles or execute_context_sql for sample queries.

@@ -97,7 +97,6 @@ def read_doc_preview(
 
     if total_lines == 0:
         return {
-            "path": relative_path,
             "total_lines": 0,
             "returned_range": None,
             "has_more": False,
@@ -109,7 +108,6 @@ def read_doc_preview(
         paragraphs = _split_paragraphs(lines)
         matches, match_count, matches_truncated = _collect_keyword_matches(paragraphs, keyword)
         return {
-            "path": relative_path,
             "total_lines": total_lines,
             "returned_range": None,
             "has_more": False,
@@ -137,7 +135,6 @@ def read_doc_preview(
         }
 
     return {
-        "path": relative_path,
         "total_lines": total_lines,
         "returned_range": returned_range,
         "has_more": end_index < total_lines,

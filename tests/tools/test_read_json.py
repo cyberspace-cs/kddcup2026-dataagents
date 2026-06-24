@@ -103,7 +103,7 @@ def test_scalar_json(tmp_path: Path, raw: str, value: Any) -> None:
 
     out = read_json_preview(task, "scalar.json")
 
-    assert out == {"path": "scalar.json", "kind": "scalar", "value": value}
+    assert out == {"kind": "scalar", "value": value}
 
 
 def test_empty_array(tmp_path: Path) -> None:
