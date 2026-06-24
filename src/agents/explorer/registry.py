@@ -127,8 +127,8 @@ def create_explorer_tool_registry(
             "head (first 20 rows), tail (last 5 rows)}. Use when you need to "
             "inspect sample values or dtypes for one CSV after inspect_files. "
             "Sample only — rows between head and tail are not returned. Do NOT "
-            "use for aggregation or filtering — use execute_context_sql or note "
-            "in report that the main agent should use execute_python. "
+            "use for aggregation or filtering — use execute_context_sql for SQL "
+            "tables, or note in report that full-file processing is needed. "
             'Example: read_csv({"path": "csv/member.csv"})',
         ),
         read_doc.with_description(
@@ -138,7 +138,7 @@ def create_explorer_tool_registry(
             "(capped at 20 matches / 8KB). ALWAYS prefer keyword mode when "
             "searching for an ID/name/term — one call replaces a sequential "
             "scan. Do NOT use for full-document structured parsing — note in "
-            "report that the main agent should use execute_python. "
+            "report that full-document processing is needed. "
             'Example: read_doc({"path": "knowledge.md", "keyword": "利率"})',
         ),
         read_json.with_description(
