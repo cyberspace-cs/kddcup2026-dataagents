@@ -106,11 +106,28 @@ def _run_python_code(
 ) -> None:
     """Child-process entry point for executing model-authored Python code."""
     os.environ["DABENCH_ANSWER_DIR"] = answer_dir
+    import csv
+    import json
+    import math
+    import re
+    import sqlite3
+
+    import numpy as np
+    import pandas as pd
+
     namespace: dict[str, Any] = {
         "__builtins__": __builtins__,
         "__name__": "__main__",
         "context_root": context_root,
         "Path": Path,
+        "os": os,
+        "json": json,
+        "re": re,
+        "csv": csv,
+        "math": math,
+        "sqlite3": sqlite3,
+        "pd": pd,
+        "np": np,
     }
     resolved_stdout_path = Path(stdout_path)
     resolved_stderr_path = Path(stderr_path)
@@ -195,17 +212,30 @@ def _answer_dir_for(task: PublicTask) -> Path:
 
 @function_tool(
     description=(
-        "Use when you need computation, aggregation, cross-file joins, or "
-        "large-file scans beyond the preview tools. Working directory: the "
-        "task context dir; stdout returns as `output`. "
-        f"Timeout: {EXECUTE_PYTHON_TIMEOUT_SECONDS} s per call. "
-        "Default to `pandas` for tabular work — projections, filters, and "
+        "Execute arbitrary Python in a subprocess. Returns {success, output "
+        "(stdout), stderr, error, traceback}. Use when you need computation, "
+        "aggregation, cross-file joins, or full-file scans beyond what the "
+        "preview tools (preview_file, execute_context_sql) provide. Do NOT "
+        "use for simple lookups that a single SQL query or preview tool can "
+        "answer — those are faster and cheaper. Working directory: the task "
+        f"context dir. Timeout: {EXECUTE_PYTHON_TIMEOUT_SECONDS} s per call. "
+        "Default to pandas for tabular work — projections, filters, and "
         "joins are idiomatic and types are preserved automatically. "
         "Available libs: pandas, numpy, pyarrow, polars, openpyxl, sqlalchemy. "
-        "The `csv` module is fine only for trivial reads (a handful of rows). "
-        "For `.db` / `.sqlite` files, either use the pandas URI form "
-        '(`pd.read_sql_query(query, "sqlite:///path")`) or '
-        "`sqlite3.connect(path)` + `pd.read_sql_query(query, conn)`."
+        "The csv module is fine only for trivial reads (a handful of rows). "
+        "ALWAYS use os.environ['DABENCH_ANSWER_DIR'] for answer CSV paths "
+        "— never hardcode paths. "
+        'CSV example: execute_python({"code": "import pandas as pd\\n'
+        "df = pd.read_csv('csv/sales.csv')\\n"
+        "print(df.groupby('region')['amount'].sum())\"}) "
+        'SQLite example: execute_python({"code": "import pandas as pd\\n'
+        "df = pd.read_sql_query('SELECT * FROM t LIMIT 5', "
+        "'sqlite:///db/sub_db.sqlite')\\nprint(df)\"}) "
+        'Answer CSV artifact example: execute_python({"code": "import os, pandas as pd\\n'
+        "answer_df = pd.DataFrame({'name': ['Alice'], 'total': [100]})\\n"
+        "out_path = os.path.join(os.environ['DABENCH_ANSWER_DIR'], 'answer.csv')\\n"
+        "answer_df.to_csv(out_path, index=False)\\n"
+        'print(out_path)"})'
     ),
 )
 def execute_python(

@@ -25,10 +25,7 @@ from agents.tools.registry import (
 
 _EXPECTED_ORDER = [
     "inspect_files",
-    "read_csv",
-    "read_doc",
-    "read_json",
-    "inspect_sqlite_schema",
+    "preview_file",
     "execute_context_sql",
     "grep_context",
     "execute_python",

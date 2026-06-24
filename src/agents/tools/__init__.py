@@ -19,10 +19,7 @@ from agents.tools.execute_python import execute_python
 from agents.tools.execute_sql import execute_context_sql
 from agents.tools.grep_context import grep_context
 from agents.tools.inspect_files import inspect_files
-from agents.tools.inspect_sqlite import inspect_sqlite_schema
-from agents.tools.read_csv import read_csv
-from agents.tools.read_doc import read_doc
-from agents.tools.read_json import read_json
+from agents.tools.preview import preview_file
 from agents.tools.registry import (
     FunctionTool,
     ToolExecutionResult,
@@ -45,12 +42,9 @@ __all__ = [
     "function_tool",
     "grep_context",
     "inspect_files",
-    "inspect_sqlite_schema",
     "list_context_tree",
     "parse_answer_csv",
     "path_field",
     "positive_int_field",
-    "read_csv",
-    "read_doc",
-    "read_json",
+    "preview_file",
 ]

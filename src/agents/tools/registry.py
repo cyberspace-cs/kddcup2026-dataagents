@@ -138,32 +138,23 @@ def create_default_tool_registry(
 
     Registration order (fixed by convention):
     1. explore / inspect_files  — first-step exploration
-    2. read_csv                 — CSV preview
-    3. read_doc                 — text document preview
-    4. read_json                — JSON preview
-    5. inspect_sqlite_schema    — SQLite table structure
-    6. execute_context_sql      — read-only SQL
-    7. grep_context             — regex search across files
-    8. execute_python           — subprocess Python execution
-    9. answer                   — terminal: submit answer (only terminal tool)
+    2. preview_file             — single-file preview (CSV/JSON/SQLite/doc)
+    3. execute_context_sql      — read-only SQL
+    4. grep_context             — regex search across files
+    5. execute_python           — subprocess Python execution
+    6. answer                   — terminal: submit answer (only terminal tool)
     """
     from agents.tools.answer import answer
     from agents.tools.execute_python import execute_python
     from agents.tools.execute_sql import execute_context_sql
     from agents.tools.grep_context import grep_context
     from agents.tools.inspect_files import inspect_files
-    from agents.tools.inspect_sqlite import inspect_sqlite_schema
-    from agents.tools.read_csv import read_csv
-    from agents.tools.read_doc import read_doc
-    from agents.tools.read_json import read_json
+    from agents.tools.preview import preview_file
 
     first_tool = explore_tool or inspect_files
     definitions: list[FunctionTool] = [
         first_tool,
-        read_csv,
-        read_doc,
-        read_json,
-        inspect_sqlite_schema,
+        preview_file,
         execute_context_sql,
         grep_context,
         execute_python,

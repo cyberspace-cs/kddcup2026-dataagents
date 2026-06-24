@@ -37,7 +37,6 @@ def test_read_doc_returns_requested_line_page(task: PublicTask) -> None:
     result = read_doc_preview(task, "knowledge.md", start_line=21, line_count=10)
 
     assert result == {
-        "path": "knowledge.md",
         "total_lines": 100,
         "returned_range": {"start_line": 21, "end_line": 30},
         "has_more": True,
@@ -225,7 +224,6 @@ def test_read_doc_empty_file_returns_stable_empty_result(task: PublicTask) -> No
     result = read_doc_preview(task, "empty.md")
 
     assert result == {
-        "path": "empty.md",
         "total_lines": 0,
         "returned_range": None,
         "has_more": False,

@@ -9,10 +9,9 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
-from agents.tools._fields import positive_int_field
+from agents.tools._fields import path_field
 from agents.tools._sqlite_common import connect_read_only, maybe_raise_non_sqlite_path_error
 from agents.tools.context import resolve_context_path
-from agents.tools.contracts import PATH_CONVENTION_NOTE
 from agents.tools.decorator import function_tool
 from agents.tools.registry import ToolExecutionResult
 
@@ -35,7 +34,6 @@ def execute_read_only_sql(path: Path, sql: str, *, limit: int = 200) -> dict[str
     truncated = len(rows) > limit
     limited_rows = rows[:limit]
     return {
-        "path": str(path),
         "columns": column_names,
         "rows": [list(row) for row in limited_rows],
         "row_count": len(limited_rows),
@@ -48,23 +46,30 @@ def execute_context_sql(
     task: PublicTask,
     path: Annotated[
         str,
+        path_field(file_kind="sqlite/db file", examples=("db/sub_db.sqlite", "db/main.db")),
+    ],
+    sql: Annotated[
+        str,
         Field(
             description=(
-                "Relative path to the sqlite/db file. "
-                "Examples: 'db/clinical.sqlite', 'main.db'. " + PATH_CONVENTION_NOTE
+                "SELECT, WITH, or PRAGMA statement. DML/DDL is rejected. "
+                'E.g. "SELECT product, SUM(amount) FROM orders GROUP BY product LIMIT 10".'
             ),
         ),
     ],
-    sql: Annotated[str, Field(description="Read-only SQL query to execute.")],
     limit: Annotated[
         int,
-        positive_int_field(description="Maximum number of rows to return."),
+        Field(ge=1, le=10000, description="Maximum rows to return (default 200)."),
     ] = 200,
 ) -> ToolExecutionResult:
-    """Use when data in a sqlite/db file (`.db` / `.sqlite` / `.sqlite3`)
-    can be answered with read-only SQL queries or aggregations. Call
-    inspect_sqlite_schema first for an unknown database.
-    do NOT call on `.csv` / `.json` / `.md` / `.txt` paths."""
+    """Run a read-only SQL query (SELECT/WITH/PRAGMA) on a SQLite database.
+    Returns {columns, rows, row_count, truncated}; default limit 200 rows.
+    Call preview_file first for an unknown database to learn table and
+    column names (returns CREATE TABLE statements). For complex multi-table JOINs across
+    heterogeneous files or write operations, use execute_python instead.
+    Do NOT call on .csv/.json/.md/.txt paths.
+    Example: execute_context_sql({"path": "db/sales.db",
+    "sql": "SELECT product, SUM(amount) FROM orders GROUP BY product LIMIT 10"})"""
     resolved = resolve_context_path(task, path)
     content = execute_read_only_sql(resolved, sql, limit=limit)
     if content.get("row_count", -1) == 0:

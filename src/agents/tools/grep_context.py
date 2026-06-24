@@ -191,8 +191,9 @@ def grep_context(
         Field(
             min_length=1,
             description=(
-                "Regex pattern to search for across all context files. "
-                "Case-insensitive. Supports full Python regex syntax."
+                "Regex pattern (case-insensitive). "
+                "E.g. '\\d{4}-\\d{2}-\\d{2}' for dates, "
+                "'(?:Alice|Bob)' for names, '价格|金额' for keywords."
             ),
         ),
     ],
@@ -206,11 +207,18 @@ def grep_context(
         ),
     ] = None,
 ) -> ToolExecutionResult:
-    """Use this when you need to search for a regex pattern across ALL context
-    files at once: CSV column values, JSON fields, Markdown/text content,
-    and SQLite text columns. Returns matching lines/rows with file path
-    and location. Checks whether a specific value exists in the data
-    (e.g., does province column contain '全国'?) without needing to
-    read each file individually."""
+    """Search for a regex pattern across ALL context files at once: CSV
+    column values, JSON fields, Markdown/text content, and SQLite text
+    columns. Use when you need to check whether a specific value, ID, or
+    format exists anywhere in the data without reading each file
+    individually. Do NOT use for aggregation or counting — use
+    execute_context_sql or execute_python for that. Returns up to 30
+    matching lines/rows with file path and location. For SQLite hits,
+    reports {table, column, total_matches, samples} instead of raw lines.
+    The pattern parameter is a Python regex (case-insensitive); the
+    optional path parameter filters to files whose path contains that
+    substring.
+    Example: grep_context({"pattern": "全国"})
+    With path filter: grep_context({"pattern": "\\d{4}-\\d{2}", "path": "csv/"})"""
     content = run_grep_context(task, pattern=pattern, path_filter=path)
     return ToolExecutionResult(ok=True, content=content)

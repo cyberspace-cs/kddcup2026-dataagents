@@ -70,7 +70,7 @@ def test_system_prompt_distinguishes_video_rules_from_displayed_samples() -> Non
     assert "findings.extracted_data.displayed_samples" in prompt
     assert "never copy" in lower
     assert "screen previews/examples only" in lower
-    assert "inspect_sqlite_schema" in prompt
+    assert "preview_file" in prompt
     assert "df.columns" in prompt
 
 
@@ -82,8 +82,8 @@ def test_system_prompt_distinguishes_video_rules_from_displayed_samples() -> Non
     [
         pytest.param("no such column: foo", None, None, id="ok-none-no-hint"),
         pytest.param("no such column: foo", True, None, id="ok-true-no-hint"),
-        pytest.param("no such column: amount", False, "inspect_sqlite_schema", id="no-such-column"),
-        pytest.param("no such table: orders", False, "inspect_sqlite_schema", id="no-such-table"),
+        pytest.param("no such column: amount", False, "preview_file", id="no-such-column"),
+        pytest.param("no such table: orders", False, "preview_file", id="no-such-table"),
         pytest.param('near "SELEC": syntax error', False, "Fix the syntax", id="syntax-error"),
         pytest.param("execution timed out after 30s", False, "Simplify", id="timeout"),
         pytest.param(

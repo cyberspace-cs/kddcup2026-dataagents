@@ -11,10 +11,7 @@ from agents.benchmark.schema import PublicTask
 from agents.tools.execute_sql import execute_context_sql
 from agents.tools.grep_context import grep_context
 from agents.tools.inspect_files import inspect_files
-from agents.tools.inspect_sqlite import inspect_sqlite_schema
-from agents.tools.read_csv import read_csv
-from agents.tools.read_doc import read_doc
-from agents.tools.read_json import read_json
+from agents.tools.preview import preview_file
 from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
 
@@ -114,33 +111,43 @@ def create_explorer_tool_registry(
     """
     definitions: list[FunctionTool] = [
         inspect_files.with_description(
-            "One-shot summary of every file under context "
-            "(columns, dtypes, row counts, table schemas, column_conversions).",
+            "Use FIRST to bootstrap discovery. Returns a one-shot summary of "
+            "every file under context: {path, size, format, schema} where schema "
+            "contains columns, dtypes, row_count, profile (min/max/null_rate/ "
+            "distinct values) for CSV/SQLite, keys/length for JSON, line_count/ "
+            "head for docs. Includes column_conversions when unit metadata is "
+            "available. Does NOT read full data — use preview_file or "
+            "execute_context_sql for deeper inspection.",
         ),
-        read_csv.with_description(
-            "Preview a CSV file: columns, dtypes, row_count, "
-            "head (20 rows), tail (5 rows). Sample only.",
-        ),
-        read_doc.with_description(
-            "Preview a text document (md/txt). Without keyword: paging. "
-            "With keyword: returns ALL matching paragraphs across the file.",
-        ),
-        read_json.with_description(
-            "Preview a JSON file: kind (array/object/scalar), length/keys, "
-            "sample values. Sample only.",
-        ),
-        inspect_sqlite_schema.with_description(
-            "View SQLite database table structures (columns, row counts). "
-            "Do NOT call on .csv/.json/.md/.txt paths.",
+        preview_file.with_description(
+            "Preview a single context file. Auto-detects format by extension. "
+            "CSV → {columns, dtypes, row_count, head (20 rows), tail (5 rows)}. "
+            "JSON → {kind, keys/length, head/value_preview}. "
+            "SQLite → {tables: [{name, create_sql}]}. "
+            "Text → {total_lines, head (first 100 lines), has_more}. "
+            "Sample only, not full data access. Do NOT use for aggregation — "
+            "use execute_context_sql for SQL or note in report that full-file "
+            "processing is needed. "
+            'Example: preview_file({"path": "csv/member.csv"})',
         ),
         execute_context_sql.with_description(
-            "Run read-only SQL on a SQLite database. Use for SELECT DISTINCT, "
-            "MIN/MAX, sample queries. Do NOT call on .csv/.json/.md/.txt paths.",
+            "Run a read-only SQL query (SELECT/WITH/PRAGMA) on a SQLite database. "
+            "Returns {columns, rows, row_count, truncated}; default limit 200. "
+            "Use for SELECT DISTINCT, MIN/MAX, sample queries, and aggregations "
+            "to discover value distributions or verify join keys. Do NOT call on "
+            ".csv/.json/.md/.txt paths. "
+            'Example: execute_context_sql({"path": "db/sales.db", '
+            '"sql": "SELECT DISTINCT category FROM products"})',
         ),
         grep_context.with_description(
-            "Search for a regex pattern across ALL context files at once: "
-            "CSV values, JSON fields, Markdown text, and SQLite text columns. "
-            "Use this to check whether a value exists in any file.",
+            "Search for a regex pattern across ALL context files at once: CSV "
+            "values, JSON fields, Markdown text, and SQLite text columns. Use "
+            "to check whether a specific value exists in any file without "
+            "reading each one. Do NOT use for counting or aggregation — use "
+            "execute_context_sql for that. Returns up to 30 matches with file "
+            "path and location; for SQLite reports {table, column, "
+            "total_matches, samples}. "
+            'Example: grep_context({"pattern": "全国"})',
         ),
     ]
     if video_tool is not None:
@@ -151,8 +158,12 @@ def create_explorer_tool_registry(
             description=(
                 "Submit your exploration findings. This is the ONLY way to complete "
                 "the exploration — call it when you have mapped the data landscape. "
-                "Pass each field (files, schema_map, knowledge, join_paths, "
-                "value_samples, warnings) as a separate parameter."
+                "Pass each field as a separate parameter: files (flat list of file "
+                "entries), schema_map (per-table/file columns with dtypes and "
+                "semantics), knowledge (extracted mappings/formulas/units from docs), "
+                "join_paths (discovered relationships), value_samples (sampled "
+                "distinct values for filter-relevant columns), warnings (data-quality "
+                "observations)."
             ),
             json_schema=REPORT_SCHEMA,
             handler=handle_report,

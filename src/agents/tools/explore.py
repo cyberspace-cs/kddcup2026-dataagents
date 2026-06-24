@@ -155,11 +155,14 @@ def create_explore_tool_definition(
     return _FunctionTool(
         name="explore",
         description=(
-            "Use first to bootstrap context exploration: launches a sub-agent that "
-            "inspects every file under context (columns, dtypes, row counts, table "
-            "schemas, unit_hint), reads knowledge.md, samples key values, and "
-            "identifies join paths — all in one call. Returns a complete data map "
-            "so you can skip manual multi-step discovery."
+            "Use FIRST to bootstrap context exploration. Launches a read-only "
+            "sub-agent that inspects every file under context (columns, dtypes, "
+            "row counts, table schemas, column_conversions), reads knowledge.md, "
+            "samples key values, identifies join paths, and analyzes videos if "
+            "present — all in one call. Returns {files, schema_map, knowledge, "
+            "join_paths, value_samples, warnings, unit_conversion}. No parameters "
+            "needed. This replaces manual multi-step discovery. "
+            "Example: explore({})"
         ),
         json_schema=EXPLORE_SCHEMA,
         handler=handler,
