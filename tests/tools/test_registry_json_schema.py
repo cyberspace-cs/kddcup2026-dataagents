@@ -93,6 +93,17 @@ def test_to_openai_tools_is_byte_stable_across_calls(registry) -> None:
     assert first == second
 
 
+def test_execute_python_write_answer_example_is_self_contained(registry) -> None:
+    """写答案示例必须复制即能跑，不能引用未定义的 df。"""
+    description = registry.definitions["execute_python"].description
+
+    assert "Answer CSV artifact example:" in description
+    assert "answer_df = pd.DataFrame" in description
+    assert "answer_df.to_csv(out_path, index=False)" in description
+    assert "print(out_path)" in description
+    assert "df.to_csv(f'{out}/answer.csv', index=False)" not in description
+
+
 def _noop_handler(_task, _action_input):
     return ToolExecutionResult(ok=True, content={})
 

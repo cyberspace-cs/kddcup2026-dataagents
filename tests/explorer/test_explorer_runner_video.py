@@ -144,7 +144,7 @@ def test_synthesize_findings_keeps_json_and_text_preview_file_observations() -> 
             ),
             SimpleNamespace(
                 action="preview_file",
-                action_input={"path": "knowledge.md"},
+                action_input={"path": "notes.md"},
                 ok=True,
                 observation={
                     "content": {
@@ -152,6 +152,18 @@ def test_synthesize_findings_keeps_json_and_text_preview_file_observations() -> 
                         "total_lines": 12,
                         "head": ["# Knowledge", "A = Alpha"],
                         "has_more": False,
+                    }
+                },
+            ),
+            SimpleNamespace(
+                action="preview_file",
+                action_input={"path": "knowledge.md"},
+                ok=True,
+                observation={
+                    "content": {
+                        "format": "text",
+                        "total_lines": 3,
+                        "lines": ["# Knowledge", "A = Alpha", "B = Beta"],
                     }
                 },
             ),
@@ -166,8 +178,12 @@ def test_synthesize_findings_keeps_json_and_text_preview_file_observations() -> 
         "value_preview": {"patients": {"kind": "array", "length": 3}},
         "truncated": False,
     }
-    assert findings["text_previews"]["knowledge.md"] == {
+    assert findings["text_previews"]["notes.md"] == {
         "total_lines": 12,
         "head": ["# Knowledge", "A = Alpha"],
         "has_more": False,
+    }
+    assert findings["text_previews"]["knowledge.md"] == {
+        "total_lines": 3,
+        "lines": ["# Knowledge", "A = Alpha", "B = Beta"],
     }

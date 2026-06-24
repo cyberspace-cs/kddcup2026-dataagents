@@ -205,14 +205,13 @@ def _synthesize_findings(steps: list[Any]) -> str:
                 sections.setdefault("json_previews", {})[key] = {
                     k: content[k] for k in json_preview_keys if k in content
                 }
-            elif content.get("format") == "text" or (
-                "total_lines" in content and "head" in content
-            ):
-                sections.setdefault("text_previews", {})[key] = {
-                    "total_lines": content.get("total_lines"),
-                    "head": content.get("head", []),
-                    "has_more": content.get("has_more"),
+            elif content.get("format") == "text" or "total_lines" in content:
+                text_preview = {
+                    k: content[k]
+                    for k in ("total_lines", "head", "lines", "has_more")
+                    if k in content
                 }
+                sections.setdefault("text_previews", {})[key] = text_preview
 
         elif action == "grep_context":
             sections.setdefault("grep_results", []).append(

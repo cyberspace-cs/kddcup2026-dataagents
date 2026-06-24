@@ -231,9 +231,11 @@ def _answer_dir_for(task: PublicTask) -> Path:
         'SQLite example: execute_python({"code": "import pandas as pd\\n'
         "df = pd.read_sql_query('SELECT * FROM t LIMIT 5', "
         "'sqlite:///db/sub_db.sqlite')\\nprint(df)\"}) "
-        'Write answer: execute_python({"code": "import os, pandas as pd\\n'
-        "out = os.environ['DABENCH_ANSWER_DIR']\\n"
-        "df.to_csv(f'{out}/answer.csv', index=False)\"})"
+        'Answer CSV artifact example: execute_python({"code": "import os, pandas as pd\\n'
+        "answer_df = pd.DataFrame({'name': ['Alice'], 'total': [100]})\\n"
+        "out_path = os.path.join(os.environ['DABENCH_ANSWER_DIR'], 'answer.csv')\\n"
+        "answer_df.to_csv(out_path, index=False)\\n"
+        'print(out_path)"})'
     ),
 )
 def execute_python(
