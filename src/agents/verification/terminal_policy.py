@@ -15,10 +15,6 @@ from agents.tools import (
 )
 from agents.verification.answer import AnswerVerifier
 from agents.verification.video_constraints import evaluate_video_constraints
-from agents.verification.video_filter_audit import AuditFinding, audit_answer_table
-from agents.verification.video_findings import (
-    extract_video_rules_and_samples as _extract_video_rules_and_samples,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -109,15 +105,6 @@ def recent_execute_code(state: AgentRuntimeState | None) -> str | None:
     return "\n\n".join(reversed(snippets))
 
 
-def _format_audit_findings(title: str, findings: list[AuditFinding]) -> str:
-    lines = [title]
-    for f in findings:
-        lines.append(f"- [{f.code}] {f.message}")
-        if f.evidence:
-            lines.append(f"  evidence: {f.evidence}")
-    return "\n".join(lines)
-
-
 @dataclass(frozen=True, slots=True)
 class TerminalAnswerRejection:
     content: dict[str, str]
@@ -131,9 +118,6 @@ class TerminalAnswerPolicy:
     rejections_used: int = 0
     fallback_answer: AnswerTable | None = None
     fallback_answer_arguments: dict[str, Any] | None = field(default=None)
-    # When True, run audit_answer_table between evaluate_video_constraints and
-    # the LLM verifier. Default False keeps existing call sites unchanged.
-    filter_audit_enabled: bool = False
 
     def maybe_reject(
         self,
@@ -176,40 +160,6 @@ class TerminalAnswerPolicy:
                 self.fallback_answer = candidate
                 self.fallback_answer_arguments = dict(arguments)
             return TerminalAnswerRejection(content={"answer_rejected": deterministic_rejection})
-
-        if self.filter_audit_enabled and candidate is not None:
-            rules, samples = _extract_video_rules_and_samples(state)
-            findings = audit_answer_table(candidate, rules, samples)
-            rejects = [f for f in findings if f.severity == "reject"]
-            warnings = [f for f in findings if f.severity == "warn"]
-            if rejects:
-                self.rejections_used += 1
-                if candidate.columns and candidate.rows:
-                    self.fallback_answer = candidate
-                    self.fallback_answer_arguments = dict(arguments)
-                return TerminalAnswerRejection(
-                    content={
-                        "answer_rejected": _format_audit_findings(
-                            "Answer rejected by video_filter_audit:",
-                            rejects,
-                        )
-                    }
-                )
-            if warnings:
-                self.rejections_used += 1
-                if candidate.columns and candidate.rows:
-                    self.fallback_answer = candidate
-                    self.fallback_answer_arguments = dict(arguments)
-                return TerminalAnswerRejection(
-                    content={
-                        "answer_rejected": _format_audit_findings(
-                            "Answer flagged by video_filter_audit warnings. "
-                            "Re-check these issues; if the answer is intentional, "
-                            "resubmit the same answer unchanged.",
-                            warnings,
-                        )
-                    }
-                )
 
         if self.verifier is None:
             return None

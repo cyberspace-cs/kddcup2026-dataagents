@@ -303,10 +303,6 @@ class AgentConfig:
     # Video sub-agent can need a larger reasoning+tool-call budget than the main ReAct loop.
     # None = inherit max_tokens; 0 = do not send max_tokens for video requests.
     video_max_tokens: StrictInt | None = None
-    # When "enabled", terminal_policy.maybe_reject runs video_filter_audit on the
-    # candidate AnswerTable between evaluate_video_constraints and the LLM verifier.
-    # Shares the AnswerVerifier.max_rejections budget — no new retry quota added.
-    video_filter_audit: Literal["enabled", "disabled"] = "enabled"
 
     @field_validator("model", "api_base", "api_key", mode="before")
     @classmethod

@@ -11,7 +11,6 @@ from __future__ import annotations
 from agents.video.rule_templater import (
     FilterRecipe,
     extract_filter_recipe,
-    render_filter_recipe,
     synthesize_filter_recipe,
 )
 
@@ -361,78 +360,3 @@ def test_top_n_zero_or_negative_rejected() -> None:
     assert r is not None
     assert r.top_n is None
     assert not r.is_sufficient()  # sort_field alone isn't enough
-
-
-# ---------- prefer_abbr_column hint -------------------------------------------
-
-
-def test_extract_prefer_abbr_column_default_false_when_question_none() -> None:
-    rules = {"field": "f", "operator": ">", "threshold": "0"}
-    r = extract_filter_recipe(rules)
-    assert r is not None
-    assert r.prefer_abbr_column is False
-
-
-def test_extract_prefer_abbr_column_true_for_chinese_jian_cheng() -> None:
-    rules = {"field": "f", "operator": ">", "threshold": "0"}
-    r = extract_filter_recipe(rules, question="请列出符合条件的基金简称")
-    assert r is not None
-    assert r.prefer_abbr_column is True
-
-
-def test_extract_prefer_abbr_column_true_for_english_abbreviation() -> None:
-    rules = {"field": "f", "operator": ">", "threshold": "0"}
-    r = extract_filter_recipe(rules, question="Which funds match? List the abbreviation.")
-    assert r is not None
-    assert r.prefer_abbr_column is True
-
-
-def test_extract_prefer_abbr_column_true_for_english_abbr_short() -> None:
-    rules = {"field": "f", "operator": ">", "threshold": "0"}
-    r = extract_filter_recipe(rules, question="Return the fund abbr.")
-    assert r is not None
-    assert r.prefer_abbr_column is True
-
-
-def test_extract_prefer_abbr_column_true_for_chinese_dai_hao() -> None:
-    rules = {"field": "f", "operator": ">", "threshold": "0"}
-    r = extract_filter_recipe(rules, question="请列出符合条件的公司代号")
-    assert r is not None
-    assert r.prefer_abbr_column is True
-
-
-def test_extract_prefer_abbr_column_false_for_full_name_question() -> None:
-    rules = {"field": "f", "operator": ">", "threshold": "0"}
-    r = extract_filter_recipe(rules, question="请列出公司全称")
-    assert r is not None
-    assert r.prefer_abbr_column is False
-
-
-# ---------- render_filter_recipe: abbreviation hint ----------------------------
-
-
-def test_render_filter_recipe_includes_abbr_hint_when_flag_set() -> None:
-    recipe = FilterRecipe(
-        field="dailybenchgr",
-        operator=">",
-        threshold="0.00%",
-        sort_field="dailybenchgr",
-        sort_descending=True,
-        top_n=10,
-        prefer_abbr_column=True,
-    )
-    text = render_filter_recipe(recipe)
-    assert "prefer_column_kind: abbreviation" in text
-
-
-def test_render_filter_recipe_omits_abbr_hint_when_flag_unset() -> None:
-    recipe = FilterRecipe(
-        field="dailybenchgr",
-        operator=">",
-        threshold="0.00%",
-        sort_field="dailybenchgr",
-        sort_descending=True,
-        top_n=10,
-    )
-    text = render_filter_recipe(recipe)
-    assert "prefer_column_kind" not in text

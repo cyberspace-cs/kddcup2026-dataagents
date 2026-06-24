@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from agents.runtime.state import AgentRuntimeState
-from agents.verification.video_findings import latest_video_findings
 
 _EXECUTE_ACTIONS: tuple[str, ...] = ("execute_python", "execute_context_sql")
 
@@ -101,9 +100,54 @@ def _as_dict(value: Any) -> dict[str, Any] | None:
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
 
 
+def _latest_video_findings(state: AgentRuntimeState | None) -> dict[str, Any] | None:
+    """Walk steps in reverse, return the most recent video findings dict.
+
+    Picks up both direct ``explore_video`` calls and the ``video_findings`` list
+    nested inside the main ``explore`` tool's output.
+    """
+    if state is None:
+        return None
+    for step in reversed(state.steps):
+        action = getattr(step, "action", None)
+        obs = _as_dict(getattr(step, "observation", None))
+        if obs is None:
+            continue
+        content = _as_dict(obs.get("content"))
+        if content is None:
+            continue
+        if action == "explore_video":
+            findings = _as_dict(content.get("findings"))
+            if findings is not None:
+                return findings
+        elif action == "explore":
+            # `explore` 工具把每次 explore_video 的完整 ToolExecutionResult.content
+            # (i.e. {video_status, path, findings, video_steps_used})作为元素塞进
+            # video_findings 列表 —— 必须再剥一层 .findings 才能拿到 extracted_data。
+            vf_raw = content.get("video_findings")
+            if isinstance(vf_raw, list) and vf_raw:
+                latest = _as_dict(cast(list[Any], vf_raw)[-1])
+                if latest is not None:
+                    inner = _as_dict(latest.get("findings"))
+                    if inner is not None:
+                        return inner
+                    # 兜底:若直接把 findings dict 塞进了 list(老格式 / 测试用)
+                    if "extracted_data" in latest:
+                        return latest
+            else:
+                vf_dict = _as_dict(vf_raw)
+                if vf_dict is not None:
+                    inner = _as_dict(vf_dict.get("findings"))
+                    if inner is not None:
+                        return inner
+                    if "extracted_data" in vf_dict:
+                        return vf_dict
+    return None
+
+
 def extract_video_constraints(state: AgentRuntimeState | None) -> VideoConstraints | None:
     """Return batch / snapshot constraints from the latest video findings, or None."""
-    findings = latest_video_findings(state)
+    findings = _latest_video_findings(state)
     if findings is None:
         return None
     extracted = _as_dict(findings.get("extracted_data"))

@@ -112,7 +112,6 @@ class ReActAgent:
         system_prompt: str | None = None,
         step_callback: StepCallback | None = None,
         answer_verifier: AnswerVerifier | None = None,
-        filter_audit_enabled: bool = False,
     ) -> None:
         self.model = model
         self.tools = tools
@@ -120,7 +119,6 @@ class ReActAgent:
         self.system_prompt = system_prompt
         self.step_callback = step_callback
         self.answer_verifier = answer_verifier
-        self.filter_audit_enabled = filter_audit_enabled
 
     # ----------------------------- tracing 辅助 -----------------------------
 
@@ -197,10 +195,7 @@ class ReActAgent:
         terminated = False
         budget_warning_fired = False
         last_step_retries = 0
-        terminal_policy = TerminalAnswerPolicy(
-            verifier=self.answer_verifier,
-            filter_audit_enabled=self.filter_audit_enabled,
-        )
+        terminal_policy = TerminalAnswerPolicy(self.answer_verifier)
 
         _turn_span = None
         while effective_turns < self.config.max_steps:
