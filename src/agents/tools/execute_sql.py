@@ -62,8 +62,8 @@ def execute_context_sql(
 ) -> ToolExecutionResult:
     """Run a read-only SQL query (SELECT/WITH/PRAGMA) on a SQLite database.
     Returns {columns, rows, row_count, truncated}; default limit 200 rows.
-    Call inspect_sqlite_schema first for an unknown database to learn
-    table and column names. For complex multi-table JOINs across
+    Call preview_file first for an unknown database to learn table and
+    column names (returns CREATE TABLE statements). For complex multi-table JOINs across
     heterogeneous files or write operations, use execute_python instead.
     Do NOT call on .csv/.json/.md/.txt paths.
     Example: execute_context_sql({"path": "db/sales.db",

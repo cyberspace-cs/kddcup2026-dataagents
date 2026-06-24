@@ -78,7 +78,7 @@ def test_dispatch_unknown_tool_raises_key_error(task: PublicTask) -> None:
 def test_dispatch_path_escape_raises_value_error(task: PublicTask) -> None:
     """sandboxing：`resolve_context_path` 阻止 `../` 越界访问。"""
     registry = create_default_tool_registry()
-    call = _call("inspect_sqlite_schema", path="../../etc/passwd")
+    call = _call("preview_file", path="../../etc/passwd")
 
     with pytest.raises(ValueError, match="escapes context dir"):
         dispatch_tool_call(task, call, registry)
@@ -87,7 +87,7 @@ def test_dispatch_path_escape_raises_value_error(task: PublicTask) -> None:
 def test_dispatch_missing_file_raises_file_not_found(task: PublicTask) -> None:
     """合法路径但文件不存在 → FileNotFoundError 上抛。"""
     registry = create_default_tool_registry()
-    call = _call("read_csv", path="missing.csv")
+    call = _call("preview_file", path="missing.csv")
 
     with pytest.raises(FileNotFoundError, match="Missing context asset"):
         dispatch_tool_call(task, call, registry)
@@ -109,47 +109,34 @@ def test_dispatch_python_code_failure_returns_ok_false(task: PublicTask) -> None
 
 def test_dispatch_missing_required_field_reports_field_name(task: PublicTask) -> None:
     registry = create_default_tool_registry()
-    call = _call("read_csv")  # `path` 缺失
+    call = _call("preview_file")  # `path` 缺失
 
-    with pytest.raises(ValueError, match=r"^read_csv: field 'path' is required"):
+    with pytest.raises(ValueError, match=r"^preview_file: field 'path' is required"):
         dispatch_tool_call(task, call, registry)
 
 
 def test_dispatch_wrong_type_for_required_field_reports_field(task: PublicTask) -> None:
     registry = create_default_tool_registry()
-    call = _call("read_csv", path=42)  # path 是 int 而非 str
+    call = _call("preview_file", path=42)  # path 是 int 而非 str
 
-    with pytest.raises(ValueError, match=r"^read_csv: field 'path' must be a string, got int"):
-        dispatch_tool_call(task, call, registry)
-
-
-def test_dispatch_bound_violation_reports_minimum(task: PublicTask) -> None:
-    registry = create_default_tool_registry()
-    call = _call("read_doc", path="knowledge.md", start_line=0)  # start_line 低于 ge=1
-
-    with pytest.raises(ValueError, match=r"^read_doc: field 'start_line' must be >= 1, got 0"):
+    with pytest.raises(ValueError, match=r"^preview_file: field 'path' must be a string, got int"):
         dispatch_tool_call(task, call, registry)
 
 
 def test_dispatch_unknown_field_is_rejected(task: PublicTask) -> None:
     registry = create_default_tool_registry()
-    call = _call("read_csv", path="csv/foo.csv", ttl=5)  # ttl 未声明
+    call = _call("preview_file", path="csv/foo.csv", ttl=5)  # ttl 未声明
 
-    with pytest.raises(ValueError, match=r"^read_csv: extra field 'ttl' is not permitted"):
+    with pytest.raises(ValueError, match=r"^preview_file: extra field 'ttl' is not permitted"):
         dispatch_tool_call(task, call, registry)
 
 
-def test_dispatch_read_csv_max_rows_is_rejected(task: PublicTask) -> None:
-    """读 csv 的 head/tail 容量是固定契约，不允许模型用 max_rows 旋钮绕过。
-
-    回归 task_22：原本默认 `max_rows=20` 让模型误以为"我已看到全部 36 行"，
-    导致 row 36 的 `2019-09-12` Dues 记录被静默丢失。现在 read_csv 入参里
-    彻底没有 max_rows / head / tail 字段，过滤/聚合必须切到 execute_python。
-    """
+def test_dispatch_preview_file_max_rows_is_rejected(task: PublicTask) -> None:
+    """preview_file 的容量是固定契约，不允许模型用 max_rows 旋钮绕过。"""
     registry = create_default_tool_registry()
-    call = _call("read_csv", path="csv/foo.csv", max_rows=200)
+    call = _call("preview_file", path="csv/foo.csv", max_rows=200)
 
-    with pytest.raises(ValueError, match=r"^read_csv: extra field 'max_rows' is not permitted"):
+    with pytest.raises(ValueError, match=r"^preview_file: extra field 'max_rows' is not permitted"):
         dispatch_tool_call(task, call, registry)
 
 
@@ -355,11 +342,10 @@ def test_dispatch_answer_preserves_float_cells(task: PublicTask) -> None:
 
 def test_registry_execute_does_not_mutate_payload_on_success(task: PublicTask) -> None:
     registry = create_default_tool_registry()
-    # 用 read_doc：fixture 里有 hello.txt；多字段 payload 才能验出 Pydantic alias-injection 之类的隐性 mutation
-    payload: dict[str, object] = {"path": "hello.txt", "start_line": 1, "line_count": 1}
+    payload: dict[str, object] = {"path": "hello.txt"}
     snapshot = dict(payload)
 
-    registry.execute(task, "read_doc", payload)
+    registry.execute(task, "preview_file", payload)
 
     assert payload == snapshot
     assert set(payload.keys()) == set(snapshot.keys())
@@ -371,6 +357,6 @@ def test_registry_execute_does_not_mutate_payload_on_failure(task: PublicTask) -
     snapshot = dict(payload)
 
     with pytest.raises(ValueError):
-        registry.execute(task, "read_csv", payload)
+        registry.execute(task, "preview_file", payload)
 
     assert payload == snapshot

@@ -37,14 +37,14 @@ you have. The main agent will perform the actual join via `execute_python`.
 === STOP CONDITIONS ===
 - If `explore_video` provides filter rules and at least one structured source exposes every field needed to apply them, you MUST call `report` next. Report the file path, required fields, thresholds, and output field.
 - Do NOT inspect video example rows after the rule and schema are known.
-- Do NOT grep, paginate, or `read_doc` through JSON/CSV to enumerate qualifying rows or verify examples. Full-row filtering belongs to the main agent.
+- Do NOT grep or paginate through JSON/CSV to enumerate qualifying rows or verify examples. Full-row filtering belongs to the main agent.
 - Once every required field is located in at least one source, call `report`. Do NOT continue exploring additional sources to cross-check or confirm the same fields. The main agent decides which source to query.
 
 ## Workflow
 
 Turn 1: Call `inspect_files`. Note file schemas, column_conversions, and column profiles.
-Turn 2: Call 1-2 targeted reads in parallel (e.g., `read_csv` + `read_doc` on knowledge.md).
-         For SQLite files ONLY, call `inspect_sqlite_schema` first, then `execute_context_sql` for `SELECT DISTINCT`.
+Turn 2: Call 1-2 targeted reads in parallel (e.g., `preview_file` on a CSV + `preview_file` on knowledge.md).
+         For SQLite files, call `preview_file` first (returns CREATE TABLE), then `execute_context_sql` for `SELECT DISTINCT`.
          Use `grep_context` to check whether a specific value exists across all files.
          If `inspect_files` lists video file(s), call `explore_video` once per video with an analysis brief tied to the task question.
 Turn 3+: Call `report` unless a required rule, source file, table, or field is still unknown.

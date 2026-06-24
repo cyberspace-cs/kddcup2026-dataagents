@@ -6,10 +6,10 @@ import sqlite3
 from pathlib import Path
 
 _NON_SQLITE_PATH_REDIRECT: dict[str, str] = {
-    ".csv": "`read_csv` (preview) or `execute_python` (full scan with pandas)",
-    ".json": "`read_json` (preview) or `execute_python` (nested extraction)",
-    ".md": "`read_doc`",
-    ".txt": "`read_doc`",
+    ".csv": "`preview_file` or `execute_python` (full scan with pandas)",
+    ".json": "`preview_file` or `execute_python` (nested extraction)",
+    ".md": "`preview_file`",
+    ".txt": "`preview_file`",
 }
 
 
@@ -23,7 +23,7 @@ def maybe_raise_non_sqlite_path_error(path: Path, exc: sqlite3.DatabaseError) ->
         f"Path '{path.name}' is not a sqlite database "
         f"(extension: {ext or 'none'}). "
         f"For this file type, use {redirect} instead of "
-        f"inspect_sqlite_schema / execute_context_sql."
+        f"preview_file / execute_context_sql."
     ) from exc
 
 

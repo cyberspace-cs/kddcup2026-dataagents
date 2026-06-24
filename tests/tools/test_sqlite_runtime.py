@@ -38,10 +38,10 @@ from agents.tools.inspect_sqlite import inspect_sqlite_database
 @pytest.mark.parametrize(
     ("ext", "redirect_keyword"),
     [
-        (".csv", "read_csv"),
-        (".json", "read_json"),
-        (".md", "read_doc"),
-        (".txt", "read_doc"),
+        (".csv", "preview_file"),
+        (".json", "preview_file"),
+        (".md", "preview_file"),
+        (".txt", "preview_file"),
     ],
 )
 def test_sqlite_tools_translate_non_db_path(
@@ -60,7 +60,7 @@ def test_sqlite_tools_translate_non_db_path(
     assert "not a sqlite database" in msg
     assert redirect_keyword in msg
     # 仍要透出"应放弃 sqlite 工具"的元信号
-    assert "inspect_sqlite_schema" in msg or "execute_context_sql" in msg
+    assert "execute_context_sql" in msg
 
 
 def test_unknown_extension_falls_back_to_execute_python_hint(tmp_path: Path) -> None:

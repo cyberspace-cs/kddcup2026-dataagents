@@ -11,10 +11,7 @@ from agents.benchmark.schema import PublicTask
 from agents.tools.execute_sql import execute_context_sql
 from agents.tools.grep_context import grep_context
 from agents.tools.inspect_files import inspect_files
-from agents.tools.inspect_sqlite import inspect_sqlite_schema
-from agents.tools.read_csv import read_csv
-from agents.tools.read_doc import read_doc
-from agents.tools.read_json import read_json
+from agents.tools.preview import preview_file
 from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
 
@@ -119,43 +116,19 @@ def create_explorer_tool_registry(
             "contains columns, dtypes, row_count, profile (min/max/null_rate/ "
             "distinct values) for CSV/SQLite, keys/length for JSON, line_count/ "
             "head for docs. Includes column_conversions when unit metadata is "
-            "available. Does NOT read full data — use the per-file preview tools "
-            "or execute_context_sql for deeper inspection.",
+            "available. Does NOT read full data — use preview_file or "
+            "execute_context_sql for deeper inspection.",
         ),
-        read_csv.with_description(
-            "Preview a single CSV file: returns {columns, dtypes, row_count, "
-            "head (first 20 rows), tail (last 5 rows)}. Use when you need to "
-            "inspect sample values or dtypes for one CSV after inspect_files. "
-            "Sample only — rows between head and tail are not returned. Do NOT "
-            "use for aggregation or filtering — use execute_context_sql for SQL "
-            "tables, or note in report that full-file processing is needed. "
-            'Example: read_csv({"path": "csv/member.csv"})',
-        ),
-        read_doc.with_description(
-            "Preview a text document (md/txt). Two modes: (1) Paging — returns "
-            "a line window; use has_more + next start_line to continue. "
-            "(2) Keyword — returns ALL matching paragraphs across the whole file "
-            "(capped at 20 matches / 8KB). ALWAYS prefer keyword mode when "
-            "searching for an ID/name/term — one call replaces a sequential "
-            "scan. Do NOT use for full-document structured parsing — note in "
-            "report that full-document processing is needed. "
-            'Example: read_doc({"path": "knowledge.md", "keyword": "利率"})',
-        ),
-        read_json.with_description(
-            "Preview a single JSON file. Returns a structured summary keyed by "
-            "kind: array → {length, head (first 20 items)}, object → {key_count, "
-            "keys (first 50), value_preview (first 20)}, scalar → {value}. Use "
-            "when you need to inspect structure or sample values for one JSON. "
-            "Sample only — does NOT load the full file for deep traversal. "
-            'Example: read_json({"path": "json/Patient.json"})',
-        ),
-        inspect_sqlite_schema.with_description(
-            "View CREATE TABLE statements for all tables in a SQLite database. "
-            "Returns {tables: [{name, create_sql}]}. Use to learn exact column "
-            "names and types before writing SQL with execute_context_sql. Does "
-            "NOT return row counts or sample data — use inspect_files for "
-            "profiles. Do NOT call on .csv/.json/.md/.txt paths. "
-            'Example: inspect_sqlite_schema({"path": "db/clinical.sqlite"})',
+        preview_file.with_description(
+            "Preview a single context file. Auto-detects format by extension. "
+            "CSV → {columns, dtypes, row_count, head (20 rows), tail (5 rows)}. "
+            "JSON → {kind, keys/length, head/value_preview}. "
+            "SQLite → {tables: [{name, create_sql}]}. "
+            "Text → {total_lines, head (first 100 lines), has_more}. "
+            "Sample only, not full data access. Do NOT use for aggregation — "
+            "use execute_context_sql for SQL or note in report that full-file "
+            "processing is needed. "
+            'Example: preview_file({"path": "csv/member.csv"})',
         ),
         execute_context_sql.with_description(
             "Run a read-only SQL query (SELECT/WITH/PRAGMA) on a SQLite database. "

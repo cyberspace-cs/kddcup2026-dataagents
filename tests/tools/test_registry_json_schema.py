@@ -23,14 +23,9 @@ from agents.tools.registry import (
 
 EXPECTED_REQUIRED: dict[str, set[str]] = {
     "inspect_files": set(),
-    "read_csv": {"path"},
-    "read_json": {"path"},
-    "read_doc": {"path"},
-    "inspect_sqlite_schema": {"path"},
+    "preview_file": {"path"},
     "execute_context_sql": {"path", "sql"},
     "execute_python": {"code"},
-    # answer 现在三字段都可选：inline columns/rows 与 from_csv 通过 model_validator 形成 XOR。
-    # required=[] 在 schema 层把决策权交给 validator，模型仍能拿到结构化错误。
     "answer": set(),
 }
 

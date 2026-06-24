@@ -201,8 +201,8 @@ def inspect_files(task: PublicTask) -> ToolExecutionResult:
     contains columns, dtypes, row_count, profile (min/max/null_rate/distinct
     values) for CSV/SQLite, keys/length for JSON, line_count/head for docs,
     and page_count/head for PDF. Also includes column_conversions when unit
-    metadata is available. This replaces the usual sequence of read_csv /
-    read_json / inspect_sqlite_schema calls for initial discovery. Does NOT
-    read full data — for filtering, aggregation, or full-file scans, use
-    execute_python or the per-file preview tools."""
+    metadata is available. This replaces calling preview_file on each file
+    individually for initial discovery. Does NOT read full data — for
+    deeper inspection use preview_file, for filtering or aggregation use
+    execute_context_sql or execute_python."""
     return ToolExecutionResult(ok=True, content=inspect_context_files(task))

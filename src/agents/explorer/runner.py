@@ -172,31 +172,17 @@ def _synthesize_findings(steps: list[Any]) -> str:
                 files_summary.append(entry)
             sections["files"] = files_summary
 
-        elif action == "read_csv":
+        elif action == "preview_file":
             action_input = cast(dict[str, Any], getattr(step, "action_input", {}))
-            key: str = str(action_input.get("path", "csv"))
-            sections.setdefault("csv_previews", {})[key] = {
-                "columns": content.get("columns", []),
-                "dtypes": content.get("dtypes", []),
-                "row_count": content.get("row_count"),
-            }
-
-        elif action == "read_doc":
-            raw_matches: Any = content.get("keyword_match", {})
-            if isinstance(raw_matches, dict):
-                matches = cast(dict[str, Any], raw_matches)
-                if matches.get("found"):
-                    match_list: list[Any] = cast(list[Any], matches.get("matches", []))
-                    sections.setdefault("doc_matches", []).append(
-                        {
-                            "keyword": matches.get("keyword"),
-                            "match_count": matches.get("match_count"),
-                            "snippets": [
-                                cast(dict[str, Any], m).get("text", "")[:200]
-                                for m in match_list[:5]
-                            ],
-                        }
-                    )
+            key = str(action_input.get("path", "file"))
+            if "columns" in content:
+                sections.setdefault("csv_previews", {})[key] = {
+                    "columns": content.get("columns", []),
+                    "dtypes": content.get("dtypes", []),
+                    "row_count": content.get("row_count"),
+                }
+            elif "tables" in content:
+                sections.setdefault("sqlite_schemas", {})[key] = content["tables"]
 
         elif action == "grep_context":
             sections.setdefault("grep_results", []).append(

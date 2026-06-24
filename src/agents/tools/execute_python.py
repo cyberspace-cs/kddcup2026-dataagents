@@ -198,7 +198,7 @@ def _answer_dir_for(task: PublicTask) -> Path:
         "Execute arbitrary Python in a subprocess. Returns {success, output "
         "(stdout), stderr, error, traceback}. Use when you need computation, "
         "aggregation, cross-file joins, or full-file scans beyond what the "
-        "preview tools (read_csv, read_json, execute_context_sql) provide. "
+        "preview tools (preview_file, execute_context_sql) provide. "
         "Do NOT use for simple lookups that a single SQL query or preview "
         "tool can answer — those are faster and cheaper. "
         "Working directory: the task context dir. "

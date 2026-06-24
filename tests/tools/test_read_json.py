@@ -347,8 +347,8 @@ def test_max_chars_field_rejected(tmp_path: Path) -> None:
     _write_json(task.context_dir / "x.json", {"a": 1})
     registry = create_default_tool_registry()
 
-    with pytest.raises(ValueError, match=r"read_json: extra field 'max_chars' is not permitted"):
-        registry.execute(task, "read_json", {"path": "x.json", "max_chars": 4000})
+    with pytest.raises(ValueError, match=r"preview_file: extra field 'max_chars' is not permitted"):
+        registry.execute(task, "preview_file", {"path": "x.json", "max_chars": 4000})
 
 
 def test_path_escaping_raises(tmp_path: Path) -> None:
