@@ -9,9 +9,9 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from agents.benchmark.schema import PublicTask
+from agents.tools._fields import path_field
 from agents.tools._sqlite_common import connect_read_only, maybe_raise_non_sqlite_path_error
 from agents.tools.context import resolve_context_path
-from agents.tools.contracts import PATH_CONVENTION_NOTE
 from agents.tools.decorator import function_tool
 from agents.tools.registry import ToolExecutionResult
 
@@ -46,16 +46,16 @@ def execute_context_sql(
     task: PublicTask,
     path: Annotated[
         str,
-        Field(
-            description=(
-                "Relative path to the sqlite/db file. "
-                "Examples: 'db/clinical.sqlite', 'main.db'. " + PATH_CONVENTION_NOTE
-            ),
-        ),
+        path_field(file_kind="sqlite/db file", examples=("db/sub_db.sqlite", "db/main.db")),
     ],
     sql: Annotated[
         str,
-        Field(description="SELECT, WITH, or PRAGMA statement. DML/DDL is rejected."),
+        Field(
+            description=(
+                "SELECT, WITH, or PRAGMA statement. DML/DDL is rejected. "
+                'E.g. "SELECT product, SUM(amount) FROM orders GROUP BY product LIMIT 10".'
+            ),
+        ),
     ],
     limit: Annotated[
         int,
