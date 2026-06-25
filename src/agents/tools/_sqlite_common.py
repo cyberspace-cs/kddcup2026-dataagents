@@ -118,9 +118,13 @@ def auto_quote_identifiers(sql: str, conn: sqlite3.Connection) -> str:
         r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     ]
 
+    def _mentioned(name: str) -> bool:
+        pat = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])")
+        return bool(pat.search(sql))
+
     identifiers: list[str] = []
     for tbl in tables:
-        if tbl in sql or _quote_identifier(tbl) in sql:
+        if _mentioned(tbl) or _quote_identifier(tbl) in sql:
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({_quote_identifier(tbl)})")]
             identifiers.extend(cols)
         identifiers.append(tbl)

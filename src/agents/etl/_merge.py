@@ -566,7 +566,9 @@ _CJK_ASCII_SPACE = re.compile(
 
 def _strip_cjk_ascii_spaces(s: str) -> str:
     """Remove spurious spaces between CJK characters and ASCII characters."""
-    return _CJK_ASCII_SPACE.sub(lambda m: (m[1] or m[3]) + (m[2] or m[4]), s)
+    while _CJK_ASCII_SPACE.search(s):
+        s = _CJK_ASCII_SPACE.sub(lambda m: (m[1] or m[3]) + (m[2] or m[4]), s)
+    return s
 
 
 def clean_cell_for_type(val: str, field_type: str | None = None) -> str:

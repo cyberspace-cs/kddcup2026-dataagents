@@ -417,3 +417,44 @@ def test_parse_knowledge_schema_applies_km_floor(tmp_path) -> None:
     columns, _anchors, _types, _units, defs = result
     assert "totalliabilities" in columns  # floor re-added the omitted column
     assert defs.get("totalliabilities") == "Aggregate liabilities"
+
+
+def test_parse_knowledge_schema_remaps_anchor_when_synonym_merged(tmp_path) -> None:
+    """If a PK synonym is merged into a km column, anchors must follow it."""
+    from types import SimpleNamespace
+
+    from agents.etl._schema import parse_knowledge_schema
+
+    km = (
+        "### 1.1 Reporting Dates (`ed_dates`)\n\n"
+        "| Column | Semantic Definition |\n|---|---|\n"
+        "| `enddate` | Reporting period end date |\n"
+        "| `amount` | Reported amount |\n"
+    )
+    (tmp_path / "knowledge.md").write_text(km, encoding="utf-8")
+    task = SimpleNamespace(context_dir=tmp_path)
+    schema_reply = (
+        "PK: report_date\n"
+        "ANCHORS: report_date\n"
+        "TYPES: report_date=date, amount=number\n"
+        "UNITS: amount=万元\n"
+        "DEFS: report_date=Date phrase from prose; amount=Reported amount\n"
+        "report_date, amount"
+    )
+    adapter = _SequenceAdapter([km, schema_reply, "report_date=enddate"])
+
+    result = parse_knowledge_schema(
+        cast(Any, task),
+        Path("doc/ed_dates.md"),
+        cast(Any, adapter),
+        "The ed_dates prose describes reporting dates and amounts.",
+    )
+
+    assert result is not None
+    columns, anchors, types, units, defs = result
+    assert "report_date" not in columns
+    assert "enddate" in columns
+    assert anchors == ["enddate"]
+    assert types["enddate"] == "date"
+    assert units["amount"] == "万元"
+    assert defs["enddate"] == "Reporting period end date"

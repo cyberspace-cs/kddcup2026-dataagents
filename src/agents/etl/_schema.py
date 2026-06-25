@@ -434,9 +434,46 @@ def _merge_synonyms_into_km(
         canon = km_canon.get(right_low)
         if orig and canon and orig in columns:
             columns.remove(orig)
-            raw_defs.pop(orig, None)
             merged.append((orig, canon))
     return merged
+
+
+def _remap_schema_metadata(
+    merged: list[tuple[str, str]],
+    explicit_types: dict[str, str],
+    field_units: dict[str, str],
+    raw_defs: dict[str, str],
+) -> None:
+    """Move metadata from removed synonym columns to their canonical columns."""
+
+    def remap_dict(values: dict[str, str], old: str, new: str) -> None:
+        old_key = next((key for key in values if key.lower() == old.lower()), None)
+        if old_key is None:
+            return
+        new_key = next((key for key in values if key.lower() == new.lower()), None)
+        old_value = values.pop(old_key)
+        if new_key is None:
+            values[new] = old_value
+
+    for old, new in merged:
+        remap_dict(explicit_types, old, new)
+        remap_dict(field_units, old, new)
+        remap_dict(raw_defs, old, new)
+
+
+def _remap_anchor_keys(anchor_keys: list[str], merged: list[tuple[str, str]]) -> list[str]:
+    """Canonicalize anchor keys after synonym columns have been removed."""
+    synonym_map = {old.lower(): new for old, new in merged}
+    remapped: list[str] = []
+    seen: set[str] = set()
+    for key in anchor_keys:
+        canonical = synonym_map.get(key.lower(), key)
+        canonical_lower = canonical.lower()
+        if canonical_lower in seen:
+            continue
+        remapped.append(canonical)
+        seen.add(canonical_lower)
+    return remapped
 
 
 def _apply_km_schema_floor(
@@ -722,6 +759,8 @@ def parse_knowledge_schema(
             )
         merged = _merge_synonyms_into_km(adapter, columns, raw_defs, km_fields)
         if merged:
+            _remap_schema_metadata(merged, explicit_types, field_units, raw_defs)
+            anchor_keys = _remap_anchor_keys(anchor_keys, merged)
             logger.info(
                 "ETL schema: merged %d synonym columns into governance names for '%s': %s",
                 len(merged),
