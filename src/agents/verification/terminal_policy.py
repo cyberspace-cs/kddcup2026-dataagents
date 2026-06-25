@@ -145,11 +145,16 @@ class TerminalAnswerPolicy:
         candidate = build_answer_table_without_side_effects(task, arguments)
         row_count = len(candidate.rows) if candidate is not None else 0
 
-        deterministic_rejection = evaluate_video_constraints(
+        video_result = evaluate_video_constraints(
             state,
             task.question,
             row_count,
         )
+        deterministic_rejection: str | None = None
+        if video_result is not None and video_result.rejection:
+            deterministic_rejection = video_result.rejection
+        if video_result is not None and video_result.warning:
+            logger.info("Video constraint warning (non-blocking): %s", video_result.warning)
         if deterministic_rejection is None and candidate is not None:
             deterministic_rejection = check_unit_conversions(
                 task, candidate.columns, candidate.rows

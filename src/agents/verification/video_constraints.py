@@ -188,21 +188,20 @@ def check_batch_id_filter(
     constraints: VideoConstraints | None,
     producing_code: str | None,
 ) -> str | None:
-    """Reject when producing_code filters by the batch's year alone, ignoring the precise batch.
+    """Warn (non-blocking) when producing_code filters by the batch's year alone.
 
-    Conservative — only fires when ALL hold:
+    Returns a warning string when ALL hold:
     1. video declared a non-year batch identifier
     2. the batch's 4-digit year appears in the code
     3. the full batch identifier literal does NOT appear
     4. if the batch carries a Qn suffix, that quarter literal also does NOT appear
 
-    The intent is to catch ``WHERE endate LIKE '2021%'`` when the batch was
-    ``BATCH-2021-Q4`` while letting through code that DID narrow to the right
-    sub-period via either the full batch id or its quarter marker.
+    The warning is informational — the batch_id from the video configuration
+    panel is often just a label, not necessarily a data filter requirement.
+    Downstream callers should attach this as a hint, not a hard rejection.
     """
     if constraints is None or constraints.batch_id is None or not producing_code:
         return None
-    # 注释里抄了 batch_id 不算"真的用了它做 filter" —— 必须看可执行文本。
     executable = _strip_comments(producing_code)
     batch_id = constraints.batch_id
     if batch_id in executable:
@@ -213,9 +212,6 @@ def check_batch_id_filter(
     year = year_match.group(0)
     if year not in executable:
         return None
-    # 关键:只在 batch_id 比"年份"本身更具体时才拦截。
-    # B-2004 → year 之后没有任何子周期,年份级 filter 就是最具体的子周期,放行。
-    # BATCH-2021-Q4 → year 之后还有 "-Q4",必须额外校验 code 用了 Q4。
     sub_period = batch_id[year_match.end() :].strip("-_/ .")
     if not sub_period:
         return None
@@ -223,14 +219,11 @@ def check_batch_id_filter(
     if quarter_match and quarter_match.group(0).upper() in executable.upper():
         return None
     return (
-        "ANSWER REJECTED by video-constraint check (check=video_batch_ignored): "
-        f"explore_video declared batch_id={batch_id!r}, but the producing code filters by "
-        f"the year {year!r} alone and never references the precise batch identifier or its "
-        "sub-period. Locate the batch column in the source schema (try "
-        "`PRAGMA table_info` / `df.columns` for names like batch_id, batch_no, archive_id, "
-        "period_id, report_batch) and filter on it; if no such column exists, narrow the "
-        f"filter to the specific sub-period the batch represents (e.g., {batch_id!r} → "
-        "its quarter only, not the full year). Then resubmit `answer`."
+        "Note from video-constraint check (check=video_batch_ignored): "
+        f"explore_video declared batch_id={batch_id!r}, but the producing code filters "
+        f"by the year {year!r} alone. If the data has a batch column, consider filtering "
+        "on it; otherwise the year-level filter may already be correct — the batch_id "
+        "is sometimes just a configuration label, not a data filter."
     )
 
 
@@ -262,24 +255,35 @@ def check_snapshot_multiplicity(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class VideoConstraintResult:
+    """Separate hard rejections from soft warnings."""
+
+    rejection: str | None = None
+    warning: str | None = None
+
+
 def evaluate_video_constraints(
     state: AgentRuntimeState | None,
     question: str,
     row_count: int,
     producing_code: str | None = None,
-) -> str | None:
-    """Run all deterministic video checks; return the first rejection or None.
+) -> VideoConstraintResult | None:
+    """Run all deterministic video checks.
+
+    Returns a result with separate ``rejection`` (hard block) and ``warning``
+    (informational, do not block submission) fields, or None.
 
     ``producing_code`` is optional and accepted for testing; when not provided,
     the batch-id check pulls the LATEST single execute step from state (the
-    code that actually built the submitted table). Earlier exploration steps
-    can contain variable / string-literal artifacts that mask a wrong final
-    filter, so the deterministic check intentionally looks only at the last.
+    code that actually built the submitted table).
     """
     constraints = extract_video_constraints(state)
     if constraints is None:
         return None
     code_for_batch = producing_code if producing_code is not None else _latest_execute_code(state)
-    return check_batch_id_filter(constraints, code_for_batch) or check_snapshot_multiplicity(
-        constraints, question, row_count
-    )
+    warning = check_batch_id_filter(constraints, code_for_batch)
+    rejection = check_snapshot_multiplicity(constraints, question, row_count)
+    if warning is None and rejection is None:
+        return None
+    return VideoConstraintResult(rejection=rejection, warning=warning)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 
 from agents.etl._constants import (
     APPROX_TAG,
@@ -556,6 +557,20 @@ def clean_cell(val: str) -> str:
     return val
 
 
+_CJK_ASCII_SPACE = re.compile(
+    r"([一-鿿㐀-䶿]) +([\x21-\x7e])"
+    r"|"
+    r"([\x21-\x7e]) +([一-鿿㐀-䶿])"
+)
+
+
+def _strip_cjk_ascii_spaces(s: str) -> str:
+    """Remove spurious spaces between CJK characters and ASCII characters."""
+    while _CJK_ASCII_SPACE.search(s):
+        s = _CJK_ASCII_SPACE.sub(lambda m: (m[1] or m[3]) + (m[2] or m[4]), s)
+    return s
+
+
 def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
     """Normalize a KV value and enforce lightweight schema field types.
 
@@ -621,7 +636,7 @@ def deterministic_kv_to_csv(
             key = canonicalize_key(key, field_map)
             if key in col_set:
                 fields[key] = clean_cell_for_type(
-                    val.strip(),
+                    _strip_cjk_ascii_spaces(val.strip()),
                     schema_field_types.get(key) if schema_field_types else None,
                 )
 

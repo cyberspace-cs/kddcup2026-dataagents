@@ -347,6 +347,135 @@ def merge_prose_schema_into_governance(
     return extra_cols, extra_types, extra_defs
 
 
+def _merge_synonyms_into_km(
+    adapter: ModelAdapter,
+    columns: list[str],
+    raw_defs: dict[str, str],
+    km_fields: dict[str, str],
+) -> list[tuple[str, str]]:
+    """Merge LLM-inferred columns that are synonyms of governance columns.
+
+    Columns already in *km_fields* are canonical. Any other column in
+    *columns* that the LLM identifies as a synonym of a governance column
+    gets removed, and its data merges into the governance column during
+    downstream compression.  Mutates *columns* and *raw_defs* in place.
+    Returns list of (removed, canonical) pairs.
+    """
+    km_lower = {c.lower() for c in km_fields}
+    rid_fields = {c.lower() for c in RECORD_ID_FIELDS}
+    non_km = [c for c in columns if c.lower() not in km_lower and c.lower() not in rid_fields]
+    if not non_km:
+        return []
+
+    km_block = "\n".join(f"- {c}: {km_fields[c]}" for c in km_fields)
+    extra_block = "\n".join(f"- {c}: {raw_defs.get(c, '(no definition)')}" for c in non_km)
+    prompt = textwrap.dedent(f"""\
+        A data governance document defines these CANONICAL fields:
+        {km_block}
+
+        An LLM schema inference also produced these EXTRA fields:
+        {extra_block}
+
+        For each EXTRA field, decide:
+        - SYNONYM (output: extra=canonical) when the extra field measures
+          the SAME real-world quantity as a canonical field. Merge even if:
+          - the names differ (report_date vs enddate — both are the
+            reporting period end date)
+          - one name is a typo/abbreviation of the other (endate vs
+            enddate)
+          - the definitions mention different formats or phrasings for the
+            same concept (e.g. "raw date text" vs "date in YYYY-MM-DD" —
+            same date, different representation)
+        - DISTINCT (output: extra=DISTINCT) ONLY when the extra field
+          measures a genuinely DIFFERENT quantity. Examples of DISTINCT:
+          - different time windows (daily vs weekly growth rate)
+          - different aggregation levels (per-fund vs per-company total)
+          - component vs aggregate (net_profit vs total_profit)
+          - before vs after state (pre-transfer vs post-transfer shares)
+
+        When in doubt, prefer SYNONYM — two columns for the same concept
+        causes value split (some rows fill one column, others fill the
+        other) which is a critical data quality error.
+
+        Output one line per extra field, nothing else.""")
+    messages = [
+        ModelMessage(
+            role="system",
+            content=(
+                "Adjudicate whether extra fields are synonyms of canonical "
+                "governance fields. Judge by the REAL-WORLD QUANTITY measured, "
+                "not by name spelling or definition wording."
+            ),
+        ),
+        ModelMessage(role="user", content=prompt),
+    ]
+    try:
+        response: ModelResponse = adapter.complete(messages)
+    except Exception as exc:
+        logger.warning("Synonym merge into km failed: %s", exc)
+        return []
+
+    raw = response.content.strip()
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+    merged: list[tuple[str, str]] = []
+    non_km_lower = {c.lower(): c for c in non_km}
+    km_canon = {c.lower(): c for c in km_fields}
+    for line in raw.splitlines():
+        line = line.strip().lstrip("- ")
+        if "=" not in line:
+            continue
+        left, _, right = line.partition("=")
+        left_low = left.strip().lower()
+        right_low = right.strip().lower()
+        if right_low == "distinct":
+            continue
+        orig = non_km_lower.get(left_low)
+        canon = km_canon.get(right_low)
+        if orig and canon and orig in columns:
+            columns.remove(orig)
+            merged.append((orig, canon))
+    return merged
+
+
+def _remap_schema_metadata(
+    merged: list[tuple[str, str]],
+    explicit_types: dict[str, str],
+    field_units: dict[str, str],
+    raw_defs: dict[str, str],
+) -> None:
+    """Move metadata from removed synonym columns to their canonical columns."""
+
+    def remap_dict(values: dict[str, str], old: str, new: str) -> None:
+        old_key = next((key for key in values if key.lower() == old.lower()), None)
+        if old_key is None:
+            return
+        new_key = next((key for key in values if key.lower() == new.lower()), None)
+        old_value = values.pop(old_key)
+        if new_key is None:
+            values[new] = old_value
+
+    for old, new in merged:
+        remap_dict(explicit_types, old, new)
+        remap_dict(field_units, old, new)
+        remap_dict(raw_defs, old, new)
+
+
+def _remap_anchor_keys(anchor_keys: list[str], merged: list[tuple[str, str]]) -> list[str]:
+    """Canonicalize anchor keys after synonym columns have been removed."""
+    synonym_map = {old.lower(): new for old, new in merged}
+    remapped: list[str] = []
+    seen: set[str] = set()
+    for key in anchor_keys:
+        canonical = synonym_map.get(key.lower(), key)
+        canonical_lower = canonical.lower()
+        if canonical_lower in seen:
+            continue
+        remapped.append(canonical)
+        seen.add(canonical_lower)
+    return remapped
+
+
 def _apply_km_schema_floor(
     columns: list[str],
     raw_defs: dict[str, str],
@@ -359,6 +488,11 @@ def _apply_km_schema_floor(
     show no values for it (task_53 lost ``totalliabilities`` exactly this
     way).  Mutates ``columns``/``raw_defs`` in place; returns the re-added
     column names.
+
+    Typo/synonym resolution (``endate`` → ``enddate``) is handled by
+    ``_merge_synonyms_into_km`` which uses an LLM call — not edit-distance
+    heuristics — so short governance names like ``gdp`` or ``type`` cannot
+    false-positive against unrelated columns.
     """
     existing = {c.lower() for c in columns}
     readded = [c for c in km_fields if c.lower() not in existing]
@@ -622,6 +756,16 @@ def parse_knowledge_schema(
                 len(readded),
                 prose_stem,
                 readded,
+            )
+        merged = _merge_synonyms_into_km(adapter, columns, raw_defs, km_fields)
+        if merged:
+            _remap_schema_metadata(merged, explicit_types, field_units, raw_defs)
+            anchor_keys = _remap_anchor_keys(anchor_keys, merged)
+            logger.info(
+                "ETL schema: merged %d synonym columns into governance names for '%s': %s",
+                len(merged),
+                prose_stem,
+                merged,
             )
 
     columns, anchor_keys = _ensure_local_record_anchor(

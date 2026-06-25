@@ -317,7 +317,7 @@ def verify_answer(
         sample = [rows[i * step] for i in range(_MAX_SAMPLE_ROWS) if i * step < n]
     user_content = (
         f"QUESTION: {question}\n\n"
-        f"COLUMNS: {json.dumps(columns)}\n\n"
+        f"COLUMNS: {json.dumps(columns, ensure_ascii=False)}\n\n"
         f"TOTAL ROWS: {len(rows)}\n\n"
         f"SAMPLE ROWS ({len(sample)} of {len(rows)}):\n"
         f"{json.dumps(sample, ensure_ascii=False, default=str)}"
