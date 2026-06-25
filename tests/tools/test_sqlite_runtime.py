@@ -133,3 +133,36 @@ def test_empty_result_returns_zero_row_count(tmp_path: Path) -> None:
     result = execute_read_only_sql(db_path, "SELECT * FROM items WHERE id = 999")
     assert result["row_count"] == 0
     assert result["rows"] == []
+
+
+def test_auto_quote_identifiers_does_not_rewrite_string_literals(tmp_path: Path) -> None:
+    """Auto-quoting must not change literal filter values that look like column names."""
+    db_path = tmp_path / "quote_retry.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute('CREATE TABLE t (name TEXT, "A/B" INTEGER)')
+    conn.execute("INSERT INTO t VALUES (?, ?)", ("A/B", 7))
+    conn.commit()
+    conn.close()
+
+    result = execute_read_only_sql(db_path, "SELECT A/B FROM t WHERE name = 'A/B'")
+
+    assert result["columns"] == ["A/B"]
+    assert result["rows"] == [[7]]
+    assert result["auto_quoted_sql"] == "SELECT \"A/B\" FROM t WHERE name = 'A/B'"
+
+
+def test_auto_quote_identifiers_leaves_existing_quoted_identifiers_intact(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "quote_retry.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute('CREATE TABLE t ("A/B" INTEGER, "C-D" INTEGER)')
+    conn.execute("INSERT INTO t VALUES (?, ?)", (7, 3))
+    conn.commit()
+    conn.close()
+
+    result = execute_read_only_sql(db_path, 'SELECT A/B, "C-D" FROM t')
+
+    assert result["columns"] == ["A/B", "C-D"]
+    assert result["rows"] == [[7, 3]]
+    assert result["auto_quoted_sql"] == 'SELECT "A/B", "C-D" FROM t'

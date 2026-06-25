@@ -471,8 +471,6 @@ def _generate_compress_guide(
     try:
         response = adapter.complete(messages)
         guide = response.content.strip()
-        if len(guide) < 100:
-            return None
         logger.info("ETL: generated compress guide (%d chars)", len(guide))
         return guide
     except Exception as exc:
@@ -745,21 +743,6 @@ def compress_chunk(
         - For corrections: output the FINAL corrected value directly — e.g. \
         "label: positive", not "label: positive (placeholder)".
         - Preserve URLs, names, dates, times, categories, classifications.
-        - FIELD TYPE DISCIPLINE: NEVER put a pure numeric code into a \
-        name/abbreviation field. Name fields (secuabbr, fund_name) contain \
-        readable text (Chinese, English, or mixed), NEVER a pure digit \
-        string like "510270". Code fields (secucode, innercode) contain \
-        numeric IDs only.
-        - FUZZY DATES: ALWAYS convert natural-language date descriptions to \
-        YYYY-MM-DD. "2021年终"/"2021日历年结束" → 2021-12-31; "第三季度末" \
-        → MM-30 of that quarter (09-30); "第二季度收官日" → 06-30. NEVER \
-        leave a date field empty when the text describes the date in words.
-        - MULTIPLE NAME FORMS: when the document provides MULTIPLE names/abbreviations \
-        for the same entity (e.g. a short trading abbreviation "国投金地ETF" AND a \
-        longer official name "国投瑞银沪深300金融地产ETF"), ALWAYS prefer the SHORTEST \
-        form for abbreviation/简称 fields. The short form is typically labeled \
-        "证券简称" or "trading name"; the longer form is "官方简称" or "full name". \
-        Do NOT use the longer form for a field defined as "abbreviated name".
         - Strip only narrative filler that contains no structured field, schema field, \
         ID, value, date, unit, label, status, or question-relevant fact.
         - If NOTHING in this input qualifies for extraction under these rules, \
