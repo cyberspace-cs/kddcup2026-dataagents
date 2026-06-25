@@ -13,7 +13,6 @@ from agents.etl._constants import (
     ENTITY_LINE,
     KV_LINE,
     NUMERIC_SCALAR,
-    RECORD_ID_FIELDS,
     TEMP_ANCHOR_PREFIX,
     UNIT_SUFFIX,
 )
@@ -570,26 +569,6 @@ def _strip_cjk_ascii_spaces(s: str) -> str:
     return _CJK_ASCII_SPACE.sub(lambda m: (m[1] or m[3]) + (m[2] or m[4]), s)
 
 
-def _preserve_identity_spacing(
-    key: str,
-    primary_key: str | None,
-    field_type: str | None,
-) -> bool:
-    """Do not rewrite spaces inside identity labels such as ``档案 286``."""
-    if primary_key and strip_key(key) == strip_key(primary_key):
-        return True
-    key_lower = key.lower()
-    key_tokens = re.split(r"[_\-\s]+", key_lower)
-    type_text = (field_type or "").lower()
-    return (
-        key_lower in RECORD_ID_FIELDS
-        or key_tokens[-1] in {"id", "code"}
-        or key_lower.endswith("code")
-        or "local_record_id" in type_text
-        or "scalar_id" in type_text
-    )
-
-
 def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
     """Normalize a KV value and enforce lightweight schema field types.
 
@@ -654,11 +633,10 @@ def deterministic_kv_to_csv(
             key, _, val = part.partition(":")
             key = canonicalize_key(key, field_map)
             if key in col_set:
-                field_type = schema_field_types.get(key) if schema_field_types else None
-                raw_val = val.strip()
-                if not _preserve_identity_spacing(key, primary_key, field_type):
-                    raw_val = _strip_cjk_ascii_spaces(raw_val)
-                fields[key] = clean_cell_for_type(raw_val, field_type)
+                fields[key] = clean_cell_for_type(
+                    _strip_cjk_ascii_spaces(val.strip()),
+                    schema_field_types.get(key) if schema_field_types else None,
+                )
 
         row = [fields.get(c, "") for c in schema_columns]
         if any(row):

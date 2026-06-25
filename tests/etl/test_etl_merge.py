@@ -134,12 +134,12 @@ def test_deterministic_kv_to_csv_preserves_rows_without_semantic_filtering() -> 
     text = "\n".join(
         [
             (
-                "record_id: 档案 197至217 | province_name: 黑龙江、甘肃、广东、陕西、"
+                "record_id: 197 | province_name: 黑龙江、甘肃、广东、陕西、"
                 "湖南和云南 | enddate: | gdp: | primary_industry_gdp: | "
                 "second_industry_gdp: | third_industry_gdp:"
             ),
             (
-                "record_id: 档案 286 | province_name: 山西省 | enddate: | gdp: | "
+                "record_id: 286 | province_name: 山西省 | enddate: | gdp: | "
                 "primary_industry_gdp: 302.48 | second_industry_gdp: 4265.77 | "
                 "third_industry_gdp: 2370.48"
             ),
@@ -155,22 +155,23 @@ def test_deterministic_kv_to_csv_preserves_rows_without_semantic_filtering() -> 
 
     rows = list(csv.DictReader(io.StringIO(csv_text)))
     assert len(rows) == 2
-    assert rows[0]["record_id"] == "档案 197至217"
+    assert rows[0]["record_id"] == "197"
     assert rows[0]["province_name"] == "黑龙江、甘肃、广东、陕西、湖南和云南"
-    assert rows[1]["record_id"] == "档案 286"
+    assert rows[1]["record_id"] == "286"
     assert rows[1]["primary_industry_gdp"] == "302.48"
 
 
-def test_deterministic_kv_to_csv_preserves_identity_spacing_only() -> None:
+def test_deterministic_kv_to_csv_handles_cleaned_record_id_and_text_spacing() -> None:
     csv_text = deterministic_kv_to_csv(
-        "record_id: 档案 286 | fund_name: 华夏 A",
+        "record_id: 286 | fund_name: 华夏 A",
         ["record_id", "fund_name"],
         primary_key="record_id",
+        schema_field_types={"record_id": "integer_scalar local_record_id", "fund_name": "string"},
     )
     assert csv_text is not None
 
     row = next(csv.DictReader(io.StringIO(csv_text)))
-    assert row["record_id"] == "档案 286"
+    assert row["record_id"] == "286"
     assert row["fund_name"] == "华夏A"
 
 
