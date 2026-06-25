@@ -347,28 +347,6 @@ def merge_prose_schema_into_governance(
     return extra_cols, extra_types, extra_defs
 
 
-def _edit_distance_one(a: str, b: str) -> bool:
-    """Return True when *a* and *b* differ by exactly one insert, delete, or substitute."""
-    la, lb = len(a), len(b)
-    if abs(la - lb) > 1:
-        return False
-    if la == lb:
-        return sum(x != y for x, y in zip(a, b, strict=True)) == 1
-    short, long = (a, b) if la < lb else (b, a)
-    diffs = 0
-    si = li = 0
-    while si < len(short) and li < len(long):
-        if short[si] != long[li]:
-            diffs += 1
-            if diffs > 1:
-                return False
-            li += 1
-        else:
-            si += 1
-            li += 1
-    return True
-
-
 def _merge_synonyms_into_km(
     adapter: ModelAdapter,
     columns: list[str],
@@ -471,54 +449,19 @@ def _apply_km_schema_floor(
     The governance document's field table is authoritative: a column listed
     there must survive into the schema even when the prose sample happens to
     show no values for it (task_53 lost ``totalliabilities`` exactly this
-    way).  When an LLM-inferred column is a near-miss typo of a governance
-    column (edit distance 1), the governance spelling replaces it in-place
-    so the two don't coexist.  Mutates ``columns``/``raw_defs`` in place;
-    returns the re-added column names.
+    way).  Mutates ``columns``/``raw_defs`` in place; returns the re-added
+    column names.
+
+    Typo/synonym resolution (``endate`` → ``enddate``) is handled by
+    ``_merge_synonyms_into_km`` which uses an LLM call — not edit-distance
+    heuristics — so short governance names like ``gdp`` or ``type`` cannot
+    false-positive against unrelated columns.
     """
-    existing = {c.lower(): i for i, c in enumerate(columns)}
-    readded: list[str] = []
-    for km_col in km_fields:
-        km_low = km_col.lower()
-        if km_low in existing:
-            continue
-        typo_idx = None
-        for ex_low, idx in existing.items():
-            if _edit_distance_one(km_low, ex_low):
-                typo_idx = idx
-                break
-        if typo_idx is not None:
-            old_name = columns[typo_idx]
-            columns[typo_idx] = km_col
-            if old_name in raw_defs:
-                raw_defs[km_col] = raw_defs.pop(old_name)
-            else:
-                raw_defs.setdefault(km_col, km_fields[km_col])
-            existing[km_low] = typo_idx
-            del existing[old_name.lower()]
-            logger.info("ETL schema floor: replaced typo %r → %r", old_name, km_col)
-        else:
-            columns.append(km_col)
-            raw_defs.setdefault(km_col, km_fields[km_col])
-            existing[km_low] = len(columns) - 1
-            readded.append(km_col)
-    # Remove near-duplicate typos that coexist with their governance original.
-    km_lower_set = {c.lower() for c in km_fields}
-    to_remove: list[str] = []
-    for col in list(columns):
-        col_low = col.lower()
-        if col_low in km_lower_set:
-            continue
-        for km_col in km_fields:
-            if _edit_distance_one(col_low, km_col.lower()) and km_col.lower() in existing:
-                to_remove.append(col)
-                logger.info(
-                    "ETL schema floor: dropped near-duplicate %r (governance has %r)", col, km_col
-                )
-                break
-    for col in to_remove:
-        columns.remove(col)
-        raw_defs.pop(col, None)
+    existing = {c.lower() for c in columns}
+    readded = [c for c in km_fields if c.lower() not in existing]
+    for c in readded:
+        columns.append(c)
+        raw_defs.setdefault(c, km_fields[c])
     return readded
 
 
