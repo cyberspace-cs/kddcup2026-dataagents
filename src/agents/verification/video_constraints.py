@@ -219,10 +219,11 @@ def check_batch_id_filter(
     if quarter_match and quarter_match.group(0).upper() in executable.upper():
         return None
     return (
-        f"Note: explore_video declared batch_id={batch_id!r}, but the producing code "
-        f"filters by the year {year!r} alone. If the data has a batch column, consider "
-        f"filtering on it; otherwise the year-level filter may already be correct — "
-        f"the batch_id is sometimes just a configuration label, not a data filter."
+        "Note from video-constraint check (check=video_batch_ignored): "
+        f"explore_video declared batch_id={batch_id!r}, but the producing code filters "
+        f"by the year {year!r} alone. If the data has a batch column, consider filtering "
+        "on it; otherwise the year-level filter may already be correct — the batch_id "
+        "is sometimes just a configuration label, not a data filter."
     )
 
 

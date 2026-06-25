@@ -161,6 +161,19 @@ def test_deterministic_kv_to_csv_preserves_rows_without_semantic_filtering() -> 
     assert rows[1]["primary_industry_gdp"] == "302.48"
 
 
+def test_deterministic_kv_to_csv_preserves_identity_spacing_only() -> None:
+    csv_text = deterministic_kv_to_csv(
+        "record_id: 档案 286 | fund_name: 华夏 A",
+        ["record_id", "fund_name"],
+        primary_key="record_id",
+    )
+    assert csv_text is not None
+
+    row = next(csv.DictReader(io.StringIO(csv_text)))
+    assert row["record_id"] == "档案 286"
+    assert row["fund_name"] == "华夏A"
+
+
 def test_deterministic_kv_to_csv_blanks_values_with_wrong_schema_type() -> None:
     schema = [
         "fundcode",

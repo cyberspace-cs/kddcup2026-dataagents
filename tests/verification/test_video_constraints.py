@@ -299,16 +299,18 @@ def test_snapshot_check_silent_when_only_one_snapshot() -> None:
 # ---------- evaluate_video_constraints (integration) --------------------------
 
 
-def test_evaluate_returns_batch_rejection_when_batch_ignored() -> None:
+def test_evaluate_returns_batch_warning_when_batch_ignored() -> None:
     state = _state(("explore_video", _video_obs(batch_id="BATCH-2021-Q4")))
-    msg = evaluate_video_constraints(
+    result = evaluate_video_constraints(
         state,
         "top 10 funds by profit",
         row_count=10,
         producing_code="SELECT * FROM x WHERE endate LIKE '2021%'",
     )
-    assert msg is not None
-    assert "video_batch_ignored" in msg
+    assert result is not None
+    assert result.warning is not None
+    assert "video_batch_ignored" in result.warning
+    assert result.rejection is None
 
 
 def test_evaluate_returns_snapshot_rejection_when_collapsed() -> None:
@@ -320,14 +322,16 @@ def test_evaluate_returns_snapshot_rejection_when_collapsed() -> None:
             ),
         )
     )
-    msg = evaluate_video_constraints(
+    result = evaluate_video_constraints(
         state,
         "what are the deposit amounts?",
         row_count=1,
         producing_code="df_2004 = df[df['report_date'].str.startswith('2004')]",
     )
-    assert msg is not None
-    assert "snapshot_multiplicity" in msg
+    assert result is not None
+    assert result.rejection is not None
+    assert "snapshot_multiplicity" in result.rejection
+    assert result.warning is None
 
 
 def test_evaluate_returns_none_when_no_video_constraints() -> None:
@@ -372,6 +376,8 @@ def test_evaluate_uses_latest_execute_step_from_state_when_no_code_passed() -> N
             },
         )
     )
-    msg = evaluate_video_constraints(state, "top 10 funds", row_count=10)
-    assert msg is not None
-    assert "video_batch_ignored" in msg
+    result = evaluate_video_constraints(state, "top 10 funds", row_count=10)
+    assert result is not None
+    assert result.warning is not None
+    assert "video_batch_ignored" in result.warning
+    assert result.rejection is None
