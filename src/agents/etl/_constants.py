@@ -52,7 +52,7 @@ RECORD_ID_RANGE = re.compile(
 )
 DIGIT_RUN = re.compile(r"\d{1,8}")
 LOCAL_RECORD_ID_RE = re.compile(
-    rf"(?:{RECORD_ID_KEYWORDS})\s*[：:#-]?\s*(\d{{1,8}})",
+    rf"(?:{RECORD_ID_KEYWORDS}){RECORD_ID_SEPARATOR}(\d{{1,8}})",
     re.IGNORECASE,
 )
 # Quoted example list for extraction prompts. It uses <N> rather than a
@@ -109,6 +109,48 @@ ROUTER_SAMPLE_TOKEN_BUDGET = 2000
 ROUTER_MAX_FIELDS_PER_FILE = 15
 ROUTER_MAX_SAMPLE_CHARS = 500
 ROUTER_MAX_DESC_CHARS = 200
+ROUTER_MAX_STRUCTURED_FILES = 30
+ROUTER_MAX_STRUCTURED_TABLES_PER_DB = 25
+ROUTER_MAX_STRUCTURED_COLUMNS = 80
+
+FUND_FIELD_DISAMBIGUATION_PROMPT = """\
+MUTUAL FUND DOMAIN DISAMBIGUATION:
+- Fund documents use "type"/"类型" for SEVERAL distinct dimensions.
+  These are NOT interchangeable — keep each in its own column:
+  * `Type` = product/trading structure: ETF, LOF, 契约型封闭式,
+    开放式(带固定封闭期), open-ended, closed-ended.
+    Source cues: "是一只LOF", "结构为ETF", "类型为LOF".
+  * `FundType` = fund classification / asset class: Equity Fund (股票型),
+    Bond Fund (债券型), Mixed Fund (混合型), Money Market Fund (货币型),
+    Other Type (其他型), 基础设施证券投资基金.
+    Source cues: "归类为XX型基金", "属于XX型基金", "资产大类上被归为XX型",
+    "资产类别上被划分为XX型".
+    Normalize to short form: 股票型/混合型/债券型/货币型/其他型.
+    Keep 基础设施证券投资基金 as-is when schema allows detailed labels.
+  * `InvestmentType` = investment approach: Index-Based (指数型),
+    Optimized-Index (优化指数型), Bond (债券型), Growth-Active (成长型—积极成长型),
+    Growth-Steady (成长型—稳健成长型), Comprehensive (综合型).
+    Source cues: "投资类型为指数型", "投资类型被界定为综合型".
+  * `InvestStyle` = investment style: 大盘价值, 大盘平衡, 大盘成长,
+    中盘平衡, 灵活配置型, 积极配置型, 标准混合型, 行业股票-医药,
+    行业股票-科技、传媒及通讯, 行业股票-其它, 商品-贵金属, QDII商品,
+    香港股票型基金, 利率债, 普通债券型, 其它(封闭), 基础设施REITs(封闭), etc.
+    Source cues: "投资风格为...", "投资风格专注于...".
+  * `FundNature` = fund nature: Conventional Fund (常规基金), QDII Fund.
+    Source cues: "属于常规基金", "被归类为QDII基金".
+  * `FloatType` = listing/trading channel: Exchange-Traded (仅场内),
+    Exchange-Traded and Over-the-Counter (场内和场外).
+    Source cues: "仅支持场内交易", "支持场内和场外交易".
+  * `IfFOF` = boolean FOF flag (Yes/No).
+  NEVER merge values across these columns. ETF/LOF go in `Type`, NOT in
+  `FundType`. Equity Fund/Bond Fund go in `FundType`, NOT in `Type`.
+  指数型/成长型 go in `InvestmentType`, NOT in `FundType` or `Type`.
+- QDII is a nature attribute (→ `FundNature`), not a fund classification.
+- FOF / 基金中基金 → `IfFOF` boolean. Do not rewrite 股票型 into 股票型FOF.
+- REIT / 基础设施证券投资基金: use 基础设施证券投资基金 as `FundType` when
+  the source text explicitly states it. Only map to 其他型 when the schema
+  restricts to broad labels.
+"""
 
 # PDF text cleanup punctuation and structural-line recognizers. These control
 # whether extracted layout lines are stitched as prose or preserved as markdown
@@ -192,7 +234,9 @@ FIX_FORMAT_MAX_LINES = 80
 GROUPING_BATCH_SIZE = 40
 GROUPING_TRUNCATE_CHARS = 300
 GROUPING_ENUM_PREFIX = r"(?:\d{1,8}\s*[).．）]\s*)?"
-GROUP_LINE = re.compile(rf"^[-*\s]*{GROUPING_ENUM_PREFIX}(\d{{1,8}})\s*[:：]\s*(.+)$")
+GROUP_LINE = re.compile(
+    rf"^[-*\s]*{GROUPING_ENUM_PREFIX}(\d{{1,8}}(?:\s*[,、]\s*\d{{1,8}})*)s*[:：]\s*(.+)$"
+)
 NONE_LINE = re.compile(
     rf"^[-*\s]*{GROUPING_ENUM_PREFIX}NONE\s*[:：]\s*(.+)$",
     re.IGNORECASE,
@@ -233,8 +277,17 @@ a data value, even when that value is a unique code (e.g. \
 - A paragraph that continues an earlier entity without restating the ID goes \
 on that entity's line.
 - A GROUP paragraph that explicitly states the record IDs of SEVERAL entities \
-(e.g. "for units <A>, <B> and <C>, the index ...") goes on EACH stated \
-entity's line.
+(e.g. "记录 2162 和 2166 均指向同一标的") MUST appear on EACH stated entity's \
+line. Output one line per entity — put the shared paragraph number on every \
+entity that is mentioned.
+Example — paragraph 12 mentions both 2162 and 2166, paragraph 14 is 2162 only, \
+paragraph 15 is 2166 only:
+  CORRECT:
+    2162: 12, 14
+    2166: 12, 15
+  WRONG (shared paragraph 12 missing from 2166):
+    2162: 12, 14
+    2166: 15
 - Narrative/filler paragraphs that describe no record: put their numbers on a \
 single line `NONE: <numbers>`.
 - Every paragraph number must appear on at least one line; only group \

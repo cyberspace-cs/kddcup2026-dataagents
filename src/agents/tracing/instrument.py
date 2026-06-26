@@ -72,6 +72,35 @@ class TracedModelAdapter:
             span.span_data.output = [output_msg]
             if response.rate_limit_metrics is not None:
                 span.span_data.usage["rate_limit"] = response.rate_limit_metrics
+
+            import logging as _logging
+
+            from agents.etl._trace import get_etl_trace
+
+            _trace_log = _logging.getLogger("etl.trace.llm")
+            trace = get_etl_trace()
+            if trace is not None:
+                matched = False
+                for p in reversed(trace.phases):
+                    if p.ended_at == 0.0:
+                        prompt_text = "\n---\n".join(
+                            m.content for m in messages if isinstance(m.content, str)
+                        )
+                        p.llm_exchanges.append(
+                            {
+                                "label": f"etl/{p.name}",
+                                "prompt": prompt_text,
+                                "response": response.content or "",
+                            }
+                        )
+                        matched = True
+                        break
+                if not matched:
+                    phase_info = [(p.name, p.ended_at) for p in trace.phases[-3:]]
+                    _trace_log.warning(
+                        "ETL trace: LLM call but no open phase. Recent phases: %s", phase_info
+                    )
+
             return response
 
     def __getattr__(self, name: str) -> Any:

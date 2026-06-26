@@ -47,7 +47,8 @@ def test_verify_field_values_matches_mixed_case_reply_keys() -> None:
     assert result == "RecordID: 1 | PersonalCode: 456 "
 
 
-def test_verify_field_values_clears_field_when_reply_says_none() -> None:
+def test_verify_field_values_rejects_none_when_value_exists() -> None:
+    """NONE correction must not clear an already-populated field."""
     text = "RecordID: 1 | TotalAssets: 123"
 
     result = verify_field_values(
@@ -60,7 +61,24 @@ def test_verify_field_values_clears_field_when_reply_says_none() -> None:
         schema_field_types={"TotalAssets": "number"},
     )
 
-    assert result == "RecordID: 1 | TotalAssets:  "
+    assert result == "RecordID: 1 | TotalAssets: 123"
+
+
+def test_verify_field_values_allows_none_when_value_empty() -> None:
+    """NONE on an already-empty field is a no-op (no change)."""
+    text = "RecordID: 1 | TotalAssets: "
+
+    result = verify_field_values(
+        cast(Any, _ReplyAdapter("totalassets: NONE")),
+        text,
+        schema_columns=["RecordID", "TotalAssets"],
+        primary_key="RecordID",
+        anchor_keys=["RecordID"],
+        entity_groups={"1": ["RecordID 1 does not mention TotalAssets."]},
+        schema_field_types={"TotalAssets": "number"},
+    )
+
+    assert result == "RecordID: 1 | TotalAssets: "
 
 
 def test_verify_field_values_accepts_string_corrections() -> None:

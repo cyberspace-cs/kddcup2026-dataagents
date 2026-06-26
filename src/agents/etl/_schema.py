@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from agents.etl._compress import sample_paragraphs_by_section
 from agents.etl._constants import (
+    FUND_FIELD_DISAMBIGUATION_PROMPT,
     LOCAL_RECORD_ID_RE,
     RECORD_ID_FIELDS,
     SCHEMA_RESPONSE_PREFIX,
@@ -261,6 +262,7 @@ def merge_prose_schema_into_governance(
     gov_defs: dict[str, str],
     gov_types: dict[str, str],
     question: str,
+    table_name: str | None = None,
 ) -> tuple[list[str], dict[str, str], dict[str, str]]:
     """Union governance + prose-inferred schemas with synonym dedup.
 
@@ -272,7 +274,9 @@ def merge_prose_schema_into_governance(
     Returns (extra_columns, extra_types, extra_defs) — only the fields
     NOT already covered by a governance synonym.
     """
-    inferred = _infer_schema_single(adapter, sample_paragraphs_by_section(prose_text), question)
+    inferred = _infer_schema_single(
+        adapter, sample_paragraphs_by_section(prose_text), question, table_name=table_name
+    )
     if not inferred:
         return [], {}, {}
 
@@ -309,6 +313,8 @@ def merge_prose_schema_into_governance(
         Sub-totals and aggregates are ALWAYS DISTINCT even when names are
         similar (e.g. reserve_assets = deposits + cash ≠ totalassets = all
         assets). Component fields are DISTINCT from their parent total.
+
+        {FUND_FIELD_DISAMBIGUATION_PROMPT}
 
         Output one line per additional field, nothing else.""")
 
@@ -627,6 +633,8 @@ def parse_knowledge_schema(
             f"---\n{prose_sample}\n---"
         )
 
+    kb_ref = _build_kb_reference(prose_stem)
+
     prompt = textwrap.dedent(f"""\
         Below is a data governance document AND a sample from a prose data file.
         Find the entity in the governance document that best matches \
@@ -672,6 +680,8 @@ def parse_knowledge_schema(
         column is an error.
         - Use simple type labels such as integer_scalar_id, scalar_id, date, time, \
         number, integer_count, integer_rank, string, category, boolean, url.
+        - For rank fields with "xx/yy" format (e.g. "43/166"), use type "string", \
+        NOT "integer_rank". "integer_rank" is only for pure numeric ranks.
         - For document-local record_id fields use type "integer_scalar local_record_id"; \
         record_id values must be a single scalar number, not a range or list.
         - MANDATORY: scan the prose sample for numeric, date, and \
@@ -697,11 +707,14 @@ def parse_knowledge_schema(
         fill column A, others fill column B) and is a critical schema error.
         - If paragraphs are keyed by repeated document-local labels such as \
         "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353", \
-        "File 353", or "Case 353", include a field named "record_id" and \
-        put it FIRST in PK and ANCHORS. This local record ID is the row key \
-        for merging sections; it is NOT the same as domain IDs such as \
-        personalcode, innercode, fundcode, or secucode.
+        "File 353", or "Case 353", AND no REFERENCE SCHEMA below declares a \
+        primary key, include a field named "record_id" and put it FIRST in \
+        PK and ANCHORS. If a REFERENCE SCHEMA declares a primary key, use \
+        that column instead. This local record ID is the row key for merging \
+        sections; it is NOT the same as domain IDs such as personalcode, \
+        innercode, fundcode, or secucode.
         - Do NOT add narrative/filler fields — only structured data fields.
+        {FUND_FIELD_DISAMBIGUATION_PROMPT}
         - For the UNITS line: scan the prose sample for unit suffixes attached \
         to numeric values (e.g. "2478.76亿元" → gdp=亿元, "15.3%" → rate=%). \
         Output a field=unit pair when you find a CONCRETE unit suffix \
@@ -722,7 +735,8 @@ def parse_knowledge_schema(
         "currency", "units", "amount", "count", or any placeholder.
 
         Governance document:
-        {km_text}{prose_section}""")
+        {km_text}{prose_section}
+        {kb_ref}""")
     messages = [
         ModelMessage(
             role="system",
@@ -741,7 +755,36 @@ def parse_knowledge_schema(
 
     raw = response.content.strip()
     if not raw or raw.strip().strip("`").upper() == "NONE":
-        return None
+        if prose_stem.lower() in km_text.lower():
+            logger.warning(
+                "ETL schema: LLM returned NONE for '%s' but knowledge section "
+                "contains the table name — retrying with hint",
+                prose_stem,
+            )
+            hint = ModelMessage(
+                role="user",
+                content=(
+                    f"The governance document DOES contain a section for "
+                    f'"{prose_stem}" — it appears in the heading. '
+                    f"Do NOT output NONE. Extract the schema from that section."
+                ),
+            )
+            try:
+                response = adapter.complete(
+                    [
+                        *messages,
+                        ModelMessage(role="assistant", content="NONE"),
+                        hint,
+                    ]
+                )
+            except Exception:
+                return None
+            raw = response.content.strip()
+            if not raw or raw.strip().strip("`").upper() == "NONE":
+                logger.warning("ETL schema: retry also returned NONE for '%s'", prose_stem)
+                return None
+        else:
+            return None
 
     parsed = _parse_schema_response(raw)
     if not parsed:
@@ -861,12 +904,66 @@ def infer_field_units_from_prose(
     return result
 
 
+def _build_kb_reference(table_name: str | None) -> str:
+    """Build a prompt section from schema KB if table_name matches."""
+    if not table_name:
+        return ""
+    from agents.etl._schema_kb import lookup
+
+    known = lookup(table_name)
+    if not known:
+        return ""
+    col_list = ", ".join(f"{c} ({known.dtypes.get(c, 'string')})" for c in known.columns)
+    rows_block = ""
+    if known.sample_rows:
+        header = " | ".join(known.columns)
+        lines: list[str] = [header]
+        for row in known.sample_rows[:3]:
+            vals = " | ".join(str(row.get(c, "")) for c in known.columns)
+            lines.append(vals)
+        rows_block = "\n".join(lines)
+
+    pk_note = ""
+    if (
+        known.columns
+        and known.columns[0].lower() == "id"
+        and known.dtypes.get(known.columns[0], "") == "integer"
+    ):
+        pk_note = (
+            f'\n        "{known.columns[0]}" is the PRIMARY KEY / row identifier. '
+            "Document-local record labels (however phrased) refer to this column. "
+            "Use it as PK — do NOT create a separate record_id column."
+        )
+
+    return textwrap.dedent(f"""\
+
+        REFERENCE SCHEMA for "{known.table_name}" (from structured data sources):
+        Columns: {col_list}{pk_note}
+        Sample data:
+        {rows_block}
+
+        ALWAYS use these exact column names. Match your output fields to this reference.
+        Preserve the VALUE FORMAT shown in the sample data — the sample rows are the
+        ground truth for how each field's values should be formatted.
+        Example: if a sample value is "43/166", the prose may scatter the parts across
+        the paragraph ("在包含 166 家机构中…取得了第43位") — combine them into "43/166".
+        NEVER output just "43".
+        LANGUAGE NOTE: the sample data language may differ from the source document.
+        Column names are fixed (use as-is), but field VALUES must match the source
+        document's language. E.g. sample shows "Equity Fund" but source says "股票型"
+        → output "股票型".
+        Only add extra fields if the prose clearly contains data not covered above.
+    """)
+
+
 def _infer_schema_single(
     adapter: ModelAdapter,
     sample: str,
     question: str,
+    table_name: str | None = None,
 ) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
     """One round of schema inference. Returns raw parsed tuple or None."""
+    kb_ref = _build_kb_reference(table_name)
     prompt = textwrap.dedent(f"""\
         Below is a sample from a prose data document. Each paragraph describes
         one entity and mixes structured data with narrative filler.
@@ -878,7 +975,7 @@ def _infer_schema_single(
         ---
         {sample}
         ---
-
+        {kb_ref}
         Your job:
         1. Identify ALL structured data fields present in the sample
            (numeric values, dates, categories, IDs, codes, statuses).
@@ -912,6 +1009,9 @@ def _infer_schema_single(
         - Only include fields that carry actual structured data values.
         - Use simple type labels such as integer_scalar_id, scalar_id, date, time,
           number, integer_count, integer_rank, string, category, boolean, url.
+        - For rank fields that use "xx/yy" format (e.g. "43/166"), use type
+          "string", NOT "integer_rank". "integer_rank" is only for pure
+          numeric ranks (e.g. 1, 2, 3).
         - If paragraphs are keyed by repeated document-local labels such as
           "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353",
           "File 353", or "Case 353", include a field named "record_id" and
@@ -920,6 +1020,7 @@ def _infer_schema_single(
           personalcode, innercode, fundcode, or secucode.
           Give record_id type "integer_scalar local_record_id"; record_id values
           must be a single scalar number, not a range or list.
+        {FUND_FIELD_DISAMBIGUATION_PROMPT}
         - Do NOT include narrative/context/filler fields.""")
 
     messages = [
@@ -981,6 +1082,8 @@ def _merge_multi_round_schemas(
 
         Group columns that refer to EXACTLY the same data field. For each group,
         pick the most descriptive canonical name.
+
+        {FUND_FIELD_DISAMBIGUATION_PROMPT}
 
         Output one line per group:
           canonical_name = synonym1, synonym2, ...
@@ -1053,6 +1156,7 @@ def infer_schema_from_sample(
     adapter: ModelAdapter,
     prose_text: str,
     question: str,
+    table_name: str | None = None,
 ) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
     """Infer a unified schema by sampling the raw prose text before compression.
 
@@ -1067,7 +1171,7 @@ def infer_schema_from_sample(
 
     rounds: list[tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]]] = []
     for _i in range(SCHEMA_SAMPLE_ROUNDS):
-        result = _infer_schema_single(adapter, sample, question)
+        result = _infer_schema_single(adapter, sample, question, table_name=table_name)
         if result:
             cols, anchors, types, units, defs = result
             rounds.append((cols, anchors, types, units, defs))

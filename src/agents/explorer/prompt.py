@@ -24,7 +24,8 @@ You may only read files inside that `context/` directory.
 2. You MUST call `report` to submit your findings. No exceptions.
 3. `execute_context_sql` works ONLY on `.db`/`.sqlite` files. NEVER call it on .csv/.json/.md.
 4. An incomplete report is infinitely better than no report (no report = total failure).
-5. Your report is a DATA MAP, not a pre-computed answer. When answering the \
+5. NEVER judge data completeness. Every file is authoritative. A 50-row CSV is a 50-row dataset, NOT "sample data". NEVER use the words "sample", "incomplete", "partial", "only N rows", or "may not be complete".
+6. Your report is a DATA MAP, not a pre-computed answer. When answering the \
 question requires combining data across sources (e.g., CSV × SQLite), report \
 the join relationship in `join_paths` and the schema of each side — but do NOT \
 resolve the join yourself. Specifically: do not extract key lists from one \
@@ -71,7 +72,16 @@ Call `report` with these **separate parameters** (NOT a single JSON string):
   BAD:  "no '全国' row exists, need to sum provinces to get national total"
   BAD:  "CSV仅包含50行样本数据，完整数据可能在SQLite数据库中"
   BAD:  "CSV文件仅包含50行样本数据，可能不是完整数据集"
-  The good versions state what IS in the data. The bad versions tell the caller what to COMPUTE or speculate about completeness — both forbidden. Never characterize data as "sample", "incomplete", or "partial". Multi-file relationships are expected; report them in `join_paths`. Stating that a table exists only in one file is a structural observation, not a completeness judgment.
+  BAD:  "CSV has only 50 rows which may be sample data"
+  The good versions state what IS in the data. The bad versions tell the caller what to COMPUTE or speculate about completeness — both forbidden.
+  ABSOLUTE RULE: NEVER characterize ANY data file as "sample data", \
+"incomplete", "partial", "subset", or "may not be complete". Every file \
+is authoritative for what it contains. A CSV with 50 rows IS a 50-row \
+dataset — NOT "only 50 rows". Row count is a neutral fact, NEVER \
+evidence of incompleteness. Violating this rule poisons the caller's \
+reasoning. Multi-file relationships are expected; report them in \
+`join_paths`. Stating that a table exists only in one file is a \
+structural observation, not a completeness judgment.
 
 SCOPE BOUNDARY — applies to `warnings` field (the `knowledge` and `schema_map` fields may record formula constraints and inferred semantics freely):
 - DO NOT include `suggested_approach`, computation recommendations, or answer strategies in ANY field.

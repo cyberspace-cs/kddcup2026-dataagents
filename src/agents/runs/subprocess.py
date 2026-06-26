@@ -102,7 +102,13 @@ def run_single_task_core(
         task = app.dataset.get_task(task_id)
         from agents.etl.extractor import run_etl_for_task
 
-        run_etl_for_task(task, app.model_adapter)
+        if _trace_ctx is not None:
+            from agents.tracing.create import function_span
+
+            with function_span("etl"):
+                run_etl_for_task(task, app.model_adapter)
+        else:
+            run_etl_for_task(task, app.model_adapter)
 
         from agents.tools.context import build_virtual_context
 
