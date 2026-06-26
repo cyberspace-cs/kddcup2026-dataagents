@@ -8,6 +8,7 @@ import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
+from agents.etl._columns import metadata_by_name
 from agents.etl._constants import (
     COMPRESS_CHUNK_SIZE,
     DATE_SCALAR,
@@ -103,10 +104,11 @@ def _format_schema_type_hint(
 ) -> str:
     if not schema_columns or not schema_field_types:
         return ""
+    field_types = metadata_by_name(schema_columns, schema_field_types)
     lines = [
-        _field_type_instruction(field, schema_field_types[field])
+        _field_type_instruction(field, field_types[field])
         for field in schema_columns
-        if field in schema_field_types
+        if field in field_types
     ]
     if not lines:
         return ""
@@ -128,20 +130,21 @@ def _format_hard_type_rules(
     if not schema_columns or not schema_field_types:
         return "\n" + "\n".join(lines) + "\n"
 
+    field_types = metadata_by_name(schema_columns, schema_field_types)
     number_fields = [
         field
         for field in schema_columns
         if (
-            "number" in schema_field_types.get(field, "").lower()
-            or "integer" in schema_field_types.get(field, "").lower()
+            "number" in field_types.get(field, "").lower()
+            or "integer" in field_types.get(field, "").lower()
         )
-        and "rank" not in schema_field_types.get(field, "").lower()
+        and "rank" not in field_types.get(field, "").lower()
     ]
     date_fields = [
-        field for field in schema_columns if "date" in schema_field_types.get(field, "").lower()
+        field for field in schema_columns if "date" in field_types.get(field, "").lower()
     ]
     boolean_fields = [
-        field for field in schema_columns if "boolean" in schema_field_types.get(field, "").lower()
+        field for field in schema_columns if "boolean" in field_types.get(field, "").lower()
     ]
 
     lines.extend(
@@ -197,7 +200,7 @@ def _clean_compressed_entity_lines(
         return text
 
     field_map = {field.lower(): field for field in schema_columns}
-    field_types = schema_field_types or {}
+    field_types = metadata_by_name(schema_columns, schema_field_types)
     cleaned: list[str] = []
     dropped = 0
     normalized = 0
@@ -351,10 +354,12 @@ def _generate_compress_guide(
         step = max(1, len(paras) // 20)
         sample = "\n\n".join(paras[::step][:20])
 
+    field_defs = metadata_by_name(schema_columns, schema_field_defs)
+    field_types = metadata_by_name(schema_columns, schema_field_types)
     defs_lines: list[str] = []
     for f in schema_columns:
-        d = (schema_field_defs or {}).get(f, "")
-        t = (schema_field_types or {}).get(f, "")
+        d = field_defs.get(f, "")
+        t = field_types.get(f, "")
         parts = [f]
         if t:
             parts.append(f"type={t}")
@@ -574,11 +579,8 @@ def _format_schema_def_hint(
 ) -> str:
     if not schema_columns or not schema_field_defs:
         return ""
-    lines = [
-        f"  - {field}: {schema_field_defs[field]}"
-        for field in schema_columns
-        if field in schema_field_defs
-    ]
+    field_defs = metadata_by_name(schema_columns, schema_field_defs)
+    lines = [f"  - {field}: {field_defs[field]}" for field in schema_columns if field in field_defs]
     if not lines:
         return ""
     return (

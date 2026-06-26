@@ -70,15 +70,19 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
             if key_stem != stem:
                 continue
             existing = cast(dict[str, str], entry.get("column_conversions", {}) or {})
+            existing_lower = {field.lower() for field in existing}
             for col, note in col_conversions.items():
-                if col not in existing:
+                if col.lower() not in existing_lower:
                     existing[col] = note
+                    existing_lower.add(col.lower())
             if existing:
                 entry["column_conversions"] = existing
             columns_dict: dict[str, Any] | None = entry.get("columns")  # type: ignore[assignment]
             if isinstance(columns_dict, dict):
+                columns_by_lower = {str(name).lower(): str(name) for name in columns_dict}
                 for col, conv in conv_by_field.items():
-                    col_info: dict[str, Any] | None = columns_dict.get(col)  # type: ignore[assignment]
+                    col_key = columns_by_lower.get(col.lower(), col)
+                    col_info: dict[str, Any] | None = columns_dict.get(col_key)  # type: ignore[assignment]
                     if not isinstance(col_info, dict):
                         continue
                     suffix = (

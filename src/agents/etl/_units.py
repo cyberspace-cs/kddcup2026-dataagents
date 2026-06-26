@@ -132,6 +132,7 @@ def _parse_unit_factor_response(
     trusted only for choosing the target unit, not the arithmetic.
     """
     result: dict[str, tuple[str, float]] = {}
+    source_by_lower = {field.lower(): field for field in source_fields}
     raw = text.split(":", 1)[-1] if ":" in text else text
     for item in re.split(r"[,;\n]", raw):
         item = item.strip()
@@ -154,13 +155,14 @@ def _parse_unit_factor_response(
             unit_part, star_sep, factor_part = rest.partition("*")
             star = bool(star_sep)
             unit_part = unit_part.strip()
-        if field not in source_fields:
+        canonical_field = source_by_lower.get(field.lower())
+        if canonical_field is None:
             continue
         if not unit_part or unit_part.startswith("_"):
             continue
-        if unit_part == source_fields[field]:
+        if unit_part == source_fields[canonical_field]:
             continue
-        exact = _deterministic_factor(source_fields[field], unit_part)
+        exact = _deterministic_factor(source_fields[canonical_field], unit_part)
         if exact is not None:
             if exact == 1:
                 continue
@@ -170,12 +172,12 @@ def _parse_unit_factor_response(
                         logger.warning(
                             "Unit factor for %s (%s→%s) corrected: LLM gave %s, exact is %s",
                             field,
-                            source_fields[field],
+                            source_fields[canonical_field],
                             unit_part,
                             factor_part.strip(),
                             exact,
                         )
-            result[field] = (unit_part, exact)
+            result[canonical_field] = (unit_part, exact)
             continue
         if not star:
             continue
@@ -185,7 +187,7 @@ def _parse_unit_factor_response(
             continue
         if factor == 0 or factor == 1:
             continue
-        result[field] = (unit_part, factor)
+        result[canonical_field] = (unit_part, factor)
     return result
 
 

@@ -177,10 +177,15 @@ Run **ONLY** the three checks below — no other checks.
 The ONLY input is the submitted COLUMNS array.  A column is "extra"
 ONLY if it appears in the COLUMNS array AND the question did not ask
 for it.  This check ONLY identifies columns to **REMOVE** — NEVER suggest
-adding columns here.  Common mistakes:
+adding columns here.  NEVER use this check to report missing columns —
+if a column is absent, that is NOT an "extra" failure.  Common mistakes:
 - Row-ID / primary-key / code / rank columns (`id`, `CustomerID`, `PostId`,
   `基金代码`, `fund_code`, `ticker`, `stock_code`, `排名`, `rank`, `序号`, …) when
   the question does not ask for identifiers or rankings.
+- Sorting / ranking criterion columns used only to determine order or top-N,
+  when the question does not explicitly ask for that value as output (e.g.,
+  question "增长幅度最高的十支基金和其投资目标" → `BenchGRForThisWeek` is the
+  ranking criterion, NOT a requested output).
 - Filter / WHERE columns whose value is constant across all rows.
 - Join-key columns needed for computation but not for the answer.
 - Source-table dimension columns (`Province`, `Date`, `EndDate`, `Year`, `Region`,
@@ -190,10 +195,22 @@ adding columns here.  Common mistakes:
   the question explicitly names them (e.g., "show X by province", "X and
   their dates", "for each year").
 
+**Entity name columns are NOT extra.**  Distinguish readable names from
+numeric IDs: `SecuAbbr`, `CompanyName`, `Name` are human-readable names
+that answer "which/what entity" — NEVER flag these as extra.  The common
+mistakes above (`id`, `CustomerID`, `基金代码`, `fund_code`) are numeric
+IDs/codes, not names — those ARE extra when the question does not ask
+for codes.
+
 ### Check 2 — UNIT SUFFIX in cell values (label: `unit_suffix`)
 
-Scan the SAMPLE ROWS for numeric cells that carry a **non-numeric** unit
-suffix — common suffixes: `%`, `万`, `亿`, `元`, `USD`, `kg`, `km`, `m²`, etc.
+This check applies ONLY to **numeric** cells.  **Skip all text/string
+columns entirely** — columns containing names, descriptions, addresses,
+or any free-form text (e.g., `InvestTarget`, `Comment`, `Description`)
+are NOT numeric and MUST NOT be inspected for unit suffixes.
+
+Scan numeric cells for a **non-numeric** unit suffix — common suffixes:
+`%`, `万`, `亿`, `元`, `USD`, `kg`, `km`, `m²`, etc.
 A cell like `"48.706%"` or `"3.5万"` is **WRONG** — the column name may
 contain the unit indicator (e.g., "收益率(%)"), but every cell value MUST
 be a bare number (e.g., `48.706`).  The grader compares normalized numeric
@@ -227,17 +244,19 @@ table so each metric is its own column and values fill a single row."
 ## Output format
 
 Respond with a **single JSON object** and NOTHING ELSE.
-No reasoning, no analysis, no chain-of-thought.
-
-`"checks"` lists ONLY failed checks using these exact labels:
+`"checks"` includes ONLY checks that **actually failed** — NEVER include
+a check that passed.  Allowed labels:
 `"extra"`, `"unit_suffix"`, `"transposed"`.
+`"reason"` MUST be under 25 words per failed check — state only the problem
+and the fix, no reasoning or analysis.
 
+When in doubt, say `"ok"`.
+
+Examples:
 ```json
 {"verdict": "ok"}
-{"verdict": "reject", "checks": ["extra"], "reason": "<25 words per failed check>"}
-```
-
-Be conservative: **when in doubt, say "ok".**"""
+{"verdict": "reject", "checks": ["extra"], "reason": "BenchGRForThisWeek is a ranking criterion, not a requested output."}
+```"""
 
 _MAX_SAMPLE_ROWS = 5
 

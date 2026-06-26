@@ -11,6 +11,7 @@ import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agents.etl._columns import metadata_by_name
 from agents.etl._constants import FIX_FORMAT_MAX_LINES, FIX_FORMAT_MAX_RETRIES
 from agents.etl._merge import (
     apply_synonym_merges,
@@ -152,7 +153,7 @@ def fix_malformed_lines(
     """
     from agents.etl._merge import detect_malformed_lines
 
-    defs = schema_field_defs or {}
+    defs = metadata_by_name(schema_columns, schema_field_defs)
     schema_block = ", ".join(schema_columns)
     defs_block = "\n".join(
         f"- {col}: {defs.get(col, '')}" for col in schema_columns if defs.get(col)
@@ -245,7 +246,7 @@ def reconcile_field_names(
     if not unmatched:
         return compressed
 
-    defs = schema_field_defs or {}
+    defs = metadata_by_name(schema_columns, schema_field_defs)
     schema_block = "\n".join(f"- {col}: {defs.get(col, '')}" for col in schema_columns)
     unmatched_block = "\n".join(f"- {k}" for k in unmatched)
 
@@ -306,6 +307,55 @@ def reconcile_field_names(
     return apply_field_name_map(compressed, field_map)
 
 
+def _case_only_header_merges(
+    header: list[str],
+    preferred_columns: list[str],
+) -> list[tuple[str, str]]:
+    """Return deterministic merges for header names that differ only by case."""
+    preferred = {c.lower(): c for c in preferred_columns}
+    groups: dict[str, list[str]] = {}
+    for col in header:
+        groups.setdefault(col.lower(), []).append(col)
+
+    merges: list[tuple[str, str]] = []
+    for lower, cols in groups.items():
+        unique_cols = list(dict.fromkeys(cols))
+        if len(unique_cols) <= 1:
+            continue
+        preferred_col = preferred.get(lower)
+        target = preferred_col if preferred_col in unique_cols else unique_cols[0]
+        merges.extend((col, target) for col in unique_cols if col != target)
+    return merges
+
+
+def _unit_meta_get(units_meta: dict[str, Any], field: str) -> Any:
+    lower = field.lower()
+    for key, value in units_meta.items():
+        if not key.startswith("_") and key.lower() == lower:
+            return value
+    return None
+
+
+def _move_unit_meta(units_meta: dict[str, Any], src: str, dst: str) -> bool:
+    changed = False
+    for prefix in ("", "_target_", "_factor_"):
+        src_lower = f"{prefix}{src}".lower()
+        dst_key = f"{prefix}{dst}"
+        src_key = next((key for key in list(units_meta) if key.lower() == src_lower), None)
+        if src_key is None:
+            continue
+        if src_key.lower() == dst_key.lower():
+            if src_key != dst_key and dst_key not in units_meta:
+                units_meta[dst_key] = units_meta.pop(src_key)
+                changed = True
+            continue
+        dst_existing = next((key for key in units_meta if key.lower() == dst_key.lower()), None)
+        units_meta.setdefault(dst_existing or dst_key, units_meta[src_key])
+        del units_meta[src_key]
+        changed = True
+    return changed
+
+
 def unify_csv_synonyms(
     adapter: ModelAdapter,
     csv_path: Path,
@@ -343,27 +393,74 @@ def unify_csv_synonyms(
         return []
     if not header or not rows:
         return []
-    width = len(header)
-    rows = [row + [""] * (width - len(row)) if len(row) < width else row[:width] for row in rows]
+    current_header = header
+    width = len(current_header)
+    current_rows = [
+        row + [""] * (width - len(row)) if len(row) < width else row[:width] for row in rows
+    ]
 
-    fill = column_fill_counts(header, rows)
-    n_rows = len(rows)
+    pending_applied: list[tuple[str, str]] = []
+
+    def _commit(applied: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        if not applied:
+            return []
+        with csv_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(current_header)
+            writer.writerows(current_rows)
+
+        units_meta: dict[str, Any] = {}
+        if units_path is not None and units_path.is_file():
+            with contextlib.suppress(OSError, json.JSONDecodeError):
+                units_meta = json.loads(units_path.read_text(encoding="utf-8"))
+        if units_meta:
+            changed = False
+            for src, dst in applied:
+                changed = _move_unit_meta(units_meta, src, dst) or changed
+            if changed and units_path is not None:
+                with contextlib.suppress(OSError):
+                    units_path.write_text(
+                        json.dumps(units_meta, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+
+        for src, dst in applied:
+            logger.info(
+                "ETL synonym-unify: merged column '%s' → '%s' in %s",
+                src,
+                dst,
+                csv_path.name,
+            )
+        return applied
+
+    case_merges = _case_only_header_merges(current_header, governance_columns)
+    if case_merges:
+        current_header, current_rows, case_applied = apply_synonym_merges(
+            current_header,
+            current_rows,
+            case_merges,
+            protected=set(anchor_keys),
+        )
+        pending_applied.extend(case_applied)
+
+    fill = column_fill_counts(current_header, current_rows)
+    n_rows = len(current_rows)
     gov_lower = {g.lower() for g in governance_columns}
     anchor_lower = {a.lower() for a in anchor_keys}
     gapped_canonicals = [
         col
-        for col in header
+        for col in current_header
         if col.lower() in gov_lower and col.lower() not in anchor_lower and fill[col] < n_rows
     ]
     discovered_cols = [
         col
-        for col in header
+        for col in current_header
         if col.lower() not in gov_lower and col.lower() not in anchor_lower and fill[col] > 0
     ]
     if not gapped_canonicals or not discovered_cols:
-        return []
+        return _commit(pending_applied)
 
-    col_idx = {col: header.index(col) for col in header}
+    col_idx = {col: current_header.index(col) for col in current_header}
 
     def _pair_viable(canon: str, disc: str) -> bool:
         """Zero conflicts AND (contributes new cells OR fully redundant duplicate)."""
@@ -371,7 +468,7 @@ def unify_csv_synonyms(
         contributes = 0
         overlap = 0
         disc_nonempty = 0
-        for row in rows:
+        for row in current_rows:
             src, dst = row[di].strip(), row[ci].strip()
             if not src:
                 continue
@@ -390,15 +487,16 @@ def unify_csv_synonyms(
         if any(_pair_viable(canon, disc) for disc in discovered_cols)
     ]
     if not viable_canonicals:
-        return []
+        return _commit(pending_applied)
 
     samples: dict[str, list[str]] = {col: [] for col in discovered_cols}
-    for row in rows:
+    for row in current_rows:
         for col in discovered_cols:
             val = row[col_idx[col]].strip()
             if val and val not in samples[col] and len(samples[col]) < 3:
                 samples[col].append(val)
 
+    field_defs = metadata_by_name(current_header, field_defs)
     mapping = _adjudicate_synonym_columns(
         adapter,
         prose_stem,
@@ -413,12 +511,12 @@ def unify_csv_synonyms(
         question,
     )
     if not mapping:
-        return []
+        return _commit(pending_applied)
 
     mapping = {disc: canon for disc, canon in mapping.items() if _pair_viable(canon, disc)}
 
     if not mapping:
-        return []
+        return _commit(pending_applied)
 
     # Collision guard: two discovered columns claiming one canonical column is
     # either a misjudgment or naming drift — trust neither, corrupt nothing.
@@ -444,7 +542,7 @@ def unify_csv_synonyms(
             units_meta = json.loads(units_path.read_text(encoding="utf-8"))
     guarded: list[tuple[str, str]] = []
     for src, dst in merges:
-        src_unit, dst_unit = units_meta.get(src), units_meta.get(dst)
+        src_unit, dst_unit = _unit_meta_get(units_meta, src), _unit_meta_get(units_meta, dst)
         if src_unit and dst_unit and str(src_unit) != str(dst_unit):
             logger.warning(
                 "ETL synonym-unify: unit mismatch '%s'(%s) vs '%s'(%s) — not merged",
@@ -456,43 +554,17 @@ def unify_csv_synonyms(
             continue
         guarded.append((src, dst))
     if not guarded:
-        return []
+        return _commit(pending_applied)
 
     new_header, new_rows, applied = apply_synonym_merges(
-        header,
-        rows,
+        current_header,
+        current_rows,
         guarded,
         protected=set(anchor_keys),
     )
     if not applied:
-        return []
+        return _commit(pending_applied)
 
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(new_header)
-        writer.writerows(new_rows)
-
-    if units_meta:
-        changed = False
-        for src, dst in applied:
-            for prefix in ("", "_target_", "_factor_"):
-                src_key, dst_key = f"{prefix}{src}", f"{prefix}{dst}"
-                if src_key in units_meta:
-                    units_meta.setdefault(dst_key, units_meta[src_key])
-                    del units_meta[src_key]
-                    changed = True
-        if changed and units_path is not None:
-            with contextlib.suppress(OSError):
-                units_path.write_text(
-                    json.dumps(units_meta, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-
-    for src, dst in applied:
-        logger.info(
-            "ETL synonym-unify: merged column '%s' → '%s' in %s",
-            src,
-            dst,
-            csv_path.name,
-        )
-    return applied
+    current_header, current_rows = new_header, new_rows
+    pending_applied.extend(applied)
+    return _commit(pending_applied)

@@ -8,6 +8,7 @@ import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
+from agents.etl._columns import metadata_by_name
 from agents.etl._constants import (
     DEDUP_CONTEXT_WINDOW,
     ENTITY_LINE,
@@ -72,8 +73,8 @@ def _detect_gap_cells(
     if not rows or not primary_key:
         return {}
 
-    skip = set(anchor_keys or [])
-    candidate_cols = [c for c in schema_columns if c not in skip]
+    skip_lower = {a.lower() for a in anchor_keys or []}
+    candidate_cols = [c for c in schema_columns if c.lower() not in skip_lower]
     if not candidate_cols:
         return {}
 
@@ -122,15 +123,23 @@ def _value_search_needles(value_str: str) -> list[str]:
     return needles
 
 
-def _extract_value_context(value_str: str, source_text: str) -> str:
-    """Extract the first source context snippet surrounding *value_str*."""
+def _extract_value_context(value_str: str, source_text: str, *, max_hits: int = 3) -> str:
+    """Extract source context snippets surrounding *all* occurrences of *value_str*."""
+    snippets: list[str] = []
+    seen_starts: set[int] = set()
     for needle in _value_search_needles(value_str):
-        m = re.search(re.escape(needle), source_text)
-        if m:
+        for m in re.finditer(re.escape(needle), source_text):
             start = max(0, m.start() - DEDUP_CONTEXT_WINDOW)
+            if start in seen_starts:
+                continue
+            seen_starts.add(start)
             end = min(len(source_text), m.end() + DEDUP_CONTEXT_WINDOW)
-            return source_text[start:end]
-    return ""
+            snippets.append(source_text[start:end])
+            if len(snippets) >= max_hits:
+                break
+        if len(snippets) >= max_hits:
+            break
+    return " [...] ".join(snippets)
 
 
 def dedup_cross_field_copies(
@@ -159,8 +168,8 @@ def dedup_cross_field_copies(
     if not rows:
         return text, {}
 
-    skip = set(anchor_keys or [])
-    data_cols = [c for c in schema_columns if c not in skip]
+    skip_lower = {a.lower() for a in anchor_keys or []}
+    data_cols = [c for c in schema_columns if c.lower() not in skip_lower]
 
     dupes: list[tuple[str, str, list[str], str]] = []
     for row in rows:
@@ -199,14 +208,14 @@ def dedup_cross_field_copies(
 
     prompt = textwrap.dedent(f"""\
         The same numeric value appears in multiple columns for each entity
-        below. Based on the source context, determine which ONE column
-        the value actually belongs to. The other column(s) received it
-        by mistake.
+        below. Based on the source context, determine whether the value
+        genuinely belongs to ALL listed columns or only ONE of them.
 
         {chr(10).join(items)}
 
         For each item output EXACTLY one line:
-        <item_number>:<column_to_keep>
+        <item_number>:BOTH   — if the source text independently states this value for each column
+        <item_number>:<column_to_keep>  — if only one column should have this value
 
         Output nothing else.""")
 
@@ -214,7 +223,7 @@ def dedup_cross_field_copies(
         ModelMessage(
             role="system",
             content="Resolve cross-field value duplicates. "
-            "Output item_number:column_to_keep lines only.",
+            "Output item_number:column_to_keep or item_number:BOTH lines only.",
         ),
         ModelMessage(role="user", content=prompt),
     ]
@@ -241,6 +250,8 @@ def dedup_cross_field_copies(
         if idx < 0 or idx >= len(dupes):
             continue
         keep_col = keep_col.strip().lower()
+        if keep_col == "both":
+            continue
         pk_val, _val, cols, _ctx = dupes[idx]
         matched = [c for c in cols if c.lower() == keep_col]
         if len(matched) != 1:
@@ -326,10 +337,11 @@ def retry_missing_values(
 
         col_list = ", ".join(missing_cols)
         defs_hint = ""
-        if schema_field_defs:
+        field_defs = metadata_by_name(missing_cols, schema_field_defs)
+        if field_defs:
             parts: list[str] = []
             for c in missing_cols:
-                d = schema_field_defs.get(c, "")
+                d = field_defs.get(c, "")
                 if d:
                     parts.append(f"  {c}: {d}")
             if parts:
@@ -472,10 +484,12 @@ def verify_field_values(
     if not verify_ids:
         return text
 
-    skip = set(anchor_keys or [])
-    types = schema_field_types or {}
+    skip_lower = {a.lower() for a in anchor_keys or []}
+    types = metadata_by_name(schema_columns, schema_field_types)
     verify_cols = [
-        c for c in schema_columns if c not in skip and "date" not in types.get(c, "").lower()
+        c
+        for c in schema_columns
+        if c.lower() not in skip_lower and "date" not in types.get(c, "").lower()
     ]
     if not verify_cols:
         return text
@@ -490,8 +504,9 @@ def verify_field_values(
 
     col_list = ", ".join(verify_cols)
     defs_block = ""
-    if schema_field_defs:
-        parts = [f"  {c}: {schema_field_defs[c]}" for c in verify_cols if c in schema_field_defs]
+    field_defs = metadata_by_name(verify_cols, schema_field_defs)
+    if field_defs:
+        parts = [f"  {c}: {field_defs[c]}" for c in verify_cols if c in field_defs]
         if parts:
             defs_block = "\nField definitions:\n" + "\n".join(parts) + "\n"
 

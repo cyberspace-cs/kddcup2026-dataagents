@@ -9,6 +9,7 @@ import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agents.etl._columns import metadata_by_name
 from agents.etl._compress import sample_paragraphs_by_section
 from agents.etl._constants import (
     FUND_FIELD_DISAMBIGUATION_PROMPT,
@@ -125,6 +126,34 @@ def _parse_defs_line(line: str) -> dict[str, str]:
     return parsed
 
 
+def _canonicalize_casefold_names(
+    names: list[str],
+    preferred: dict[str, str] | None = None,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Deduplicate names that differ only by case.
+
+    When *preferred* is provided, its values define the spelling to keep for
+    matching lower-case keys.
+    """
+    preferred_by_lower = {k.lower(): v for k, v in (preferred or {}).items()}
+    canonical_by_lower: dict[str, str] = {}
+    result: list[str] = []
+    remapped: list[tuple[str, str]] = []
+    for name in names:
+        low = name.lower()
+        target = preferred_by_lower.get(low, name)
+        existing = canonical_by_lower.get(low)
+        if existing is not None:
+            if name != existing:
+                remapped.append((name, existing))
+            continue
+        canonical_by_lower[low] = target
+        result.append(target)
+        if name != target:
+            remapped.append((name, target))
+    return result, remapped
+
+
 def _parse_schema_response(
     text: str,
 ) -> tuple[str, list[str], dict[str, str], list[str], dict[str, str], dict[str, str]] | None:
@@ -171,16 +200,29 @@ def _parse_schema_response(
     if not pk or len(columns) < 2:
         return None
 
+    columns, _ = _canonicalize_casefold_names(columns)
+    column_by_lower = {c.lower(): c for c in columns}
+    pk = column_by_lower.get(pk.lower(), pk)
+
     if not anchor_keys:
         anchor_keys = [pk]
-    elif pk not in anchor_keys:
+    elif pk.lower() not in {a.lower() for a in anchor_keys}:
         anchor_keys.insert(0, pk)
 
+    canonical_anchors: list[str] = []
+    seen_anchors: set[str] = set()
     for ak in anchor_keys:
-        if ak not in columns:
-            columns.append(ak)
+        canonical = column_by_lower.get(ak.lower(), ak)
+        canonical_lower = canonical.lower()
+        if canonical_lower in seen_anchors:
+            continue
+        canonical_anchors.append(canonical)
+        seen_anchors.add(canonical_lower)
+        if canonical_lower not in column_by_lower:
+            columns.append(canonical)
+            column_by_lower[canonical_lower] = canonical
 
-    return pk, anchor_keys, explicit_types, columns, field_units, field_defs
+    return pk, canonical_anchors, explicit_types, columns, field_units, field_defs
 
 
 def _complete_schema_field_defs(
@@ -286,6 +328,7 @@ def merge_prose_schema_into_governance(
 
     from agents.etl._merge import strip_key
 
+    gov_defs = metadata_by_name(gov_columns, gov_defs)
     gov_norm = {strip_key(c) for c in gov_columns}
     novel = [
         c for c in prose_cols if strip_key(c) not in gov_norm and c.lower() not in RECORD_ID_FIELDS
@@ -367,11 +410,16 @@ def _merge_synonyms_into_km(
     downstream compression.  Mutates *columns* and *raw_defs* in place.
     Returns list of (removed, canonical) pairs.
     """
-    km_lower = {c.lower() for c in km_fields}
+    km_canon = {c.lower(): c for c in km_fields}
+    canonical_columns, merged = _canonicalize_casefold_names(columns, km_canon)
+    if merged:
+        columns[:] = canonical_columns
+
+    km_lower = set(km_canon)
     rid_fields = {c.lower() for c in RECORD_ID_FIELDS}
     non_km = [c for c in columns if c.lower() not in km_lower and c.lower() not in rid_fields]
     if not non_km:
-        return []
+        return merged
 
     km_block = "\n".join(f"- {c}: {km_fields[c]}" for c in km_fields)
     extra_block = "\n".join(f"- {c}: {raw_defs.get(c, '(no definition)')}" for c in non_km)
@@ -424,9 +472,7 @@ def _merge_synonyms_into_km(
     raw = response.content.strip()
     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
-    merged: list[tuple[str, str]] = []
     non_km_lower = {c.lower(): c for c in non_km}
-    km_canon = {c.lower(): c for c in km_fields}
     for line in raw.splitlines():
         line = line.strip().lstrip("- ")
         if "=" not in line:
@@ -456,7 +502,10 @@ def _remap_schema_metadata(
         old_key = next((key for key in values if key.lower() == old.lower()), None)
         if old_key is None:
             return
-        new_key = next((key for key in values if key.lower() == new.lower()), None)
+        new_key = next(
+            (key for key in values if key.lower() == new.lower() and key != old_key),
+            None,
+        )
         old_value = values.pop(old_key)
         if new_key is None:
             values[new] = old_value
@@ -848,24 +897,41 @@ def infer_field_units_from_prose(
     """
     if not prose_sample or not columns:
         return {}
-    col_block = "\n".join(f"- {c}: {field_defs.get(c, '(no definition)')}" for c in columns)
+    field_defs_by_col = metadata_by_name(columns, field_defs)
+    col_block = "\n".join(f"- {c}: {field_defs_by_col.get(c, '(no definition)')}" for c in columns)
     prompt = textwrap.dedent(f"""\
         Below are sample paragraphs from a prose data file AND a list of \
         known schema fields.
 
-        For each field, inspect the actual numeric values in the prose \
-        sample and determine the unit suffix attached to them \
-        (e.g. 元, 万元, 亿元, 百万元, %, 万吨, 万人, 公斤). \
-        Output one field=unit pair per field where a concrete unit is \
-        visible. Omit fields with no visible unit suffix. \
-        A currency denomination statement (e.g. "denominated in Chinese \
-        Yuan", "currency: CNY", "以人民币计价", "values in Chinese Yuan") \
-        declares the CURRENCY, not the magnitude — it is NOT a unit. \
-        NEVER emit field=元 from such a statement; only tag a field 元 \
-        when its numeric values carry an explicit 元 suffix in the data.
+        UNIT EXTRACTION RULES
+
+        1. WHEN TO EXTRACT A UNIT
+        Output field=unit ONLY when the unit is visibly attached to that \
+        field's numeric value, or the exact field/header explicitly carries \
+        a magnitude unit. The unit must be a real magnitude suffix such as \
+        元, 万元, 亿元, 百万元, %, 万吨, 万人, or 公斤.
+
+        2. WHEN NOT TO EXTRACT A UNIT
+        Do NOT output any unit when the text only states currency, \
+        denomination, table scope, data type, or reporting currency. These \
+        are currency labels, NOT magnitude units: "denominated in Chinese \
+        Yuan", "currency: CNY", "CurrencyName: 人民币元", "RMB-denominated \
+        balance sheet", "all monetary values are in Chinese Yuan", "以人民币计价". \
+        If the numeric value appears as "CorporateSavings: 326283.0" with \
+        no suffix, OMIT CorporateSavings entirely.
+
+        3. EXAMPLES
+        GOOD: "Corporate Savings were 326283万元." -> CorporateSavings=万元
+        GOOD: "GDP was 2478.76亿元." -> GDP=亿元
+        GOOD: "Growth rate was 2.5%." -> GrowthRate=%
+        GOOD: field/header "国内生产总值(百万元)" -> 国内生产总值=百万元
+        BAD: "Corporate Savings were 326283.0. CurrencyName: Chinese Yuan." \
+        -> DO NOT output CorporateSavings=元; output nothing for CorporateSavings.
+        BAD: "All figures are denominated in Chinese Yuan. TotalSavings was \
+        965459.0." -> DO NOT output TotalSavings=元; output nothing for TotalSavings.
 
         ONLY output units for the fields listed below — do NOT invent \
-        new fields.
+        new fields. If no field qualifies, output nothing.
 
         Schema fields:
         {col_block}
@@ -877,8 +943,12 @@ def infer_field_units_from_prose(
     messages = [
         ModelMessage(
             role="system",
-            content="You identify units for known fields from prose data values. "
-            "Output field=unit lines only.",
+            content=(
+                "You identify visible magnitude-unit suffixes for known fields. "
+                "Output field=unit lines only. If no numeric value visibly carries "
+                "a unit suffix, output nothing. Currency labels such as Yuan/RMB/CNY "
+                "are not magnitude units."
+            ),
         ),
         ModelMessage(role="user", content=prompt),
     ]
@@ -889,6 +959,7 @@ def infer_field_units_from_prose(
         return {}
 
     col_lower = {c.lower(): c for c in columns}
+    existing_unit_lower = {field.lower() for field in existing_units}
     result: dict[str, str] = {}
     for line in response.content.strip().splitlines():
         line = line.strip().lstrip("- ")
@@ -897,7 +968,7 @@ def infer_field_units_from_prose(
         field, _, unit = line.partition("=")
         field, unit = field.strip(), unit.strip()
         canonical = col_lower.get(field.lower())
-        if canonical and unit and canonical not in existing_units:
+        if canonical and unit and canonical.lower() not in existing_unit_lower:
             result[canonical] = unit
     if result:
         logger.info("ETL prose unit inference: %s", result)
@@ -1054,6 +1125,7 @@ def _merge_multi_round_schemas(
     all_cols: list[str] = []
     seen_lower: set[str] = set()
     merged_anchors: list[str] = []
+    seen_anchor_lower: set[str] = set()
     merged_types: dict[str, str] = {}
     merged_units: dict[str, str] = {}
     merged_defs: dict[str, str] = {}
@@ -1064,8 +1136,10 @@ def _merge_multi_round_schemas(
                 seen_lower.add(c.lower())
                 all_cols.append(c)
         for a in anchors:
-            if a not in merged_anchors and a.lower() not in RECORD_ID_FIELDS:
+            a_lower = a.lower()
+            if a_lower not in seen_anchor_lower and a_lower not in RECORD_ID_FIELDS:
                 merged_anchors.append(a)
+                seen_anchor_lower.add(a_lower)
         merged_types.update(types)
         merged_units.update(units)
         merged_defs.update(defs)
@@ -1073,7 +1147,8 @@ def _merge_multi_round_schemas(
     if len(all_cols) <= len(rounds[0][0]):
         return all_cols, merged_anchors, merged_types, merged_units, merged_defs
 
-    col_block = "\n".join(f"- {c}: {merged_defs.get(c, '')}" for c in all_cols)
+    merged_defs_by_col = metadata_by_name(all_cols, merged_defs)
+    col_block = "\n".join(f"- {c}: {merged_defs_by_col.get(c, '')}" for c in all_cols)
     prompt = textwrap.dedent(f"""\
         Multiple schema inference rounds produced these columns (some may be
         synonyms for the same concept):
@@ -1125,10 +1200,13 @@ def _merge_multi_round_schemas(
         return all_cols, merged_anchors, merged_types, merged_units, merged_defs
 
     final_anchors: list[str] = []
+    final_anchor_lower: set[str] = set()
     for a in merged_anchors:
         resolved = alias_to_canon.get(a.lower(), a)
-        if resolved not in final_anchors:
+        resolved_lower = resolved.lower()
+        if resolved_lower not in final_anchor_lower:
             final_anchors.append(resolved)
+            final_anchor_lower.add(resolved_lower)
 
     final_types: dict[str, str] = {}
     final_units: dict[str, str] = {}

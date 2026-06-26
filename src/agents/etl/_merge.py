@@ -7,6 +7,7 @@ import io
 import logging
 import re
 
+from agents.etl._columns import metadata_by_name
 from agents.etl._constants import (
     APPROX_TAG,
     DATE_SCALAR,
@@ -126,10 +127,11 @@ def _repair_fabricated_pks(
 
     # Candidate columns: declared anchors first, then remaining columns in
     # first-seen order — the alias column is not always a declared anchor.
-    candidates: list[str] = [a for a in (anchor_keys or []) if a != primary_key]
+    primary_lower = primary_key.lower()
+    candidates: list[str] = [a for a in (anchor_keys or []) if a.lower() != primary_lower]
     for _, pairs in parsed:
         for key, _val in pairs:
-            if key != primary_key and key not in candidates:
+            if key.lower() != primary_lower and key not in candidates:
                 candidates.append(key)
 
     for column in candidates:
@@ -436,6 +438,7 @@ def collect_unmatched_keys(
     """Return field keys in KV entity lines that don't match any schema column (case-insensitive)."""
     col_lower = {c.lower() for c in schema_columns}
     seen: dict[str, None] = {}
+    seen_lower: set[str] = set()
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
@@ -444,8 +447,10 @@ def collect_unmatched_keys(
             if ":" not in part:
                 continue
             key = part.partition(":")[0].strip()
-            if key and key.lower() not in col_lower and key not in seen:
+            key_lower = key.lower()
+            if key and key_lower not in col_lower and key_lower not in seen_lower:
                 seen[key] = None
+                seen_lower.add(key_lower)
     return list(seen)
 
 
@@ -688,6 +693,7 @@ def deterministic_kv_to_csv(
     """
     field_map = canonical_key_map(schema_columns)
     col_set = set(schema_columns)
+    field_types = metadata_by_name(schema_columns, schema_field_types)
 
     rows: list[list[str]] = []
     for line in text.splitlines():
@@ -709,7 +715,7 @@ def deterministic_kv_to_csv(
             if key in col_set:
                 fields[key] = clean_cell_for_type(
                     _strip_cjk_ascii_spaces(val.strip()),
-                    schema_field_types.get(key) if schema_field_types else None,
+                    field_types.get(key),
                     field_name=key,
                 )
 
@@ -762,7 +768,8 @@ def apply_synonym_merges(
     re-checks, per pair and against the CURRENT table state, that the data
     *agrees* with that claim:
 
-    - identity columns named in ``protected`` are never touched;
+    - identity columns named in ``protected`` are never touched, except for
+      folding two columns whose names differ only by case;
     - a pair with any row-level conflict (both cells non-empty and not equal
       as strings or numbers) is skipped — semantically-approved but
       data-contradicted merges must not corrupt either column;
@@ -781,7 +788,10 @@ def apply_synonym_merges(
 
     applied: list[tuple[str, str]] = []
     for src, dst in sorted(merges, key=lambda m: (-fill.get(m[0], 0), m[0])):
-        if src == dst or src.lower() in protected_lower or dst.lower() in protected_lower:
+        case_only = src.lower() == dst.lower()
+        if src == dst or (
+            not case_only and (src.lower() in protected_lower or dst.lower() in protected_lower)
+        ):
             continue
         if src not in header or dst not in header:
             continue

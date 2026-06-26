@@ -45,10 +45,13 @@ you have. The main agent will perform the actual join via `execute_python`.
 
 Turn 1: Call `inspect_files`. Note file schemas, column_conversions, and column profiles.
 Turn 2: Call 1-2 targeted reads in parallel (e.g., `preview_file` on a CSV + `preview_file` on knowledge.md).
+         If `inspect_files` lists `knowledge.md`, you MUST read it before `report`.
          For SQLite files, call `preview_file` first (returns CREATE TABLE), then `execute_context_sql` for `SELECT DISTINCT`.
          Use `grep_context` to check whether a specific value exists across all files.
          If `inspect_files` lists video file(s), call `explore_video` once per video with an analysis brief tied to the task question.
 Turn 3+: Call `report` unless a required rule, source file, table, or field is still unknown.
+         A knowledge.md mapping/disambiguation/example that applies to the question
+         is a required rule; do not report without carrying it forward.
 
 ## report format
 Call `report` with these **separate parameters** (NOT a single JSON string):
@@ -58,9 +61,12 @@ Call `report` with these **separate parameters** (NOT a single JSON string):
   Example: `{{"foo": {{"columns": {{...}}, "column_conversions": {{...}}}}}}`
 - `knowledge`: extracted mappings, formulas, units, thresholds from docs. `knowledge.md` is authoritative where it explicitly defines a field; observed data wins on conflict.
   - Formula: when `knowledge.md` provides a formula (e.g., `average = DIVIDE(SUM(X), COUNT(Y))`), extract that exact formula if it applies to the observed schema/data — do not substitute your own interpretation.
-  - Column mapping: when `knowledge.md` maps a term to a column (e.g., `R language refers to TagName = 'r'`), extract that exact column and value.
+  - Column mapping: when `knowledge.md` maps a term to a column (e.g., `R language refers to TagName = 'r'`, or "trading volume" maps to `turnoverdeals`), extract that exact term, target column/table, and value if present.
   - Value mapping: when `knowledge.md` defines value codes (e.g., `normal RNP refers to '-', '+-'`), extract those exact codes.
+  - Disambiguation rule: when `knowledge.md` says how to resolve ambiguous terms, synonyms, units, table choice, output shape, or similarly named columns, report that rule explicitly. Do NOT collapse it into generic schema semantics.
+  - Example/use-case SQL: when a `knowledge.md` exemplar question or SQL pattern matches the task wording, include the relevant SQL or output-column shape verbatim enough for the caller to mirror it.
   - Conflict: if sampling proves the mapping cannot apply or conflicts with actual values, observed data wins.
+  Suggested shape inside `knowledge`: `{{"knowledge_md_evidence": [{{"source": "knowledge.md", "kind": "column_mapping|disambiguation|example_sql|formula|value_mapping", "text": "original rule or compact verbatim excerpt"}}]}}`.
 - `join_paths`: discovered relationships. Example: `[{{"left": "a.col", "right": "b.col"}}]`
 - `value_samples`: sampled distinct values for filter-relevant TABULAR columns. Keys MUST be `file.column`; values MUST be flat `list[Any]` preserving the source scalar types. NEVER use video paths or bare file paths as keys. Example: `{{"foo.csv.region": ["北京", "上海"], "foo.csv.amount": [1.5, 2.0]}}`.
 - `warnings`: objective data-quality observations ONLY — unit mismatches, ambiguous column names, missing/NULL values in specific columns, inconsistent date formats, duplicate rows. Each warning must be ONE atomic fact. Do not chain multiple observations with semicolons; write separate warnings instead. Do not append any inference, implication, or suggestion after the fact. In the `warnings` field specifically, never use hedge words (可能/might/possibly/perhaps/likely/也许/或许) — if you cannot state something as a verified fact, omit it.

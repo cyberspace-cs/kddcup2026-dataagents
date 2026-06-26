@@ -64,6 +64,10 @@ Phase 2 — VERIFY (before any filter/aggregation):
 
 Phase 3 — COMPUTE & SUBMIT:
 - All Data conventions and DISTINCT rules above apply equally inside `execute_python` — both to SQL strings (e.g., `pd.read_sql_query`) and to pandas operations (e.g., `.unique()`, `.drop_duplicates()`, `.nunique()`). If the DISTINCT rules say to keep all rows, do not deduplicate in any layer.
+- Stable sorting: for top-k / bottom-k, prefer `df.nlargest(k, col)` / `df.nsmallest(k, col)` — inherently stable and concise. Otherwise ALWAYS pass `kind='mergesort'` to `sort_values()`, both ascending and descending.
+  DO: `df.nlargest(10, 'score')` — stable, concise.
+  DO: `df.sort_values('date', ascending=True, kind='mergesort')` — stable explicit sort.
+  DO NOT: `df.sort_values('score').head(10)` without `kind='mergesort'` — quicksort reorders ties unpredictably.
 - GROUP BY results: output ONLY groups that have data. NEVER pad missing groups with count=0 via reindex, LEFT JOIN on all categories, or fillna(0). `groupby().size()` naturally returns only non-empty groups — that IS the correct result.
   DO: `result = df.groupby('fund_type').size().reset_index(name='count')` → submit as-is.
   DO NOT: create a DataFrame of all possible fund_types and LEFT JOIN to "ensure all types are included" → this fabricates zero-count rows the question did not ask for.

@@ -6,6 +6,7 @@ import io
 import pytest
 
 from agents.etl._merge import (
+    collect_unmatched_keys,
     deterministic_kv_to_csv,
     normalize_entity_lines,
     pre_merge_entity_lines,
@@ -108,6 +109,30 @@ def test_deterministic_kv_to_csv_matches_schema_keys_case_insensitively() -> Non
         "origin": "Emergency Department",
         "discharge_status": "Alive",
     }
+
+
+def test_collect_unmatched_keys_deduplicates_case_variants() -> None:
+    text = "id: 1 | Alias: 10\nid: 2 | alias: 20\nid: 3 | known: ok"
+
+    assert collect_unmatched_keys(text, ["id", "known"]) == ["Alias"]
+
+
+def test_deterministic_kv_to_csv_matches_field_types_case_insensitively() -> None:
+    csv_text = deterministic_kv_to_csv(
+        "RecordID: 1 | Amount: 1,234 | IsActive: 是",
+        ["RecordID", "Amount", "IsActive"],
+        primary_key="RecordID",
+        schema_field_types={
+            "amount": "number",
+            "isactive": "boolean",
+        },
+    )
+
+    assert csv_text is not None
+    assert list(csv.reader(io.StringIO(csv_text))) == [
+        ["RecordID", "Amount", "IsActive"],
+        ["1", "1234", "true"],
+    ]
 
 
 def test_primary_key_detection_does_not_match_key_substrings() -> None:

@@ -131,6 +131,24 @@ def test_merge_never_touches_protected_columns() -> None:
         assert new_rows == rows
 
 
+def test_merge_allows_case_only_protected_column_fold() -> None:
+    header, rows = _table(
+        ["record_id", "secucode", "SecuCode"],
+        [["1", "", "601908"], ["2", "601908", "601908"]],
+    )
+
+    new_header, new_rows, applied = apply_synonym_merges(
+        header,
+        rows,
+        [("SecuCode", "secucode")],
+        protected={"record_id", "secucode"},
+    )
+
+    assert applied == [("SecuCode", "secucode")]
+    assert new_header == ["record_id", "secucode"]
+    assert [row[1] for row in new_rows] == ["601908", "601908"]
+
+
 def test_merge_skips_all_empty_source_and_missing_columns() -> None:
     header, rows = _table(
         ["id", "canon", "alias"],
@@ -323,6 +341,49 @@ def test_unify_with_complete_canonicals_makes_no_llm_call(tmp_path: Path) -> Non
     assert header == _HEADER
 
 
+def test_unify_folds_case_only_governance_duplicates_without_llm(tmp_path: Path) -> None:
+    csv_path = tmp_path / "qt_dailyquote.csv"
+    _write_csv(
+        csv_path,
+        ["record_id", "secucode", "SecuCode", "tradingday", "TradingDay", "turnoverdeals"],
+        [
+            ["2706", "", "601908", "", "2021-01-08", "122610"],
+            ["2718", "601908", "601908", "2021-01-26", "2021-01-26", "71041"],
+        ],
+    )
+    units_path = tmp_path / "qt_dailyquote_units.json"
+    units_path.write_text(
+        json.dumps({"SecuCode": "code", "_target_TradingDay": "date"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    adapter = _StubAdapter("SHOULD_NOT_BE_USED")
+
+    applied = unify_csv_synonyms(
+        adapter,  # type: ignore[arg-type]
+        csv_path,
+        "qt_dailyquote",
+        ["secucode", "tradingday", "turnoverdeals"],
+        ["record_id", "secucode", "tradingday"],
+        {},
+        "show trading volume by trading day",
+        units_path,
+    )
+
+    assert applied == [("SecuCode", "secucode"), ("TradingDay", "tradingday")]
+    assert adapter.calls == 0
+    header, rows = _read_csv(csv_path)
+    assert header == ["record_id", "secucode", "tradingday", "turnoverdeals"]
+    assert rows == [
+        ["2706", "601908", "2021-01-08", "122610"],
+        ["2718", "601908", "2021-01-26", "71041"],
+    ]
+    meta = json.loads(units_path.read_text(encoding="utf-8"))
+    assert meta["secucode"] == "code"
+    assert meta["_target_tradingday"] == "date"
+    assert "SecuCode" not in meta
+    assert "_target_TradingDay" not in meta
+
+
 def test_unify_repairs_partial_split(tmp_path: Path) -> None:
     # values routed under two names across rows: canonical holds row 29,
     # the discovered synonym holds rows 30/48 — union must complete the column
@@ -395,7 +456,7 @@ def test_unify_unit_family_mismatch_blocks_merge(tmp_path: Path) -> None:
     adapter = _StubAdapter(
         "transferor_shares_before=sumbeforetran\ntransferor_pct_before=pctbeforetran"
     )
-    units = {"pctbeforetran": "ratio", "transferor_pct_before": "%"}
+    units = {"PctBeforeTran": "ratio", "TRANSFEROR_PCT_BEFORE": "%"}
 
     csv_path, _units_path, applied = _run_unify(tmp_path, adapter, units=units)
 
