@@ -235,7 +235,7 @@ GROUPING_BATCH_SIZE = 40
 GROUPING_TRUNCATE_CHARS = 300
 GROUPING_ENUM_PREFIX = r"(?:\d{1,8}\s*[).．）]\s*)?"
 GROUP_LINE = re.compile(
-    rf"^[-*\s]*{GROUPING_ENUM_PREFIX}(\d{{1,8}}(?:\s*[,、]\s*\d{{1,8}})*)s*[:：]\s*(.+)$"
+    rf"^[-*\s]*{GROUPING_ENUM_PREFIX}(\d{{1,8}}(?:\s*[,、]\s*\d{{1,8}})*)\s*[:：]\s*(.+)$"
 )
 NONE_LINE = re.compile(
     rf"^[-*\s]*{GROUPING_ENUM_PREFIX}NONE\s*[:：]\s*(.+)$",

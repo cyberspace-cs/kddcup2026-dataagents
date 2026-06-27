@@ -154,6 +154,14 @@ def test_embedded_digit_fragments_detected() -> None:
             0,
             id="strips-enumeration-prefix",
         ),
+        pytest.param(
+            "2162, 2166 : 12\n2162、2166 ： 13",
+            {"2162": [12, 13], "2166": [12, 13]},
+            [],
+            False,
+            0,
+            id="parses-multi-id-lines-with-spaces",
+        ),
         pytest.param("GROUPS: NONE", {}, [], True, 0, id="groups-none-bare"),
         pytest.param("groups: none", {}, [], True, 0, id="groups-none-lowercase"),
         pytest.param(
