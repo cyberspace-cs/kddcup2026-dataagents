@@ -616,8 +616,6 @@ def _strip_reasoning_leak(val: str) -> str:
     m = _REASONING_LEAK.search(val)
     if m and m.start() > 0:
         return val[: m.start()].rstrip(" ,;|")
-    if m and m.start() == 0:
-        return ""
     return val
 
 
