@@ -5,17 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _DB_PATH = Path(__file__).with_name("schema_kb.db")
-_conn: sqlite3.Connection | None = None
 
 _TYPE_MAP = {"INTEGER": "integer", "REAL": "number", "TEXT": "string"}
-
-
-def _get_conn() -> sqlite3.Connection:
-    global _conn
-    if _conn is None:
-        _conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
-        _conn.execute("PRAGMA journal_mode=WAL")
-    return _conn
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +21,7 @@ def lookup(table_key: str) -> KnownSchema | None:
     """Look up a known schema by table name (case-insensitive)."""
     if not _DB_PATH.exists():
         return None
-    conn = _get_conn()
+    conn = sqlite3.connect(f"file:{_DB_PATH.resolve().as_posix()}?mode=ro", uri=True)
 
     # Find actual table name (sqlite_master is case-preserving)
     row = conn.execute(
@@ -66,7 +57,7 @@ def all_table_names() -> list[str]:
     """Return all known table names."""
     if not _DB_PATH.exists():
         return []
-    conn = _get_conn()
+    conn = sqlite3.connect(f"file:{_DB_PATH.resolve().as_posix()}?mode=ro", uri=True)
     return [
         r[0]
         for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")

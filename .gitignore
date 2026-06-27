@@ -103,3 +103,5 @@ src/agents/dashboard/static/
 # ─── Claude / AI tools local state ──────────────────
 .claude/
 .cursor/
+src/agents/etl/schema_kb.db-shm
+src/agents/etl/schema_kb.db-wal
