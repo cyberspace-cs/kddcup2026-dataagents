@@ -92,16 +92,53 @@ def record_llm_exchange(
             return
 
 
+def _etl_llm_exchange_hook(
+    messages: list[Any],
+    response: Any,
+) -> None:
+    """Callback for TracedModelAdapter — captures LLM exchanges into the active ETL phase."""
+    trace = _etl_file_trace.get(None)
+    if trace is None:
+        return
+    for p in reversed(trace.phases):
+        if p.ended_at == 0.0:
+            prompt_text = "\n---\n".join(
+                m.content for m in messages if isinstance(getattr(m, "content", None), str)
+            )
+            p.llm_exchanges.append(
+                {
+                    "label": f"etl/{p.name}",
+                    "prompt": prompt_text,
+                    "response": getattr(response, "content", "") or "",
+                }
+            )
+            return
+    phase_info = [(p.name, p.ended_at) for p in trace.phases[-3:]]
+    logger.warning("ETL trace: LLM call but no open phase. Recent phases: %s", phase_info)
+
+
 def get_etl_trace() -> ETLFileTrace | None:
     return _etl_file_trace.get(None)
 
 
-def set_etl_trace(trace: ETLFileTrace) -> Any:
-    return _etl_file_trace.set(trace)
+def set_etl_trace(trace: ETLFileTrace) -> tuple[Any, Any]:
+    """Activate ETL tracing and register the LLM exchange hook.
+
+    Returns (trace_token, hook_token) — pass both to ``reset_etl_trace``.
+    """
+    from agents.tracing.instrument import set_llm_exchange_hook
+
+    trace_token = _etl_file_trace.set(trace)
+    hook_token = set_llm_exchange_hook(_etl_llm_exchange_hook)
+    return trace_token, hook_token
 
 
-def reset_etl_trace(token: Any) -> None:
-    _etl_file_trace.reset(token)
+def reset_etl_trace(tokens: tuple[Any, Any]) -> None:
+    from agents.tracing.instrument import reset_llm_exchange_hook
+
+    trace_token, hook_token = tokens
+    reset_llm_exchange_hook(hook_token)
+    _etl_file_trace.reset(trace_token)
 
 
 def serialize_trace(trace: ETLFileTrace) -> dict[str, Any]:

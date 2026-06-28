@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any
 
 from agents.benchmark.schema import PublicTask
@@ -10,6 +12,21 @@ from agents.llm.types import ModelAdapter, ModelMessage, ModelResponse, ToolSche
 from agents.tools import ToolExecutionResult, ToolRegistry
 from agents.tracing.create import function_span, generation_span
 from agents.tracing.spans import SpanError
+
+LLMExchangeCallback = Callable[[list[ModelMessage], ModelResponse], None]
+
+_llm_exchange_hook: ContextVar[LLMExchangeCallback | None] = ContextVar(
+    "_llm_exchange_hook", default=None
+)
+
+
+def set_llm_exchange_hook(hook: LLMExchangeCallback | None) -> Any:
+    """Register a per-context callback invoked after every LLM completion."""
+    return _llm_exchange_hook.set(hook)
+
+
+def reset_llm_exchange_hook(token: Any) -> None:
+    _llm_exchange_hook.reset(token)
 
 
 def _serialize_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
@@ -73,33 +90,9 @@ class TracedModelAdapter:
             if response.rate_limit_metrics is not None:
                 span.span_data.usage["rate_limit"] = response.rate_limit_metrics
 
-            import logging as _logging
-
-            from agents.etl._trace import get_etl_trace
-
-            _trace_log = _logging.getLogger("etl.trace.llm")
-            trace = get_etl_trace()
-            if trace is not None:
-                matched = False
-                for p in reversed(trace.phases):
-                    if p.ended_at == 0.0:
-                        prompt_text = "\n---\n".join(
-                            m.content for m in messages if isinstance(m.content, str)
-                        )
-                        p.llm_exchanges.append(
-                            {
-                                "label": f"etl/{p.name}",
-                                "prompt": prompt_text,
-                                "response": response.content or "",
-                            }
-                        )
-                        matched = True
-                        break
-                if not matched:
-                    phase_info = [(p.name, p.ended_at) for p in trace.phases[-3:]]
-                    _trace_log.warning(
-                        "ETL trace: LLM call but no open phase. Recent phases: %s", phase_info
-                    )
+            hook = _llm_exchange_hook.get(None)
+            if hook is not None:
+                hook(messages, response)
 
             return response
 

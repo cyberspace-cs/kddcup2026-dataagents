@@ -439,7 +439,7 @@ def run_etl_for_task(
         from agents.tracing.create import function_span
 
         file_trace = ETLFileTrace(task.task_id, pf.stem)
-        trace_token = set_etl_trace(file_trace)
+        tokens = set_etl_trace(file_trace)
         cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -455,7 +455,7 @@ def run_etl_for_task(
                 )
             except Exception:
                 logger.debug("Failed to write ETL trace for %s", pf.stem, exc_info=True)
-            reset_etl_trace(trace_token)
+            reset_etl_trace(tokens)
 
     def _process_inner(pf: Path) -> ETLResult | None:
         if pf.suffix.lower() == ".pdf":

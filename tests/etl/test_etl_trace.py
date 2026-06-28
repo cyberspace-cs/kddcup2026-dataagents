@@ -18,9 +18,9 @@ from agents.etl._trace import (
 @pytest.fixture()
 def file_trace():
     t = ETLFileTrace(task_id="task_99", stem="test_doc")
-    token = set_etl_trace(t)
+    tokens = set_etl_trace(t)
     yield t
-    reset_etl_trace(token)
+    reset_etl_trace(tokens)
 
 
 def test_etl_phase_records_timing(file_trace: ETLFileTrace) -> None:
