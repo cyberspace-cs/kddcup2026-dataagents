@@ -239,7 +239,8 @@ def _build_video_adapter(config: AppConfig) -> ModelAdapter:
         defaults = _THINKING_DEFAULTS if video_enable_thinking else _NON_THINKING_DEFAULTS
         sampling: dict[str, Any] = dict(defaults)
         sampling["seed"] = config.agent.seed
-        sampling["temperature"] = 0.1
+        if config.agent.video_enable_thinking is False:
+            sampling["temperature"] = 0.1
     else:
         sampling = _resolve_sampling_defaults(config.agent)
 
