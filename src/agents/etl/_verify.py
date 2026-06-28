@@ -519,9 +519,8 @@ def verify_field_values(
             f"{compress_guide}\n"
         )
 
-    # All current field values (including anchor fields) — used by the
-    # cross-field guard to reject corrections that duplicate a sibling value.
-    all_cols_for_guard = schema_columns
+    anchor_lower = {a.lower() for a in anchor_keys or []}
+    anchor_lower.add(primary_key.lower())
 
     def _verify_one(rid: str) -> tuple[str, dict[str, str]]:
         source_paras = entity_groups.get(rid)
@@ -601,13 +600,29 @@ def verify_field_values(
         if "ALL_CORRECT" in reply.upper():
             return rid, {}
 
-        # Collect all current field values (including anchors) for the
-        # cross-field collision guard.
-        sibling_values: set[str] = set()
-        for c in all_cols_for_guard:
+        # Cross-field collision guard: reject corrections that duplicate
+        # (a) an anchor/identity field value, or
+        # (b) a value from a field with a different schema type.
+        _anchor_vals: set[str] = set()
+        _typed_vals: dict[str, set[str]] = {}
+        for c in schema_columns:
             v = row.get(c, "").strip()
-            if v:
-                sibling_values.add(v)
+            if not v:
+                continue
+            if c.lower() in anchor_lower:
+                _anchor_vals.add(v)
+            else:
+                t = types.get(c, "").lower()
+                if t:
+                    _typed_vals.setdefault(t, set()).add(v)
+
+        def _is_cross_field_collision(field: str, value: str) -> bool:
+            if value in _anchor_vals:
+                return True
+            ft = types.get(field, "").lower()
+            if not ft:
+                return False
+            return any(value in vs for ot, vs in _typed_vals.items() if ot != ft)
 
         corrections: dict[str, str] = {}
         col_by_lower = {c.lower(): c for c in verify_cols}
@@ -670,10 +685,10 @@ def verify_field_values(
                         current,
                     )
                     continue
-                if parsed in sibling_values and parsed != current:
+                if _is_cross_field_collision(key, parsed):
                     logger.warning(
                         "ETL field verify: rejecting correction %s=%r for entity %s "
-                        "(duplicates another field's value)",
+                        "(collides with anchor or cross-type field value)",
                         key,
                         parsed,
                         rid,
