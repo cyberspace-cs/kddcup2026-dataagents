@@ -55,6 +55,17 @@ LOCAL_RECORD_ID_RE = re.compile(
     rf"(?:{RECORD_ID_KEYWORDS}){RECORD_ID_SEPARATOR}(\d{{1,8}})",
     re.IGNORECASE,
 )
+# Alphanumeric entity identifiers embedded in prose without keyword prefixes.
+# Airtable-style: rec + 10-20 mixed chars that contain at least one uppercase
+# letter after the "rec" prefix. English words (reconciliation, reconstruction)
+# are all-lowercase after "rec"; Airtable IDs always have mixed case.
+# Code-style: 2-4 uppercase letters + 3+ digits (e.g. TR391, SC170).
+AIRTABLE_ID_RE = re.compile(r"\brec(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]{10,20}\b")
+CODE_ID_RE = re.compile(r"\b([A-Z]{2,4}\d{3,6})\b")
+ALPHANUM_RECORD_ID_RE = re.compile(
+    r"\brec(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]{10,20}\b"
+    r"|\b[A-Z]{2,4}\d{3,6}\b"
+)
 # Quoted example list for extraction prompts. It uses <N> rather than a
 # concrete number so prompt examples cannot be echoed as fabricated records.
 RECORD_LABEL_EXAMPLES = ", ".join(f'"{lbl} <N>"' for lbl in RECORD_ID_KEYWORDS.split("|"))
@@ -235,7 +246,7 @@ GROUPING_BATCH_SIZE = 40
 GROUPING_TRUNCATE_CHARS = 300
 GROUPING_ENUM_PREFIX = r"(?:\d{1,8}\s*[).．）]\s*)?"
 GROUP_LINE = re.compile(
-    rf"^[-*\s]*{GROUPING_ENUM_PREFIX}(\d{{1,8}}(?:\s*[,、]\s*\d{{1,8}})*)\s*[:：]\s*(.+)$"
+    rf"^[-*\s]*{GROUPING_ENUM_PREFIX}([A-Za-z0-9]{{1,25}}(?:\s*[,、]\s*[A-Za-z0-9]{{1,25}})*)\s*[:：]\s*(.+)$"
 )
 NONE_LINE = re.compile(
     rf"^[-*\s]*{GROUPING_ENUM_PREFIX}NONE\s*[:：]\s*(.+)$",
@@ -253,10 +264,15 @@ You group data-document paragraphs by entity.
 
 The user supplies numbered paragraph openings from a data document. Most \
 paragraphs describe exactly ONE record/entity, introduced somewhere in the \
-text by a numeric record ID (phrasings vary: "Record <N>", "档案 <N>", \
-"registered as <N>", "the strategic unit identified as <N>", ...). Some \
-paragraphs are narrative filler describing no record, and some CONTINUE the \
-previous record without restating its ID.
+text by a record identifier. The identifier may be:
+- A numeric label: "Record <N>", "档案 <N>", "registered as <N>", \
+"the strategic unit identified as <N>"
+- An alphanumeric code: "Registry ID: rec0Si5cQ4rJRVzd6", \
+"identifier rec7SRmmw3oovHndK", "tracking code recXxx", \
+"designated TR391", "specimen TR483"
+All entities in the SAME document use the SAME identifier scheme. \
+Some paragraphs are narrative filler describing no record, and some \
+CONTINUE the previous record without restating its ID.
 
 Task: group the paragraph numbers by entity.
 
@@ -264,22 +280,20 @@ Output format — one line per entity, nothing else:
 <record_id>: <paragraph numbers, comma-separated>
 
 Rules:
-- <record_id> is the numeric ID stated IN the paragraph text. COPY it exactly. \
+- <record_id> is the identifier stated IN the paragraph text. COPY it \
+exactly as written — numeric OR alphanumeric. \
 NEVER invent IDs and NEVER renumber paragraphs sequentially.
-- A paragraph usually states OTHER numbers besides its record ID: domain \
-codes (identification/company/security codes), dates, years, amounts. The \
-record ID is the document-local label that INTRODUCES the record, using the \
-same labeling scheme across the whole document ("Record <N>", \
-"档案条目 <N>", "备案号 <N>"); the other numbers are that record's DATA \
-values. When a paragraph states both, group by the record label — NEVER by \
-a data value, even when that value is a unique code (e.g. \
-"档案条目 <N>，识别码为 <M>" groups as <N>, not <M>).
+- A paragraph usually states OTHER values besides its record identifier: \
+domain codes, dates, years, amounts. The record identifier is the \
+document-local label that INTRODUCES the record, using the same labeling \
+scheme across the whole document; the other values are that record's DATA. \
+When a paragraph states both, group by the record label — NEVER by a data \
+value (e.g. "档案条目 <N>，识别码为 <M>" groups as <N>, not <M>; \
+"Registry ID: recXxx was earmarked for Advertisement" groups as recXxx).
 - A paragraph that continues an earlier entity without restating the ID goes \
 on that entity's line.
-- A GROUP paragraph that explicitly states the record IDs of SEVERAL entities \
-(e.g. "记录 2162 和 2166 均指向同一标的") MUST appear on EACH stated entity's \
-line. Output one line per entity — put the shared paragraph number on every \
-entity that is mentioned.
+- A GROUP paragraph that explicitly states the IDs of SEVERAL entities \
+MUST appear on EACH stated entity's line.
 Example — paragraph 12 mentions both 2162 and 2166, paragraph 14 is 2162 only, \
 paragraph 15 is 2166 only:
   CORRECT:
@@ -292,7 +306,7 @@ paragraph 15 is 2166 only:
 single line `NONE: <numbers>`.
 - Every paragraph number must appear on at least one line; only group \
 paragraphs stating several record IDs may appear on more than one line.
-- If the paragraphs are NOT organized by per-record numeric IDs (e.g. a pure \
+- If the paragraphs are NOT organized by per-record identifiers (e.g. a pure \
 time series keyed by dates), output exactly `GROUPS: NONE` instead."""
 
 GROUPING_USER_TEMPLATE = """\

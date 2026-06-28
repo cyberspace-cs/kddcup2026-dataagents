@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from agents.etl._columns import metadata_by_name
 from agents.etl._compress import sample_paragraphs_by_section
 from agents.etl._constants import (
+    ALPHANUM_RECORD_ID_RE,
     FUND_FIELD_DISAMBIGUATION_PROMPT,
     LOCAL_RECORD_ID_RE,
     RECORD_ID_FIELDS,
@@ -29,9 +30,16 @@ logger = logging.getLogger(__name__)
 
 
 def _has_local_record_ids(prose_text: str) -> bool:
-    """Return whether prose uses a repeated document-local record identifier."""
+    """Return whether prose uses a repeated document-local record identifier.
+
+    Checks both keyword-prefixed numeric IDs ("Record 29", "档案 29") and
+    alphanumeric IDs (Airtable-style rec*, code-style TR*).
+    """
     matches = LOCAL_RECORD_ID_RE.findall(prose_text)
-    return len(set(matches)) >= 3
+    if len(set(matches)) >= 3:
+        return True
+    alphanum = ALPHANUM_RECORD_ID_RE.findall(prose_text)
+    return len(set(alphanum)) >= 3
 
 
 def _ensure_local_record_anchor(
@@ -731,8 +739,11 @@ def parse_knowledge_schema(
         number, integer_count, integer_rank, string, category, boolean, url.
         - For rank fields with "xx/yy" format (e.g. "43/166"), use type "string", \
         NOT "integer_rank". "integer_rank" is only for pure numeric ranks.
-        - For document-local record_id fields use type "integer_scalar local_record_id"; \
-        record_id values must be a single scalar number, not a range or list.
+        - For document-local record_id fields: use type \
+        "integer_scalar local_record_id" when the IDs are pure numbers, or \
+        "scalar_id local_record_id" when the IDs are alphanumeric \
+        (e.g. rec0Si5cQ4rJRVzd6, TR391). \
+        Record_id values must be a single scalar, not a range or list.
         - MANDATORY: scan the prose sample for numeric, date, and \
         categorical data fields that have NO matching governance column. \
         For each prose field, check every governance column's \
@@ -755,13 +766,13 @@ def parse_knowledge_schema(
         Two columns for the same concept causes value split (some rows \
         fill column A, others fill column B) and is a critical schema error.
         - If paragraphs are keyed by repeated document-local labels such as \
-        "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353", \
-        "File 353", or "Case 353", AND no REFERENCE SCHEMA below declares a \
-        primary key, include a field named "record_id" and put it FIRST in \
-        PK and ANCHORS. If a REFERENCE SCHEMA declares a primary key, use \
-        that column instead. This local record ID is the row key for merging \
-        sections; it is NOT the same as domain IDs such as personalcode, \
-        innercode, fundcode, or secucode.
+        "档案 353", "Record 353", "Registry ID: rec0Si5cQ4rJRVzd6", \
+        "identifier recXxx", "designated TR391", AND no REFERENCE SCHEMA \
+        below declares a primary key, include a field named "record_id" and \
+        put it FIRST in PK and ANCHORS. If a REFERENCE SCHEMA declares a \
+        primary key, use that column instead. This local record ID is the \
+        row key for merging sections; it is NOT the same as domain IDs such \
+        as personalcode, innercode, fundcode, or secucode.
         - Do NOT add narrative/filler fields — only structured data fields.
         {FUND_FIELD_DISAMBIGUATION_PROMPT}
         - For the UNITS line: scan the prose sample for unit suffixes attached \
@@ -1084,13 +1095,14 @@ def _infer_schema_single(
           "string", NOT "integer_rank". "integer_rank" is only for pure
           numeric ranks (e.g. 1, 2, 3).
         - If paragraphs are keyed by repeated document-local labels such as
-          "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353",
-          "File 353", or "Case 353", include a field named "record_id" and
-          put it FIRST in PK and ANCHORS. This local record ID is the row key
-          for merging sections; it is NOT the same as domain IDs such as
-          personalcode, innercode, fundcode, or secucode.
-          Give record_id type "integer_scalar local_record_id"; record_id values
-          must be a single scalar number, not a range or list.
+          "档案 353", "Record 353", "Registry ID: rec0Si5cQ4rJRVzd6",
+          "identifier recXxx", "designated TR391", include a field named
+          "record_id" and put it FIRST in PK and ANCHORS. This local record ID
+          is the row key for merging sections; it is NOT the same as domain IDs
+          such as personalcode, innercode, fundcode, or secucode.
+          Give record_id type "integer_scalar local_record_id" when IDs are
+          pure numbers, or "scalar_id local_record_id" when alphanumeric.
+          Record_id values must be a single scalar, not a range or list.
         {FUND_FIELD_DISAMBIGUATION_PROMPT}
         - Do NOT include narrative/context/filler fields.""")
 

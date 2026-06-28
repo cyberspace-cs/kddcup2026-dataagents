@@ -659,8 +659,9 @@ def compress_chunk(
             )
             if not entity_aware:
                 anchor_rule += (
-                    " Copy the number from the paragraph's own record label "
-                    f'(e.g. "Record <N>" → {primary_key}: <N>). NEVER renumber '
+                    " Copy the identifier from the paragraph's own record label "
+                    f'(e.g. "Record <N>" → {primary_key}: <N>, or '
+                    f'"Registry ID: recXxx" → {primary_key}: recXxx). NEVER renumber '
                     "paragraphs sequentially (1, 2, 3, ...) and NEVER invent IDs — "
                     "if a paragraph states no record identifier at all, SKIP that "
                     "paragraph."
@@ -672,7 +673,7 @@ def compress_chunk(
         if entity_aware:
             format_hint = (
                 "Format — ONE line per entity, pipe-separated key-value pairs:\n"
-                "  ID: <number> | entity_name: <name> | <field>: <value> | ...\n"
+                "  ID: <value> | entity_name: <name> | <field>: <value> | ...\n"
                 "Use COLON (:) to separate key from value. NEVER use = as separator.\n"
                 "Each entity's paragraphs are grouped between '---' delimiters and "
                 "begin with a [RECORD_ID: N] marker. Copy that exact N as the ID "
@@ -682,11 +683,11 @@ def compress_chunk(
         else:
             format_hint = (
                 "Format — one line per entity-paragraph:\n"
-                "  ID: <number> | entity_name: <name> | <field>: <value> | ...\n"
+                "  ID: <value> | entity_name: <name> | <field>: <value> | ...\n"
                 "Use COLON (:) to separate key from value. NEVER use = as separator.\n"
             )
         anchor_rule = (
-            "- Start each line with the entity's numeric ID AND its name/codename/label "
+            "- Start each line with the entity's ID AND its name/codename/label "
             "as stated in the paragraph. These two fields anchor every line."
         )
 
