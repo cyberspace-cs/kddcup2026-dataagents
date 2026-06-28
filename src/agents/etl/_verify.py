@@ -19,6 +19,7 @@ from agents.etl._constants import (
     MAX_VERIFY_ENTITIES,
     MAX_WORKERS,
 )
+from agents.etl._merge import strip_reasoning_leak
 from agents.etl._threading import submit_in_context
 
 if TYPE_CHECKING:
@@ -628,7 +629,7 @@ def verify_field_values(
         col_by_lower = {c.lower(): c for c in verify_cols}
 
         def _parse_correction(field: str, raw_val: str) -> str | None:
-            val = raw_val.strip()
+            val = strip_reasoning_leak(raw_val.strip())
             if not val:
                 return None
             if val.upper().startswith("NONE"):

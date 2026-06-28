@@ -549,7 +549,7 @@ def normalize_entity_lines(
                     digits = v.replace(",", "").replace(".", "").lstrip("-")
                     if digits and digits.isdigit():
                         v = ""
-                v = _strip_reasoning_leak(v)
+                v = strip_reasoning_leak(v)
                 v = _normalize_fund_type(v, key)
                 fields[key] = v
 
@@ -611,7 +611,7 @@ def _normalize_fund_type(val: str, field_name: str) -> str:
     return val
 
 
-def _strip_reasoning_leak(val: str) -> str:
+def strip_reasoning_leak(val: str) -> str:
     """Truncate LLM reasoning that leaked into a field value."""
     m = _REASONING_LEAK.search(val)
     if m and m.start() > 0:
@@ -650,7 +650,7 @@ def clean_cell_for_type(
     cleaned = clean_cell(bare)
     if not cleaned:
         return ""
-    cleaned = _strip_reasoning_leak(cleaned)
+    cleaned = strip_reasoning_leak(cleaned)
     if field_name:
         cleaned = _normalize_fund_type(cleaned, field_name)
     if field_name and field_name.lower() in _NAME_ABBR_FIELDS:
