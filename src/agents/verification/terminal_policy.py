@@ -35,14 +35,14 @@ def check_unit_conversions(
     col_to_conv: dict[str, Any] = {}
     for units_path in cache_dir.glob("*_units.json"):
         for c in load_conversions(units_path):
-            col_to_conv[c.field] = c
+            col_to_conv[c.field.lower()] = c
 
     if not col_to_conv:
         return None
 
     violations: list[str] = []
     for ci, col in enumerate(columns):
-        conv = col_to_conv.get(col)
+        conv = col_to_conv.get(col.lower())
         if conv is None or conv.factor == 1 or conv.factor == 0:
             continue
         if abs(math.log10(abs(conv.factor))) < 1:

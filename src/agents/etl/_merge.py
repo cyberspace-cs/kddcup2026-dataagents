@@ -7,6 +7,7 @@ import io
 import logging
 import re
 
+from agents.etl._columns import metadata_by_name
 from agents.etl._constants import (
     APPROX_TAG,
     DATE_SCALAR,
@@ -126,10 +127,11 @@ def _repair_fabricated_pks(
 
     # Candidate columns: declared anchors first, then remaining columns in
     # first-seen order — the alias column is not always a declared anchor.
-    candidates: list[str] = [a for a in (anchor_keys or []) if a != primary_key]
+    primary_lower = primary_key.lower()
+    candidates: list[str] = [a for a in (anchor_keys or []) if a.lower() != primary_lower]
     for _, pairs in parsed:
         for key, _val in pairs:
-            if key != primary_key and key not in candidates:
+            if key.lower() != primary_lower and key not in candidates:
                 candidates.append(key)
 
     for column in candidates:
@@ -436,6 +438,7 @@ def collect_unmatched_keys(
     """Return field keys in KV entity lines that don't match any schema column (case-insensitive)."""
     col_lower = {c.lower() for c in schema_columns}
     seen: dict[str, None] = {}
+    seen_lower: set[str] = set()
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
@@ -444,8 +447,10 @@ def collect_unmatched_keys(
             if ":" not in part:
                 continue
             key = part.partition(":")[0].strip()
-            if key and key.lower() not in col_lower and key not in seen:
+            key_lower = key.lower()
+            if key and key_lower not in col_lower and key_lower not in seen_lower:
                 seen[key] = None
+                seen_lower.add(key_lower)
     return list(seen)
 
 
@@ -539,7 +544,14 @@ def normalize_entity_lines(
             key, _, val = part.partition(":")
             key = canonicalize_key(key, field_map)
             if key in col_set:
-                fields[key] = val.strip()
+                v = val.strip()
+                if key.lower() in _NAME_ABBR_FIELDS:
+                    digits = v.replace(",", "").replace(".", "").lstrip("-")
+                    if digits and digits.isdigit():
+                        v = ""
+                v = strip_reasoning_leak(v)
+                v = _normalize_fund_type(v, key)
+                fields[key] = v
 
         parts = [f"{c}: {fields.get(c, '')}" for c in schema_columns]
         normalized.append(" | ".join(parts))
@@ -571,7 +583,63 @@ def _strip_cjk_ascii_spaces(s: str) -> str:
     return s
 
 
-def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
+_REASONING_LEAK = re.compile(
+    r"\s*\(?"
+    r"(?:"
+    # English patterns
+    r"Source text|However,|Wait,|Let me|Let's|Note:|The (?:text|context|extraction|source)"
+    r"|strictly following|implies the|this (?:is|means|suggests)"
+    # Chinese patterns
+    r"|或根据|原文指代|原文(?:是|写|说|提到)|通常指|然而，|但仔细|但是，"
+    r"|如果源文本|这看起来|根据文档|根据上下文|仔细阅读"
+    r")"
+    r".*",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+_FUND_TYPE_SUFFIX = re.compile(r"^(股票|混合|债券|货币|其他)型基金$")
+
+
+def _normalize_fund_type(val: str, field_name: str) -> str:
+    """Normalize '混合型基金' → '混合型' for fund classification fields."""
+    if field_name.lower() not in {"fundtype", "fund_type", "fundtypename"}:
+        return val
+    m = _FUND_TYPE_SUFFIX.match(val.strip())
+    if m:
+        return m.group(1) + "型"
+    return val
+
+
+def strip_reasoning_leak(val: str) -> str:
+    """Truncate LLM reasoning that leaked into a field value."""
+    m = _REASONING_LEAK.search(val)
+    if m and m.start() > 0:
+        return val[: m.start()].rstrip(" ,;|")
+    return val
+
+
+_NAME_ABBR_FIELDS = frozenset(
+    {
+        "secuabbr",
+        "chiname",
+        "chinameabbr",
+        "chinamabbr",
+        "fund_name",
+        "fund_name_short",
+        "name",
+        "abbr",
+        "companyname",
+        "abbrchiname",
+    }
+)
+
+
+def clean_cell_for_type(
+    val: str,
+    field_type: str | None = None,
+    field_name: str | None = None,
+) -> str:
     """Normalize a KV value and enforce lightweight schema field types.
 
     A leading approximate-value marker (``~6970000``, from the compression
@@ -582,8 +650,15 @@ def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
     cleaned = clean_cell(bare)
     if not cleaned:
         return ""
+    cleaned = strip_reasoning_leak(cleaned)
+    if field_name:
+        cleaned = _normalize_fund_type(cleaned, field_name)
+    if field_name and field_name.lower() in _NAME_ABBR_FIELDS:
+        stripped_digits = cleaned.replace(",", "").replace(".", "").lstrip("-")
+        if stripped_digits.isdigit():
+            return ""
     type_text = (field_type or "").lower()
-    if "number" in type_text or "integer" in type_text:
+    if ("number" in type_text or "integer" in type_text) and "rank" not in type_text:
         normalized = cleaned.replace(",", "")
         if normalized.endswith("%"):
             normalized = normalized[:-1].strip()
@@ -616,6 +691,7 @@ def deterministic_kv_to_csv(
     """
     field_map = canonical_key_map(schema_columns)
     col_set = set(schema_columns)
+    field_types = metadata_by_name(schema_columns, schema_field_types)
 
     rows: list[list[str]] = []
     for line in text.splitlines():
@@ -637,7 +713,8 @@ def deterministic_kv_to_csv(
             if key in col_set:
                 fields[key] = clean_cell_for_type(
                     _strip_cjk_ascii_spaces(val.strip()),
-                    schema_field_types.get(key) if schema_field_types else None,
+                    field_types.get(key),
+                    field_name=key,
                 )
 
         row = [fields.get(c, "") for c in schema_columns]
@@ -689,7 +766,8 @@ def apply_synonym_merges(
     re-checks, per pair and against the CURRENT table state, that the data
     *agrees* with that claim:
 
-    - identity columns named in ``protected`` are never touched;
+    - identity columns named in ``protected`` are never touched, except for
+      folding two columns whose names differ only by case;
     - a pair with any row-level conflict (both cells non-empty and not equal
       as strings or numbers) is skipped — semantically-approved but
       data-contradicted merges must not corrupt either column;
@@ -708,7 +786,10 @@ def apply_synonym_merges(
 
     applied: list[tuple[str, str]] = []
     for src, dst in sorted(merges, key=lambda m: (-fill.get(m[0], 0), m[0])):
-        if src == dst or src.lower() in protected_lower or dst.lower() in protected_lower:
+        case_only = src.lower() == dst.lower()
+        if src == dst or (
+            not case_only and (src.lower() in protected_lower or dst.lower() in protected_lower)
+        ):
             continue
         if src not in header or dst not in header:
             continue

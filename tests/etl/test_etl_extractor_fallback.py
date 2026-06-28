@@ -43,7 +43,7 @@ def test_extract_prose_file_stops_when_deterministic_csv_fails(
     monkeypatch.setattr(
         extractor,
         "compress_prose",
-        lambda *_args, **_kwargs: ("id: 1 | value: source", None),
+        lambda *_args, **_kwargs: ("id: 1 | value: source", None, None),
     )
     monkeypatch.setattr(extractor, "deterministic_kv_to_csv", lambda *_args, **_kwargs: None)
 
@@ -157,9 +157,10 @@ def test_run_etl_for_task_timeout_skips_unfinished_files(
             self.shutdown_args: tuple[bool, bool] | None = None
             FakeExecutor.instances.append(self)
 
-        def submit(self, fn: object, path: Path) -> FakeFuture:
-            if path.name == "good.md":
-                future = FakeFuture(fn(path), done=True)  # type: ignore[operator]
+        def submit(self, fn: object, *args: object, **kwargs: object) -> FakeFuture:
+            path = args[-1] if args else kwargs.get("path")
+            if hasattr(path, "name") and path.name == "good.md":  # type: ignore[union-attr]
+                future = FakeFuture(fn(*args, **kwargs), done=True)  # type: ignore[operator]
             else:
                 future = FakeFuture(done=False)
             self.futures.append(future)

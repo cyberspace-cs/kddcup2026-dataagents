@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import json
 import logging
 from concurrent.futures import (
     ThreadPoolExecutor,
@@ -52,6 +53,14 @@ from agents.etl._schema import (
     merge_prose_schema_into_governance,
     parse_knowledge_schema,
     repair_csv_numeric_identities,
+)
+from agents.etl._threading import submit_in_context
+from agents.etl._trace import (
+    ETLFileTrace,
+    etl_phase,
+    reset_etl_trace,
+    serialize_trace,
+    set_etl_trace,
 )
 from agents.etl._units import (
     apply_proportion_convention,
@@ -178,21 +187,26 @@ def extract_prose_file(
         if not result:
             return None
         changed = False
-        if repair_csv_numeric_identities(csv_path):
-            changed = True
-        if governance_columns:
-            applied = unify_csv_synonyms(
-                adapter,
-                csv_path,
-                path.stem,
-                governance_columns,
-                anchor_keys or [],
-                schema_field_defs or {},
-                task.question,
-                cache_dir / f"{path.stem}_units.json",
-            )
-            if applied:
+        with etl_phase("identity_repair") as p:
+            repaired = repair_csv_numeric_identities(csv_path)
+            p.metrics["repaired"] = bool(repaired)
+            if repaired:
                 changed = True
+        if governance_columns:
+            with etl_phase("synonym_unify") as p:
+                applied = unify_csv_synonyms(
+                    adapter,
+                    csv_path,
+                    path.stem,
+                    governance_columns,
+                    anchor_keys or [],
+                    schema_field_defs or {},
+                    task.question,
+                    cache_dir / f"{path.stem}_units.json",
+                )
+                p.metrics["applied"] = bool(applied)
+                if applied:
+                    changed = True
         if changed:
             result = validate_csv(csv_path) or result
         header, row_count = result
@@ -233,24 +247,37 @@ def extract_prose_file(
 
     # ---- Phase 0: infer schema from prose sample (when no schema from knowledge.md) ----
     if not schema_columns:
-        inferred = infer_schema_from_sample(adapter, full_text, task.question)
-        if inferred:
-            schema_columns, anchor_keys, schema_field_types, field_units, schema_field_defs = (
-                inferred
+        with etl_phase("schema_infer", input_size=len(full_text)) as p:
+            inferred = infer_schema_from_sample(
+                adapter, full_text, task.question, table_name=path.stem
             )
-            primary_key = anchor_keys[0] if anchor_keys else None
+            if inferred:
+                schema_columns, anchor_keys, schema_field_types, field_units, schema_field_defs = (
+                    inferred
+                )
+                primary_key = anchor_keys[0] if anchor_keys else None
+                p.metrics["column_count"] = len(schema_columns)
+                p.metrics["anchor_count"] = len(anchor_keys)
+            else:
+                p.skipped = True
 
     # ---- Phase 1: compress ----
     logger.info("ETL compress: %s (%d chars)", path.name, len(full_text))
-    compressed, entity_groups = compress_prose(
-        adapter,
-        full_text,
-        schema_columns=schema_columns,
-        primary_key=primary_key,
-        anchor_keys=anchor_keys,
-        schema_field_types=schema_field_types,
-        schema_field_defs=schema_field_defs,
-    )
+    with etl_phase("compress", input_size=len(full_text)) as p:
+        compressed, entity_groups, compress_guide = compress_prose(
+            adapter,
+            full_text,
+            schema_columns=schema_columns,
+            primary_key=primary_key,
+            anchor_keys=anchor_keys,
+            schema_field_types=schema_field_types,
+            schema_field_defs=schema_field_defs,
+        )
+        p.metrics["output_chars"] = len(compressed)
+        p.metrics["compression_ratio"] = (
+            round(len(compressed) / len(full_text), 3) if full_text else 0
+        )
+        p.metrics["entity_count"] = len(entity_groups) if entity_groups else 0
     compressed_path = cache_dir / f"{path.stem}_clean.md"
     compressed_path.write_text(compressed, encoding="utf-8")
     logger.info(
@@ -263,56 +290,72 @@ def extract_prose_file(
     if not primary_key:
         compressed = resolve_id_conflicts(compressed)
 
-    compressed = pre_merge_entity_lines(
-        compressed,
-        primary_key=primary_key,
-        anchor_keys=anchor_keys,
-        source_text=full_text,
-    )
+    with etl_phase("pre_merge", input_size=len(compressed)) as p:
+        compressed = pre_merge_entity_lines(
+            compressed,
+            primary_key=primary_key,
+            anchor_keys=anchor_keys,
+            source_text=full_text,
+        )
+        p.output_size = len(compressed)
     if schema_columns:
-        compressed = fix_malformed_lines(
-            adapter,
-            compressed,
-            schema_columns,
-            schema_field_defs,
-        )
-        compressed = reconcile_field_names(
-            adapter,
-            compressed,
-            schema_columns,
-            schema_field_defs,
-        )
-        compressed = normalize_entity_lines(compressed, schema_columns, primary_key)
-        compressed, dedup_cleared = dedup_cross_field_copies(
-            adapter,
-            compressed,
-            schema_columns,
-            primary_key,
-            anchor_keys,
-            full_text,
-            schema_field_types,
-        )
-        compressed = retry_missing_values(
-            adapter,
-            compressed,
-            schema_columns,
-            primary_key,
-            anchor_keys,
-            entity_groups,
-            schema_field_types,
-            schema_field_defs,
-            forced_gaps=dedup_cleared,
-        )
-        compressed = verify_field_values(
-            adapter,
-            compressed,
-            schema_columns,
-            primary_key,
-            anchor_keys,
-            entity_groups,
-            schema_field_types,
-            schema_field_defs,
-        )
+        with etl_phase("fix_format", input_size=len(compressed)) as p:
+            compressed = fix_malformed_lines(
+                adapter,
+                compressed,
+                schema_columns,
+                schema_field_defs,
+            )
+            p.output_size = len(compressed)
+        with etl_phase("reconcile", input_size=len(compressed)) as p:
+            compressed = reconcile_field_names(
+                adapter,
+                compressed,
+                schema_columns,
+                schema_field_defs,
+            )
+            p.output_size = len(compressed)
+        with etl_phase("normalize", input_size=len(compressed)) as p:
+            compressed = normalize_entity_lines(compressed, schema_columns, primary_key)
+            p.output_size = len(compressed)
+        with etl_phase("dedup", input_size=len(compressed)) as p:
+            compressed, dedup_cleared = dedup_cross_field_copies(
+                adapter,
+                compressed,
+                schema_columns,
+                primary_key,
+                anchor_keys,
+                full_text,
+                schema_field_types,
+            )
+            p.output_size = len(compressed)
+            p.metrics["cleared_count"] = len(dedup_cleared) if dedup_cleared else 0
+        with etl_phase("retry", input_size=len(compressed)) as p:
+            compressed = retry_missing_values(
+                adapter,
+                compressed,
+                schema_columns,
+                primary_key,
+                anchor_keys,
+                entity_groups,
+                schema_field_types,
+                schema_field_defs,
+                forced_gaps=dedup_cleared,
+            )
+            p.output_size = len(compressed)
+        with etl_phase("verify", input_size=len(compressed)) as p:
+            compressed = verify_field_values(
+                adapter,
+                compressed,
+                schema_columns,
+                primary_key,
+                anchor_keys,
+                entity_groups,
+                schema_field_types,
+                schema_field_defs,
+                compress_guide=compress_guide,
+            )
+            p.output_size = len(compressed)
     compressed_path.write_text(compressed, encoding="utf-8")
 
     if field_units:
@@ -321,12 +364,14 @@ def extract_prose_file(
 
     # ---- Phase 2a: deterministic KV→CSV (when normalized) ----
     if schema_columns:
-        csv_text = deterministic_kv_to_csv(
-            compressed,
-            schema_columns,
-            primary_key,
-            schema_field_types,
-        )
+        with etl_phase("csv", input_size=len(compressed)) as p:
+            csv_text = deterministic_kv_to_csv(
+                compressed,
+                schema_columns,
+                primary_key,
+                schema_field_types,
+            )
+            p.metrics["produced"] = csv_text is not None
         if csv_text:
             csv_path.write_text(csv_text, encoding="utf-8")
             result = _finalize("deterministic")
@@ -391,22 +436,50 @@ def run_etl_for_task(
                 row_count=row_count,
             )
 
+        from agents.tracing.create import function_span
+
+        file_trace = ETLFileTrace(task.task_id, pf.stem)
+        tokens = set_etl_trace(file_trace)
+        cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with function_span(f"etl/file/{pf.stem}"):
+                return _process_inner(pf)
+        finally:
+            try:
+                trace_json = serialize_trace(file_trace)
+                trace_path = cache_dir / f"{pf.stem}_trace.json"
+                trace_path.write_text(
+                    json.dumps(trace_json, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception:
+                logger.debug("Failed to write ETL trace for %s", pf.stem, exc_info=True)
+            reset_etl_trace(tokens)
+
+    def _process_inner(pf: Path) -> ETLResult | None:
         if pf.suffix.lower() == ".pdf":
             logger.info("ETL PDF→markdown: %s", pf.name)
             text: str = pdf_to_markdown(pf)  # pyright: ignore[reportUnknownVariableType]
         else:
             text = pf.read_text(encoding="utf-8")
-        parsed = parse_knowledge_schema(task, pf, adapter, text)
+
+        with etl_phase("schema_parse", input_size=len(text)) as p:
+            parsed = parse_knowledge_schema(task, pf, adapter, text)
+            p.metrics["found"] = parsed is not None
         if parsed:
             schema, anchors, field_types, units, defs = parsed
-            extra_cols, extra_types, extra_defs = merge_prose_schema_into_governance(
-                adapter,
-                text,
-                schema,
-                defs,
-                field_types,
-                task.question,
-            )
+            with etl_phase("schema_merge") as p:
+                extra_cols, extra_types, extra_defs = merge_prose_schema_into_governance(
+                    adapter,
+                    text,
+                    schema,
+                    defs,
+                    field_types,
+                    task.question,
+                    table_name=pf.stem,
+                )
+                p.metrics["extra_columns"] = len(extra_cols) if extra_cols else 0
             if extra_cols:
                 schema.extend(extra_cols)
                 field_types.update(extra_types)
@@ -470,7 +543,7 @@ def run_etl_for_task(
     orch_timeout = ETL_ORCHESTRATOR_LLM_CALL_TIMEOUT * max(4, len(prose_files))
     pool = ThreadPoolExecutor(max_workers=min(len(prose_files), ETL_ORCHESTRATOR_MAX_WORKERS))
     try:
-        futs = {pool.submit(_run_one, pf): pf for pf in prose_files}
+        futs = {submit_in_context(pool, _run_one, pf): pf for pf in prose_files}
         try:
             for fut in as_completed(futs, timeout=orch_timeout):
                 try:

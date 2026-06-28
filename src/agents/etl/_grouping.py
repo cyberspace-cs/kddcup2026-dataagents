@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,7 @@ from agents.etl._constants import (
     NONE_LINE,
     RECORD_ID_INLINE,
 )
+from agents.etl._threading import submit_in_context
 from agents.etl._types import (
     contains_standalone_number,
     first_standalone_match,
@@ -114,7 +116,9 @@ def parse_grouping_response(raw: str) -> tuple[dict[str, list[int]], list[int], 
         if m := GROUP_LINE.match(line):
             idxs = [int(t) for t in INDEX_TOKEN.findall(m.group(2))]
             if idxs:
-                groups.setdefault(m.group(1), []).extend(idxs)
+                rids = [r.strip() for r in re.split(r"[,、]", m.group(1)) if r.strip()]
+                for rid in rids:
+                    groups.setdefault(rid, []).extend(idxs)
             continue
         unparsed += 1
     return groups, none_indices, False, unparsed
@@ -172,7 +176,29 @@ def verify_paragraph_groups(
         else:
             dropped_groups.append(rid)
 
+    # Auto-share: when an anchor paragraph mentions another verified entity's
+    # ID, grant that entity membership too (covers "units A and B are both
+    # classified as X" patterns where the LLM only grouped the paragraph
+    # under one entity).
+    auto_shared = 0
+    for rid, _idxs in list(verified.items()):
+        for idx in anchors.get(rid, []):
+            for other_rid in verified:
+                if other_rid == rid:
+                    continue
+                if _has_standalone_id(paras[idx - 1], other_rid) and idx not in verified[other_rid]:
+                    verified[other_rid].append(idx)
+                    anchors.setdefault(other_rid, []).append(idx)
+                    auto_shared += 1
+    if auto_shared:
+        logger.info(
+            "ETL compress: grouping auto-shared %d paragraph memberships "
+            "for cross-entity declarations",
+            auto_shared,
+        )
+
     hijack_rejected: list[tuple[int, str, str]] = []
+    hijack_reassign: dict[str, list[int]] = {}
     for rid, idxs in verified.items():
         for idx in idxs:
             if idx in anchors[rid]:
@@ -183,10 +209,18 @@ def verify_paragraph_groups(
             )
             if other is not None:
                 hijack_rejected.append((idx, rid, other))
+                hijack_reassign.setdefault(other, []).append(idx)
     rejected_idx = {i for i, _, _ in hijack_rejected}
     final = {
         rid: sorted(i for i in idxs if i not in rejected_idx) for rid, idxs in verified.items()
     }
+    for rid, idxs in hijack_reassign.items():
+        existing = set(final.get(rid, []))
+        for idx in idxs:
+            if idx not in existing:
+                final.setdefault(rid, []).append(idx)
+        if rid in final:
+            final[rid] = sorted(final[rid])
     final = {rid: idxs for rid, idxs in final.items() if idxs}
 
     if out_of_range:
@@ -258,7 +292,7 @@ def group_paragraphs_by_llm(
 
     raw_results: list[str | None] = [None] * len(batches)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futs = {pool.submit(call, batch): idx for idx, batch in enumerate(batches)}
+        futs = {submit_in_context(pool, call, batch): idx for idx, batch in enumerate(batches)}
         try:
             for fut in as_completed(futs, timeout=LLM_CALL_TIMEOUT * len(batches)):
                 idx = futs[fut]

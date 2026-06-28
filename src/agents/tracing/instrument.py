@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any
 
 from agents.benchmark.schema import PublicTask
@@ -10,6 +12,21 @@ from agents.llm.types import ModelAdapter, ModelMessage, ModelResponse, ToolSche
 from agents.tools import ToolExecutionResult, ToolRegistry
 from agents.tracing.create import function_span, generation_span
 from agents.tracing.spans import SpanError
+
+LLMExchangeCallback = Callable[[list[ModelMessage], ModelResponse], None]
+
+_llm_exchange_hook: ContextVar[LLMExchangeCallback | None] = ContextVar(
+    "_llm_exchange_hook", default=None
+)
+
+
+def set_llm_exchange_hook(hook: LLMExchangeCallback | None) -> Any:
+    """Register a per-context callback invoked after every LLM completion."""
+    return _llm_exchange_hook.set(hook)
+
+
+def reset_llm_exchange_hook(token: Any) -> None:
+    _llm_exchange_hook.reset(token)
 
 
 def _serialize_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
@@ -72,6 +89,11 @@ class TracedModelAdapter:
             span.span_data.output = [output_msg]
             if response.rate_limit_metrics is not None:
                 span.span_data.usage["rate_limit"] = response.rate_limit_metrics
+
+            hook = _llm_exchange_hook.get(None)
+            if hook is not None:
+                hook(messages, response)
+
             return response
 
     def __getattr__(self, name: str) -> Any:

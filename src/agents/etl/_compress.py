@@ -8,9 +8,11 @@ import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
+from agents.etl._columns import metadata_by_name
 from agents.etl._constants import (
     COMPRESS_CHUNK_SIZE,
     DATE_SCALAR,
+    FUND_FIELD_DISAMBIGUATION_PROMPT,
     LLM_CALL_TIMEOUT,
     MAX_WORKERS,
     NUMERIC_SCALAR,
@@ -25,6 +27,7 @@ from agents.etl._grouping import (
     entity_chunks_by_token_budget,
     group_paragraphs_by_entity,
 )
+from agents.etl._threading import submit_in_context
 from agents.etl._types import (
     is_placeholder,
     normalize_boolean,
@@ -41,6 +44,8 @@ def _clean_numeric_scalar(val: str) -> str | None:
     if is_placeholder(stripped):
         return ""
     normalized = stripped.replace(",", "")
+    if normalized.startswith(("~", "～")):
+        normalized = normalized[1:].strip()
     if normalized.endswith("%"):
         normalized = normalized[:-1].strip()
     unit_match = re.match(r"^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)\s+\S+$", normalized)
@@ -51,7 +56,7 @@ def _clean_numeric_scalar(val: str) -> str | None:
 
 def _clean_typed_scalar(val: str, field_type: str) -> str | None:
     type_text = field_type.lower()
-    if "number" in type_text or "integer" in type_text:
+    if ("number" in type_text or "integer" in type_text) and "rank" not in type_text:
         return _clean_numeric_scalar(val)
 
     stripped = val.strip()
@@ -73,7 +78,7 @@ def _field_type_instruction(field: str, field_type: str) -> str:
             'Reject ranges/groups/lists such as "197至217"; if the paragraph only '
             "states missing values for such a range/group, skip the paragraph."
         )
-    if "number" in type_text or "integer" in type_text:
+    if ("number" in type_text or "integer" in type_text) and "rank" not in type_text:
         return (
             f"- {field}: {field_type}. Extract only an explicit numeric scalar that "
             "matches this exact field; remove unit suffixes."
@@ -99,10 +104,11 @@ def _format_schema_type_hint(
 ) -> str:
     if not schema_columns or not schema_field_types:
         return ""
+    field_types = metadata_by_name(schema_columns, schema_field_types)
     lines = [
-        _field_type_instruction(field, schema_field_types[field])
+        _field_type_instruction(field, field_types[field])
         for field in schema_columns
-        if field in schema_field_types
+        if field in field_types
     ]
     if not lines:
         return ""
@@ -124,17 +130,21 @@ def _format_hard_type_rules(
     if not schema_columns or not schema_field_types:
         return "\n" + "\n".join(lines) + "\n"
 
+    field_types = metadata_by_name(schema_columns, schema_field_types)
     number_fields = [
         field
         for field in schema_columns
-        if "number" in schema_field_types.get(field, "").lower()
-        or "integer" in schema_field_types.get(field, "").lower()
+        if (
+            "number" in field_types.get(field, "").lower()
+            or "integer" in field_types.get(field, "").lower()
+        )
+        and "rank" not in field_types.get(field, "").lower()
     ]
     date_fields = [
-        field for field in schema_columns if "date" in schema_field_types.get(field, "").lower()
+        field for field in schema_columns if "date" in field_types.get(field, "").lower()
     ]
     boolean_fields = [
-        field for field in schema_columns if "boolean" in schema_field_types.get(field, "").lower()
+        field for field in schema_columns if "boolean" in field_types.get(field, "").lower()
     ]
 
     lines.extend(
@@ -190,7 +200,7 @@ def _clean_compressed_entity_lines(
         return text
 
     field_map = {field.lower(): field for field in schema_columns}
-    field_types = schema_field_types or {}
+    field_types = metadata_by_name(schema_columns, schema_field_types)
     cleaned: list[str] = []
     dropped = 0
     normalized = 0
@@ -344,10 +354,12 @@ def _generate_compress_guide(
         step = max(1, len(paras) // 20)
         sample = "\n\n".join(paras[::step][:20])
 
+    field_defs = metadata_by_name(schema_columns, schema_field_defs)
+    field_types = metadata_by_name(schema_columns, schema_field_types)
     defs_lines: list[str] = []
     for f in schema_columns:
-        d = (schema_field_defs or {}).get(f, "")
-        t = (schema_field_types or {}).get(f, "")
+        d = field_defs.get(f, "")
+        t = field_types.get(f, "")
         parts = [f]
         if t:
             parts.append(f"type={t}")
@@ -425,27 +437,61 @@ def _generate_compress_guide(
            "2.0%" → 2.0, "-1.55%" → -1.55.
            NEVER divide by 100 to convert to decimal form.
 
-        B. ABBREVIATION FIELDS (secuabbr, chinamabbr, etc.): when the
-           document provides MULTIPLE names for the same entity, ALWAYS
-           use the SHORTEST form. The short form is typically labeled
-           "证券简称" / "交易简称" / "市场简称"; the longer form is labeled
-           "官方简称" / "简称" (without qualifier) / "法定名称".
-           Example: "证券简称为'大成有色金属ETF'" AND "简称为'大成有色金属期货
-           ETF'" → secuabbr = "大成有色金属ETF" (the shorter one).
+        B. ABBREVIATION FIELDS: fund entities typically have three naming
+           tiers, longest → shortest. Map each to its EXACT schema column:
+           (1) FULL NAME (全称/正式名称)
+               → ChiName / fund_name. The longest, official registered name.
+           (2) MARKET NAME (市场简称/常用名/通用简称/官方简称/公开简称)
+               → ChiNameAbbr / fund_name_short. Shorter than full name but
+               often still includes fund type suffix like "(LOF)".
+           (3) TRADING NAME (证券简称/交易简称)
+               → SecuAbbr / secuabbr. ALWAYS the shortest name — the label
+               used on the exchange trading screen.
+           ChiNameAbbr and SecuAbbr are DIFFERENT fields. NEVER copy the
+           market name into SecuAbbr when a shorter trading name exists.
+           Example: "市场简称为富国天丰强化收益债券(LOF)…交易简称为富国天丰"
+           → ChiNameAbbr = "富国天丰强化收益债券(LOF)" (tier 2, longer)
+           → SecuAbbr = "富国天丰" (tier 3, shortest). NOT the other way.
+           Example: "通用简称为大摩资源优选混合(LOF)，交易代码为大摩资源"
+           → ChiNameAbbr = "大摩资源优选混合(LOF)" (tier 2)
+           → SecuAbbr = "大摩资源" (tier 3, shortest).
+           If tier 3 does not exist, use tier 2 as SecuAbbr fallback.
+           NEVER leave SecuAbbr empty when any name form is available.
 
         C. CORRECTED VALUES: when a value is stated as "initially X,
            confirmed/corrected to Y", output Y only. Never output X.
 
         D. FIELD TYPE DISCIPLINE: NEVER put a numeric ID/code into a text
            name/abbreviation field, or vice versa. Name/abbreviation fields
-           (secuabbr, fund_name, etc.) contain readable text (Chinese,
-           English, or mixed, e.g. "中银国企ETF", "S&P 500 ETF"), NEVER a
-           pure numeric code like "510270". Code/ID fields (secucode,
-           innercode) contain numeric identifiers only.
-           Example: "证券代码为 510270...交易简称为中银国企ETF" →
-           secucode=510270, secuabbr=中银国企ETF.
+           (SecuAbbr, ChiNameAbbr, fund_name, etc.) contain readable text
+           (Chinese, English, or mixed), NEVER a pure numeric code.
+           Code/ID fields (SecuCode, InnerCode) contain numeric identifiers.
+           Source: "证券代码为 512200...交易简称为南华杭州湾区ETF"
+           CORRECT: SecuCode=512200, SecuAbbr=南华杭州湾区ETF
+           WRONG:   SecuAbbr=512200 (that is the SecuCode, not a name)
 
-        E. FUZZY DATES: ALWAYS convert natural-language date descriptions
+        E. LANGUAGE CONSISTENCY: output field values in the SAME language
+           as the source document. NEVER translate.
+           Chinese source "归类为混合型基金" → "混合型", NOT "Mixed Fund".
+           Chinese source "属于常规基金" → "常规基金", NOT "Conventional Fund".
+           English source "classified as Bond Fund" → "Bond Fund", NOT "债券型".
+
+        F. VALUE FORMAT PRESERVATION: preserve the complete format of
+           structured values as shown in reference data or schema samples.
+           If a field stores composite values like "xx/yy" (e.g. rank
+           "43/166"), output the full form — NEVER just the numerator.
+           The numerator and denominator often appear in DIFFERENT parts
+           of the same paragraph. You MUST scan the full paragraph and
+           combine them:
+           "在包含 162 家机构的同业评比中，其取得了第20位的排名"
+             → denominator=162 (from "包含 162 家"), numerator=20 → "20/162"
+           "在37家可比机构中位列第9名"
+             → denominator=37, numerator=9 → "9/37"
+           "取得了 20/117 的排名"
+             → already complete → "20/117"
+           WRONG: outputting just "20" or "9" without the denominator.
+
+        G. FUZZY DATES: ALWAYS convert natural-language date descriptions
            to YYYY-MM-DD format. NEVER leave a date field empty when the
            text describes it in words.
            "2021年终" / "2021日历年结束" / "2021年末" → 2021-12-31
@@ -456,6 +502,55 @@ def _generate_compress_guide(
            Only leave a date field empty when the text explicitly says
            data is missing/unavailable — NOT when it uses a verbal date
            description instead of YYYY-MM-DD digits.
+
+        H. FUND FIELD ROUTING: fund documents use "type"/"类型" for several
+           distinct dimensions. Route values to the correct column:
+           * `Type` (product structure): ETF, LOF, 契约型封闭式,
+             开放式(带固定封闭期).
+             Source cues: "是一只LOF", "结构为ETF", "类型为LOF".
+           * `FundType` (fund classification): 股票型, 混合型, 债券型, 货币型,
+             其他型, 基础设施证券投资基金.
+             Normalize "XX型基金" → "XX型" (drop "基金").
+             Source cues: "归类为XX型基金", "属于XX型基金",
+             "资产大类上被归为XX型", "资产类别上被划分为XX型".
+           * `InvestmentType` (investment approach): 指数型, 优化指数型,
+             成长型—积极成长型, 成长型—稳健成长型, 债券型, 综合型.
+             Source cues: "投资类型为指数型", "投资类型被界定为综合型".
+           * `InvestStyle` (investment style): 大盘价值, 灵活配置型,
+             行业股票-医药, 商品-贵金属, etc.
+             Source cues: "投资风格为...", "投资风格专注于...".
+           * `FundNature` (fund nature): Conventional Fund (常规基金),
+             QDII Fund.
+             Source cues: "属于常规基金", "被归类为QDII基金".
+           * `FloatType` (trading channel): Exchange-Traded (仅场内),
+             Exchange-Traded and Over-the-Counter (场内和场外).
+             Source cues: "仅支持场内交易", "支持场内和场外交易".
+           * `IfFOF` (boolean): Yes/No.
+             Source cues: "基金中基金", "FOF".
+           NEVER put ETF/LOF in `FundType`. NEVER put 股票型/混合型 in `Type`.
+           NEVER put 指数型/成长型 in `FundType`.
+
+        I. SHARED-ENTITY PARAGRAPHS: when a paragraph declares that
+           multiple record IDs share the same entity (e.g. "投资记录 2162
+           和 2166 均指向同一标的，即 大成中小盘A。该基金的内部代码为
+           34003"), output a SEPARATE line for EACH record ID, and COPY
+           all shared identity fields (InnerCode, ChiName, ChiNameAbbr,
+           SecuAbbr, SecuCode, etc.) to every line.
+           Example output:
+             record_id: 2162 | InnerCode: 34003 | ChiName: 大成中小盘混合型...
+             record_id: 2166 | InnerCode: 34003 | ChiName: 大成中小盘混合型...
+           WRONG: outputting only one line for 2162 and leaving 2166
+           without identity fields.
+
+        J. FUND FIELD DISAMBIGUATION:
+           {FUND_FIELD_DISAMBIGUATION_PROMPT}
+
+        K. OUTPUT FORMAT: every output line MUST use explicit field names
+           with colon separators — "field_name: value | field_name: value".
+           NEVER output positional pipe-separated values without field
+           names (e.g. "3055|华夏港股通A|160322" is WRONG; correct form is
+           "record_id: 3055 | secuabbr: 华夏港股通A | secucode: 160322").
+           Your guide MUST repeat this format instruction verbatim.
 
         Output ONLY the system prompt text (under 1200 words), no wrapping
         or commentary.""")
@@ -484,11 +579,8 @@ def _format_schema_def_hint(
 ) -> str:
     if not schema_columns or not schema_field_defs:
         return ""
-    lines = [
-        f"  - {field}: {schema_field_defs[field]}"
-        for field in schema_columns
-        if field in schema_field_defs
-    ]
+    field_defs = metadata_by_name(schema_columns, schema_field_defs)
+    lines = [f"  - {field}: {field_defs[field]}" for field in schema_columns if field in field_defs]
     if not lines:
         return ""
     return (
@@ -637,7 +729,12 @@ def compress_chunk(
             "[RECORD_ID: N]; NEVER borrow a value stated for another entity. "
             "If such a paragraph only declares values missing/unavailable for "
             "a set of entities, leave those fields empty — that is not a "
-            "reason to skip the rest of the entity group."
+            "reason to skip the rest of the entity group.\n"
+            "- EXCEPTION: when a paragraph declares that MULTIPLE entities "
+            "share the SAME value (e.g. 'units A and B are both classified "
+            "as stock-type'), apply that value to EVERY listed entity. "
+            "This is NOT borrowing — the text explicitly states the value "
+            "for all named entities."
         )
     else:
         opening = (
@@ -662,12 +759,29 @@ def compress_chunk(
         {task_line}
         {schema_hint}
         {def_hint}
+        {FUND_FIELD_DISAMBIGUATION_PROMPT}
         {type_hint}
         {hard_type_rules}
         {format_hint}
         Rules:
         {anchor_rule}
         {shared_para_rule}
+        - LANGUAGE: output field values in the SAME language as the source \
+        document. NEVER translate values. Chinese source → Chinese values; \
+        English source → English values.
+        - VALUE FORMAT: preserve the complete format of structured values. \
+        If the schema expects "xx/yy" (e.g. rank "43/166"), output the full \
+        composite form — NEVER just the numerator. The numerator and \
+        denominator often appear in different parts of the same paragraph; \
+        scan the full context and combine them. \
+        "在包含 162 家机构的同业评比中，其取得了第20位的排名" → "20/162". \
+        "在37家可比机构中位列第9名" → "9/37". \
+        WRONG: outputting just "20" or "9".
+        - SHARED-ENTITY: when a paragraph declares multiple record IDs \
+        share the same entity (e.g. "记录 2162 和 2166 均指向同一标的"), \
+        output a SEPARATE line for EACH record ID with ALL shared identity \
+        fields copied. NEVER output only one line and leave the other IDs \
+        without identity fields.
         - Every value MUST have a descriptive field label before it.
         - If a schema field has no explicit, suitable value in this {"entity group" if entity_aware else "paragraph"}, \
         leave it empty by omitting that non-identity field. Do NOT substitute \
@@ -753,7 +867,9 @@ def compress_chunk(
 
         ---
         {chunk_text}
-        ---""")
+        ---
+
+        REMINDER: output MUST use "field_name: value | field_name: value" format. NEVER omit field names.""")
     from agents.llm.types import ModelMessage
 
     system_content = compress_guide or "You are a data extraction preprocessor."
@@ -793,11 +909,13 @@ def compress_prose(
     anchor_keys: list[str] | None = None,
     schema_field_types: dict[str, str] | None = None,
     schema_field_defs: dict[str, str] | None = None,
-) -> tuple[str, dict[str, list[str]] | None]:
+) -> tuple[str, dict[str, list[str]] | None, str | None]:
     """Compress prose by stripping noise. All chunks across all sections run in one pool.
 
-    Returns (compressed_text, entity_groups) where entity_groups maps
-    record_id → source paragraphs (None when positional chunking was used).
+    Returns (compressed_text, entity_groups, compress_guide) where entity_groups
+    maps record_id → source paragraphs (None when positional chunking was used)
+    and compress_guide is the LLM-generated extraction guide (None when no
+    schema was provided).
     """
 
     # Try entity-aware chunking: group paragraphs by entity (LLM grouping
@@ -836,7 +954,7 @@ def compress_prose(
         chunk_rids = [[] for _ in work]
 
     if not work:
-        return text, entity_groups
+        return text, entity_groups, None
 
     guide = _generate_compress_guide(
         adapter,
@@ -849,7 +967,8 @@ def compress_prose(
     compressed: list[str | None] = [None] * len(work)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futs = {
-            pool.submit(
+            submit_in_context(
+                pool,
                 compress_chunk,
                 adapter,
                 item[1],
@@ -983,4 +1102,4 @@ def compress_prose(
         schema_columns,
         schema_field_types,
     )
-    return result, entity_groups
+    return result, entity_groups, guide

@@ -154,6 +154,14 @@ def test_embedded_digit_fragments_detected() -> None:
             0,
             id="strips-enumeration-prefix",
         ),
+        pytest.param(
+            "2162, 2166 : 12\n2162、2166 ： 13",
+            {"2162": [12, 13], "2166": [12, 13]},
+            [],
+            False,
+            0,
+            id="parses-multi-id-lines-with-spaces",
+        ),
         pytest.param("GROUPS: NONE", {}, [], True, 0, id="groups-none-bare"),
         pytest.param("groups: none", {}, [], True, 0, id="groups-none-lowercase"),
         pytest.param(
@@ -205,8 +213,8 @@ def test_parse_grouping_response(
                 "Additional figures for Record 20 appear in this trailing paragraph.",
             ],
             {"16": [1, 4], "20": [2], "25": [3]},
-            {"16": [1], "20": [2], "25": [3]},
-            id="hijack-guard-rejects-cross-entity-member",
+            {"16": [1], "20": [2, 4], "25": [3]},
+            id="hijack-guard-reassigns-to-mentioned-entity",
         ),
         # Paragraph 2 states only Record 20's ID, so the contested claim is
         # resolved to 20 and dropped from 16.
@@ -460,7 +468,7 @@ def test_compress_prose_recovers_missing_and_ignores_casing() -> None:
     ]
     adapter = _RecoveryAdapter()
 
-    result, _ = compress_prose(
+    result, *_ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],
@@ -510,7 +518,7 @@ def test_compress_prose_processes_unmatched_numeric_paragraphs() -> None:
     paras.append("The special asset registered under 9 reported a metric of ninety.")
     adapter = _LeftoverAdapter()
 
-    result, _ = compress_prose(
+    result, *_ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],
@@ -551,7 +559,7 @@ def test_grouping_falls_back_to_regex_when_all_llm_calls_fail() -> None:
     ]
     adapter = _GroupingDownAdapter()
 
-    result, _ = compress_prose(
+    result, *_ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],
@@ -586,7 +594,7 @@ def test_grouping_rejected_by_gate_uses_positional_path() -> None:
     ]
     adapter = _GateRejectAdapter()
 
-    result, _ = compress_prose(
+    result, *_ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],

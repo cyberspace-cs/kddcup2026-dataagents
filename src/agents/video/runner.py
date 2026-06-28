@@ -88,8 +88,14 @@ def run_video_agent(
         system_prompt=VIDEO_AGENT_SYSTEM_PROMPT,
         step_callback=step_callback,
     )
+    source: Any = model
+    while hasattr(source, "inner"):
+        source = source.inner
+    backend_kind: str | None = getattr(source, "backend_kind", None)
     content = build_video_user_content(
-        build_video_task_text(task.question, instructions), video_path
+        build_video_task_text(task.question, instructions),
+        video_path,
+        backend_kind=backend_kind,
     )
     result = agent.run(task, initial_user_content=content)
 

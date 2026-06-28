@@ -96,6 +96,18 @@ def test_system_prompt_observed_data_overrides_conflicting_knowledge() -> None:
     assert "re-derive from evidence" in lower
 
 
+def test_system_prompt_classifies_data_listing_triggers() -> None:
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "data-listing trigger" in lower
+    assert "查/看/找/搜/显示/展示/列出" in prompt
+    assert "数据/记录/明细/情况/是多少" in prompt
+    assert "return source rows at original grain" in lower
+    assert "do not require every requested column to be non-null" in lower
+    assert "非空/不为空/有数据/non-null/not empty" in prompt
+
+
 # ---------- build_observation_prompt: ok parameter & recovery hints ----------
 
 

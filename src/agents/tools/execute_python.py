@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from queue import Empty
 from typing import Annotated, Any
@@ -129,6 +130,24 @@ def _run_python_code(
         "pd": pd,
         "np": np,
     }
+
+    # Monkey-patch pandas to use stable sort by default so tied rows
+    # preserve their original (insertion-order / primary-key) position.
+    _orig_df_sort: Callable[..., Any] = pd.DataFrame.sort_values
+    _orig_sr_sort: Callable[..., Any] = pd.Series.sort_values
+
+    def _stable_df_sort(self: Any, *args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("kind", "mergesort")
+        return _orig_df_sort(self, *args, **kwargs)
+
+    def _stable_sr_sort(self: Any, *args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("kind", "mergesort")
+        return _orig_sr_sort(self, *args, **kwargs)
+
+    # Dynamic patching avoids pyright trying to match pandas' overload set.
+    setattr(pd.DataFrame, "sort_values", _stable_df_sort)  # noqa: B010
+    setattr(pd.Series, "sort_values", _stable_sr_sort)  # noqa: B010
+
     resolved_stdout_path = Path(stdout_path)
     resolved_stderr_path = Path(stderr_path)
 

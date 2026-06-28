@@ -63,7 +63,7 @@ class TraceImpl(Trace):
         self._run_id = run_id
         self._task_id = task_id
         self._processor = processor
-        self._metadata = metadata or {}
+        self._metadata = metadata if metadata is not None else {}
         self._started_at: str | None = None
         self._ended_at: str | None = None
         self._prev_trace_token: Token[Trace | None] | None = None

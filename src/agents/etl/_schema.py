@@ -9,8 +9,10 @@ import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agents.etl._columns import metadata_by_name
 from agents.etl._compress import sample_paragraphs_by_section
 from agents.etl._constants import (
+    FUND_FIELD_DISAMBIGUATION_PROMPT,
     LOCAL_RECORD_ID_RE,
     RECORD_ID_FIELDS,
     SCHEMA_RESPONSE_PREFIX,
@@ -124,6 +126,34 @@ def _parse_defs_line(line: str) -> dict[str, str]:
     return parsed
 
 
+def _canonicalize_casefold_names(
+    names: list[str],
+    preferred: dict[str, str] | None = None,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Deduplicate names that differ only by case.
+
+    When *preferred* is provided, its values define the spelling to keep for
+    matching lower-case keys.
+    """
+    preferred_by_lower = {k.lower(): v for k, v in (preferred or {}).items()}
+    canonical_by_lower: dict[str, str] = {}
+    result: list[str] = []
+    remapped: list[tuple[str, str]] = []
+    for name in names:
+        low = name.lower()
+        target = preferred_by_lower.get(low, name)
+        existing = canonical_by_lower.get(low)
+        if existing is not None:
+            if name != existing:
+                remapped.append((name, existing))
+            continue
+        canonical_by_lower[low] = target
+        result.append(target)
+        if name != target:
+            remapped.append((name, target))
+    return result, remapped
+
+
 def _parse_schema_response(
     text: str,
 ) -> tuple[str, list[str], dict[str, str], list[str], dict[str, str], dict[str, str]] | None:
@@ -170,16 +200,29 @@ def _parse_schema_response(
     if not pk or len(columns) < 2:
         return None
 
+    columns, _ = _canonicalize_casefold_names(columns)
+    column_by_lower = {c.lower(): c for c in columns}
+    pk = column_by_lower.get(pk.lower(), pk)
+
     if not anchor_keys:
         anchor_keys = [pk]
-    elif pk not in anchor_keys:
+    elif pk.lower() not in {a.lower() for a in anchor_keys}:
         anchor_keys.insert(0, pk)
 
+    canonical_anchors: list[str] = []
+    seen_anchors: set[str] = set()
     for ak in anchor_keys:
-        if ak not in columns:
-            columns.append(ak)
+        canonical = column_by_lower.get(ak.lower(), ak)
+        canonical_lower = canonical.lower()
+        if canonical_lower in seen_anchors:
+            continue
+        canonical_anchors.append(canonical)
+        seen_anchors.add(canonical_lower)
+        if canonical_lower not in column_by_lower:
+            columns.append(canonical)
+            column_by_lower[canonical_lower] = canonical
 
-    return pk, anchor_keys, explicit_types, columns, field_units, field_defs
+    return pk, canonical_anchors, explicit_types, columns, field_units, field_defs
 
 
 def _complete_schema_field_defs(
@@ -261,6 +304,7 @@ def merge_prose_schema_into_governance(
     gov_defs: dict[str, str],
     gov_types: dict[str, str],
     question: str,
+    table_name: str | None = None,
 ) -> tuple[list[str], dict[str, str], dict[str, str]]:
     """Union governance + prose-inferred schemas with synonym dedup.
 
@@ -272,7 +316,9 @@ def merge_prose_schema_into_governance(
     Returns (extra_columns, extra_types, extra_defs) — only the fields
     NOT already covered by a governance synonym.
     """
-    inferred = _infer_schema_single(adapter, sample_paragraphs_by_section(prose_text), question)
+    inferred = _infer_schema_single(
+        adapter, sample_paragraphs_by_section(prose_text), question, table_name=table_name
+    )
     if not inferred:
         return [], {}, {}
 
@@ -282,6 +328,7 @@ def merge_prose_schema_into_governance(
 
     from agents.etl._merge import strip_key
 
+    gov_defs = metadata_by_name(gov_columns, gov_defs)
     gov_norm = {strip_key(c) for c in gov_columns}
     novel = [
         c for c in prose_cols if strip_key(c) not in gov_norm and c.lower() not in RECORD_ID_FIELDS
@@ -309,6 +356,8 @@ def merge_prose_schema_into_governance(
         Sub-totals and aggregates are ALWAYS DISTINCT even when names are
         similar (e.g. reserve_assets = deposits + cash ≠ totalassets = all
         assets). Component fields are DISTINCT from their parent total.
+
+        {FUND_FIELD_DISAMBIGUATION_PROMPT}
 
         Output one line per additional field, nothing else.""")
 
@@ -361,11 +410,16 @@ def _merge_synonyms_into_km(
     downstream compression.  Mutates *columns* and *raw_defs* in place.
     Returns list of (removed, canonical) pairs.
     """
-    km_lower = {c.lower() for c in km_fields}
+    km_canon = {c.lower(): c for c in km_fields}
+    canonical_columns, merged = _canonicalize_casefold_names(columns, km_canon)
+    if merged:
+        columns[:] = canonical_columns
+
+    km_lower = set(km_canon)
     rid_fields = {c.lower() for c in RECORD_ID_FIELDS}
     non_km = [c for c in columns if c.lower() not in km_lower and c.lower() not in rid_fields]
     if not non_km:
-        return []
+        return merged
 
     km_block = "\n".join(f"- {c}: {km_fields[c]}" for c in km_fields)
     extra_block = "\n".join(f"- {c}: {raw_defs.get(c, '(no definition)')}" for c in non_km)
@@ -418,9 +472,7 @@ def _merge_synonyms_into_km(
     raw = response.content.strip()
     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
-    merged: list[tuple[str, str]] = []
     non_km_lower = {c.lower(): c for c in non_km}
-    km_canon = {c.lower(): c for c in km_fields}
     for line in raw.splitlines():
         line = line.strip().lstrip("- ")
         if "=" not in line:
@@ -450,7 +502,10 @@ def _remap_schema_metadata(
         old_key = next((key for key in values if key.lower() == old.lower()), None)
         if old_key is None:
             return
-        new_key = next((key for key in values if key.lower() == new.lower()), None)
+        new_key = next(
+            (key for key in values if key.lower() == new.lower() and key != old_key),
+            None,
+        )
         old_value = values.pop(old_key)
         if new_key is None:
             values[new] = old_value
@@ -627,6 +682,8 @@ def parse_knowledge_schema(
             f"---\n{prose_sample}\n---"
         )
 
+    kb_ref = _build_kb_reference(prose_stem)
+
     prompt = textwrap.dedent(f"""\
         Below is a data governance document AND a sample from a prose data file.
         Find the entity in the governance document that best matches \
@@ -672,6 +729,8 @@ def parse_knowledge_schema(
         column is an error.
         - Use simple type labels such as integer_scalar_id, scalar_id, date, time, \
         number, integer_count, integer_rank, string, category, boolean, url.
+        - For rank fields with "xx/yy" format (e.g. "43/166"), use type "string", \
+        NOT "integer_rank". "integer_rank" is only for pure numeric ranks.
         - For document-local record_id fields use type "integer_scalar local_record_id"; \
         record_id values must be a single scalar number, not a range or list.
         - MANDATORY: scan the prose sample for numeric, date, and \
@@ -697,11 +756,14 @@ def parse_knowledge_schema(
         fill column A, others fill column B) and is a critical schema error.
         - If paragraphs are keyed by repeated document-local labels such as \
         "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353", \
-        "File 353", or "Case 353", include a field named "record_id" and \
-        put it FIRST in PK and ANCHORS. This local record ID is the row key \
-        for merging sections; it is NOT the same as domain IDs such as \
-        personalcode, innercode, fundcode, or secucode.
+        "File 353", or "Case 353", AND no REFERENCE SCHEMA below declares a \
+        primary key, include a field named "record_id" and put it FIRST in \
+        PK and ANCHORS. If a REFERENCE SCHEMA declares a primary key, use \
+        that column instead. This local record ID is the row key for merging \
+        sections; it is NOT the same as domain IDs such as personalcode, \
+        innercode, fundcode, or secucode.
         - Do NOT add narrative/filler fields — only structured data fields.
+        {FUND_FIELD_DISAMBIGUATION_PROMPT}
         - For the UNITS line: scan the prose sample for unit suffixes attached \
         to numeric values (e.g. "2478.76亿元" → gdp=亿元, "15.3%" → rate=%). \
         Output a field=unit pair when you find a CONCRETE unit suffix \
@@ -722,7 +784,8 @@ def parse_knowledge_schema(
         "currency", "units", "amount", "count", or any placeholder.
 
         Governance document:
-        {km_text}{prose_section}""")
+        {km_text}{prose_section}
+        {kb_ref}""")
     messages = [
         ModelMessage(
             role="system",
@@ -741,7 +804,36 @@ def parse_knowledge_schema(
 
     raw = response.content.strip()
     if not raw or raw.strip().strip("`").upper() == "NONE":
-        return None
+        if prose_stem.lower() in km_text.lower():
+            logger.warning(
+                "ETL schema: LLM returned NONE for '%s' but knowledge section "
+                "contains the table name — retrying with hint",
+                prose_stem,
+            )
+            hint = ModelMessage(
+                role="user",
+                content=(
+                    f"The governance document DOES contain a section for "
+                    f'"{prose_stem}" — it appears in the heading. '
+                    f"Do NOT output NONE. Extract the schema from that section."
+                ),
+            )
+            try:
+                response = adapter.complete(
+                    [
+                        *messages,
+                        ModelMessage(role="assistant", content="NONE"),
+                        hint,
+                    ]
+                )
+            except Exception:
+                return None
+            raw = response.content.strip()
+            if not raw or raw.strip().strip("`").upper() == "NONE":
+                logger.warning("ETL schema: retry also returned NONE for '%s'", prose_stem)
+                return None
+        else:
+            return None
 
     parsed = _parse_schema_response(raw)
     if not parsed:
@@ -805,24 +897,41 @@ def infer_field_units_from_prose(
     """
     if not prose_sample or not columns:
         return {}
-    col_block = "\n".join(f"- {c}: {field_defs.get(c, '(no definition)')}" for c in columns)
+    field_defs_by_col = metadata_by_name(columns, field_defs)
+    col_block = "\n".join(f"- {c}: {field_defs_by_col.get(c, '(no definition)')}" for c in columns)
     prompt = textwrap.dedent(f"""\
         Below are sample paragraphs from a prose data file AND a list of \
         known schema fields.
 
-        For each field, inspect the actual numeric values in the prose \
-        sample and determine the unit suffix attached to them \
-        (e.g. 元, 万元, 亿元, 百万元, %, 万吨, 万人, 公斤). \
-        Output one field=unit pair per field where a concrete unit is \
-        visible. Omit fields with no visible unit suffix. \
-        A currency denomination statement (e.g. "denominated in Chinese \
-        Yuan", "currency: CNY", "以人民币计价", "values in Chinese Yuan") \
-        declares the CURRENCY, not the magnitude — it is NOT a unit. \
-        NEVER emit field=元 from such a statement; only tag a field 元 \
-        when its numeric values carry an explicit 元 suffix in the data.
+        UNIT EXTRACTION RULES
+
+        1. WHEN TO EXTRACT A UNIT
+        Output field=unit ONLY when the unit is visibly attached to that \
+        field's numeric value, or the exact field/header explicitly carries \
+        a magnitude unit. The unit must be a real magnitude suffix such as \
+        元, 万元, 亿元, 百万元, %, 万吨, 万人, or 公斤.
+
+        2. WHEN NOT TO EXTRACT A UNIT
+        Do NOT output any unit when the text only states currency, \
+        denomination, table scope, data type, or reporting currency. These \
+        are currency labels, NOT magnitude units: "denominated in Chinese \
+        Yuan", "currency: CNY", "CurrencyName: 人民币元", "RMB-denominated \
+        balance sheet", "all monetary values are in Chinese Yuan", "以人民币计价". \
+        If the numeric value appears as "CorporateSavings: 326283.0" with \
+        no suffix, OMIT CorporateSavings entirely.
+
+        3. EXAMPLES
+        GOOD: "Corporate Savings were 326283万元." -> CorporateSavings=万元
+        GOOD: "GDP was 2478.76亿元." -> GDP=亿元
+        GOOD: "Growth rate was 2.5%." -> GrowthRate=%
+        GOOD: field/header "国内生产总值(百万元)" -> 国内生产总值=百万元
+        BAD: "Corporate Savings were 326283.0. CurrencyName: Chinese Yuan." \
+        -> DO NOT output CorporateSavings=元; output nothing for CorporateSavings.
+        BAD: "All figures are denominated in Chinese Yuan. TotalSavings was \
+        965459.0." -> DO NOT output TotalSavings=元; output nothing for TotalSavings.
 
         ONLY output units for the fields listed below — do NOT invent \
-        new fields.
+        new fields. If no field qualifies, output nothing.
 
         Schema fields:
         {col_block}
@@ -834,8 +943,12 @@ def infer_field_units_from_prose(
     messages = [
         ModelMessage(
             role="system",
-            content="You identify units for known fields from prose data values. "
-            "Output field=unit lines only.",
+            content=(
+                "You identify visible magnitude-unit suffixes for known fields. "
+                "Output field=unit lines only. If no numeric value visibly carries "
+                "a unit suffix, output nothing. Currency labels such as Yuan/RMB/CNY "
+                "are not magnitude units."
+            ),
         ),
         ModelMessage(role="user", content=prompt),
     ]
@@ -846,6 +959,7 @@ def infer_field_units_from_prose(
         return {}
 
     col_lower = {c.lower(): c for c in columns}
+    existing_unit_lower = {field.lower() for field in existing_units}
     result: dict[str, str] = {}
     for line in response.content.strip().splitlines():
         line = line.strip().lstrip("- ")
@@ -854,19 +968,73 @@ def infer_field_units_from_prose(
         field, _, unit = line.partition("=")
         field, unit = field.strip(), unit.strip()
         canonical = col_lower.get(field.lower())
-        if canonical and unit and canonical not in existing_units:
+        if canonical and unit and canonical.lower() not in existing_unit_lower:
             result[canonical] = unit
     if result:
         logger.info("ETL prose unit inference: %s", result)
     return result
 
 
+def _build_kb_reference(table_name: str | None) -> str:
+    """Build a prompt section from schema KB if table_name matches."""
+    if not table_name:
+        return ""
+    from agents.etl._schema_kb import lookup
+
+    known = lookup(table_name)
+    if not known:
+        return ""
+    col_list = ", ".join(f"{c} ({known.dtypes.get(c, 'string')})" for c in known.columns)
+    rows_block = ""
+    if known.sample_rows:
+        header = " | ".join(known.columns)
+        lines: list[str] = [header]
+        for row in known.sample_rows[:3]:
+            vals = " | ".join(str(row.get(c, "")) for c in known.columns)
+            lines.append(vals)
+        rows_block = "\n".join(lines)
+
+    pk_note = ""
+    if (
+        known.columns
+        and known.columns[0].lower() == "id"
+        and known.dtypes.get(known.columns[0], "") == "integer"
+    ):
+        pk_note = (
+            f'\n        "{known.columns[0]}" is the PRIMARY KEY / row identifier. '
+            "Document-local record labels (however phrased) refer to this column. "
+            "Use it as PK — do NOT create a separate record_id column."
+        )
+
+    return textwrap.dedent(f"""\
+
+        REFERENCE SCHEMA for "{known.table_name}" (from structured data sources):
+        Columns: {col_list}{pk_note}
+        Sample data:
+        {rows_block}
+
+        ALWAYS use these exact column names. Match your output fields to this reference.
+        Preserve the VALUE FORMAT shown in the sample data — the sample rows are the
+        ground truth for how each field's values should be formatted.
+        Example: if a sample value is "43/166", the prose may scatter the parts across
+        the paragraph ("在包含 166 家机构中…取得了第43位") — combine them into "43/166".
+        NEVER output just "43".
+        LANGUAGE NOTE: the sample data language may differ from the source document.
+        Column names are fixed (use as-is), but field VALUES must match the source
+        document's language. E.g. sample shows "Equity Fund" but source says "股票型"
+        → output "股票型".
+        Only add extra fields if the prose clearly contains data not covered above.
+    """)
+
+
 def _infer_schema_single(
     adapter: ModelAdapter,
     sample: str,
     question: str,
+    table_name: str | None = None,
 ) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
     """One round of schema inference. Returns raw parsed tuple or None."""
+    kb_ref = _build_kb_reference(table_name)
     prompt = textwrap.dedent(f"""\
         Below is a sample from a prose data document. Each paragraph describes
         one entity and mixes structured data with narrative filler.
@@ -878,7 +1046,7 @@ def _infer_schema_single(
         ---
         {sample}
         ---
-
+        {kb_ref}
         Your job:
         1. Identify ALL structured data fields present in the sample
            (numeric values, dates, categories, IDs, codes, statuses).
@@ -912,6 +1080,9 @@ def _infer_schema_single(
         - Only include fields that carry actual structured data values.
         - Use simple type labels such as integer_scalar_id, scalar_id, date, time,
           number, integer_count, integer_rank, string, category, boolean, url.
+        - For rank fields that use "xx/yy" format (e.g. "43/166"), use type
+          "string", NOT "integer_rank". "integer_rank" is only for pure
+          numeric ranks (e.g. 1, 2, 3).
         - If paragraphs are keyed by repeated document-local labels such as
           "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353",
           "File 353", or "Case 353", include a field named "record_id" and
@@ -920,6 +1091,7 @@ def _infer_schema_single(
           personalcode, innercode, fundcode, or secucode.
           Give record_id type "integer_scalar local_record_id"; record_id values
           must be a single scalar number, not a range or list.
+        {FUND_FIELD_DISAMBIGUATION_PROMPT}
         - Do NOT include narrative/context/filler fields.""")
 
     messages = [
@@ -953,6 +1125,7 @@ def _merge_multi_round_schemas(
     all_cols: list[str] = []
     seen_lower: set[str] = set()
     merged_anchors: list[str] = []
+    seen_anchor_lower: set[str] = set()
     merged_types: dict[str, str] = {}
     merged_units: dict[str, str] = {}
     merged_defs: dict[str, str] = {}
@@ -963,8 +1136,10 @@ def _merge_multi_round_schemas(
                 seen_lower.add(c.lower())
                 all_cols.append(c)
         for a in anchors:
-            if a not in merged_anchors and a.lower() not in RECORD_ID_FIELDS:
+            a_lower = a.lower()
+            if a_lower not in seen_anchor_lower and a_lower not in RECORD_ID_FIELDS:
                 merged_anchors.append(a)
+                seen_anchor_lower.add(a_lower)
         merged_types.update(types)
         merged_units.update(units)
         merged_defs.update(defs)
@@ -972,7 +1147,8 @@ def _merge_multi_round_schemas(
     if len(all_cols) <= len(rounds[0][0]):
         return all_cols, merged_anchors, merged_types, merged_units, merged_defs
 
-    col_block = "\n".join(f"- {c}: {merged_defs.get(c, '')}" for c in all_cols)
+    merged_defs_by_col = metadata_by_name(all_cols, merged_defs)
+    col_block = "\n".join(f"- {c}: {merged_defs_by_col.get(c, '')}" for c in all_cols)
     prompt = textwrap.dedent(f"""\
         Multiple schema inference rounds produced these columns (some may be
         synonyms for the same concept):
@@ -981,6 +1157,8 @@ def _merge_multi_round_schemas(
 
         Group columns that refer to EXACTLY the same data field. For each group,
         pick the most descriptive canonical name.
+
+        {FUND_FIELD_DISAMBIGUATION_PROMPT}
 
         Output one line per group:
           canonical_name = synonym1, synonym2, ...
@@ -1022,10 +1200,13 @@ def _merge_multi_round_schemas(
         return all_cols, merged_anchors, merged_types, merged_units, merged_defs
 
     final_anchors: list[str] = []
+    final_anchor_lower: set[str] = set()
     for a in merged_anchors:
         resolved = alias_to_canon.get(a.lower(), a)
-        if resolved not in final_anchors:
+        resolved_lower = resolved.lower()
+        if resolved_lower not in final_anchor_lower:
             final_anchors.append(resolved)
+            final_anchor_lower.add(resolved_lower)
 
     final_types: dict[str, str] = {}
     final_units: dict[str, str] = {}
@@ -1053,6 +1234,7 @@ def infer_schema_from_sample(
     adapter: ModelAdapter,
     prose_text: str,
     question: str,
+    table_name: str | None = None,
 ) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
     """Infer a unified schema by sampling the raw prose text before compression.
 
@@ -1067,7 +1249,7 @@ def infer_schema_from_sample(
 
     rounds: list[tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]]] = []
     for _i in range(SCHEMA_SAMPLE_ROUNDS):
-        result = _infer_schema_single(adapter, sample, question)
+        result = _infer_schema_single(adapter, sample, question, table_name=table_name)
         if result:
             cols, anchors, types, units, defs = result
             rounds.append((cols, anchors, types, units, defs))
