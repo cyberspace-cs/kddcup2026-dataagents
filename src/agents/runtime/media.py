@@ -81,11 +81,12 @@ def build_video_user_content(
     if backend_kind == "dashscope" and video_path.stat().st_size >= DASHSCOPE_COMPRESS_THRESHOLD:
         actual_path = _compress_video(video_path)
 
-    mime_type = mimetypes.guess_type(str(actual_path))[0] or "video/mp4"
-    video_b64 = base64.standard_b64encode(actual_path.read_bytes()).decode("ascii")
-
-    if actual_path != video_path:
-        actual_path.unlink(missing_ok=True)
+    try:
+        mime_type = mimetypes.guess_type(str(actual_path))[0] or "video/mp4"
+        video_b64 = base64.standard_b64encode(actual_path.read_bytes()).decode("ascii")
+    finally:
+        if actual_path != video_path:
+            actual_path.unlink(missing_ok=True)
 
     return [
         {"type": "text", "text": text},
