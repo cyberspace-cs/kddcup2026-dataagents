@@ -105,3 +105,4 @@ src/agents/dashboard/static/
 .cursor/
 src/agents/etl/schema_kb.db-shm
 src/agents/etl/schema_kb.db-wal
+etl_pipeline.html
