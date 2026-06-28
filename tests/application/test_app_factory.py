@@ -177,7 +177,7 @@ def test_build_video_adapter_nothink_override_uses_low_temperature(
     )
     assert isinstance(adapter, NativeToolsOpenAIAdapter)
     assert adapter.enable_thinking is False
-    assert adapter.temperature == 0.1
+    assert adapter.temperature == 0.7
 
 
 def test_build_video_adapter_thinking_override_keeps_thinking_temperature(

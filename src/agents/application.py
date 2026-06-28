@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Any
 
 from agents.agent import ReActAgent, ReActAgentConfig
@@ -62,7 +63,18 @@ _SAMPLING_FIELDS: tuple[str, ...] = (
 _ANSWER_VERIFIER_MAX_TOKENS = 512
 
 
-def _resolve_sampling_defaults(agent_config: AgentConfig) -> dict[str, Any]:
+class _Sentinel(Enum):
+    MISSING = "MISSING"
+
+
+_SENTINEL = _Sentinel.MISSING
+
+
+def _resolve_sampling_defaults(
+    agent_config: AgentConfig,
+    *,
+    enable_thinking_override: bool | None | _Sentinel = _SENTINEL,
+) -> dict[str, Any]:
     """按思考模式给未显式设置的采样字段填推荐兜底。
 
     Qwen3 路径（enable_thinking）：
@@ -77,6 +89,9 @@ def _resolve_sampling_defaults(agent_config: AgentConfig) -> dict[str, Any]:
 
     `seed` 在 Qwen3 路径保持用户原始意图（None=不下发），但 DeepSeek 不支持。
 
+    *enable_thinking_override* — 非 _SENTINEL 时替代 ``agent_config.enable_thinking``
+    用于选择 defaults 表，但仍从 agent_config 读用户显式值。
+
     返回值是 ``{field: resolved_value_or_None}``，调用方逐字段下发到 Adapter。
     """
     resolved: dict[str, Any] = {field: getattr(agent_config, field) for field in _SAMPLING_FIELDS}
@@ -89,10 +104,15 @@ def _resolve_sampling_defaults(agent_config: AgentConfig) -> dict[str, Any]:
             resolved["seed"] = None
         return resolved
 
-    if agent_config.enable_thinking is None:
+    effective = (
+        enable_thinking_override
+        if enable_thinking_override is not _SENTINEL
+        else agent_config.enable_thinking
+    )
+    if effective is None:
         return resolved
 
-    defaults = _THINKING_DEFAULTS if agent_config.enable_thinking else _NON_THINKING_DEFAULTS
+    defaults = _THINKING_DEFAULTS if effective else _NON_THINKING_DEFAULTS
     for field, default_value in defaults.items():
         if resolved[field] is None:
             resolved[field] = default_value
@@ -235,14 +255,10 @@ def _build_video_adapter(config: AppConfig) -> ModelAdapter:
         if config.agent.video_enable_thinking is not None
         else config.agent.enable_thinking
     )
-    if config.agent.video_enable_thinking is not None:
-        defaults = _THINKING_DEFAULTS if video_enable_thinking else _NON_THINKING_DEFAULTS
-        sampling: dict[str, Any] = dict(defaults)
-        sampling["seed"] = config.agent.seed
-        if config.agent.video_enable_thinking is False:
-            sampling["temperature"] = 0.1
-    else:
-        sampling = _resolve_sampling_defaults(config.agent)
+    sampling = _resolve_sampling_defaults(
+        config.agent,
+        enable_thinking_override=video_enable_thinking,
+    )
 
     from agents.video.registry import create_video_tool_registry
 
