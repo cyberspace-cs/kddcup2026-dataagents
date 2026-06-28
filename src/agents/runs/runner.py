@@ -257,7 +257,7 @@ def run_benchmark(
             except KeyboardInterrupt:
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise
-            else:
+            finally:
                 executor.shutdown(wait=True)
     except KeyboardInterrupt:
         _mark_interrupted_traces(config, run_id=effective_run_id, task_ids=task_ids)
