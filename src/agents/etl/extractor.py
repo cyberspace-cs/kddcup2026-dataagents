@@ -405,12 +405,13 @@ def run_etl_for_task(
             km_text = km_path.read_text(encoding="utf-8")
 
     # Route: select only relevant prose files for ETL.
-    if len(prose_files) >= 2:
-        from agents.etl._router import route_prose_files
-
-        prose_files = route_prose_files(adapter, task.question, prose_files, km_text)
-    if not prose_files:
-        return None
+    # if len(prose_files) >= 2:
+    #     from agents.etl._router import route_prose_files
+    #
+    #     prose_files = route_prose_files(adapter, task.question, prose_files, km_text)
+    # if not prose_files:
+    #     return None
+    logger.info("ETL: processing all %d prose files (routing disabled)", len(prose_files))
 
     # Observe once how sibling structured sources store proportions; the
     # per-subfamily verdicts deterministically override the heuristic
