@@ -503,7 +503,7 @@ def _generate_compress_guide(
            data is missing/unavailable — NOT when it uses a verbal date
            description instead of YYYY-MM-DD digits.
 
-        G. FUND FIELD ROUTING: fund documents use "type"/"类型" for several
+        H. FUND FIELD ROUTING: fund documents use "type"/"类型" for several
            distinct dimensions. Route values to the correct column:
            * `Type` (product structure): ETF, LOF, 契约型封闭式,
              开放式(带固定封闭期).
