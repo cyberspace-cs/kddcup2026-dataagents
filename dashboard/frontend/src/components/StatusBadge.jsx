@@ -1,9 +1,10 @@
-import { Check, X, Loader2 } from "lucide-react";
+import { Check, Clock, X, Loader2 } from "lucide-react";
 import clsx from "clsx";
 
 const config = {
   completed: { icon: Check, color: "success", label: "Completed" },
   error: { icon: X, color: "danger", label: "Error" },
+  timeout: { icon: Clock, color: "warning", label: "Timeout" },
   running: { icon: Loader2, color: "warning", label: "Running" },
 };
 
@@ -31,9 +32,12 @@ export default function StatusBadge({ status, size = "sm" }) {
 
 export function StatusDot({ status }) {
   const { color } = config[status] || config.running;
+  const symbol =
+    status === "completed" ? "✓" : status === "error" ? "✕" : status === "timeout" ? "!" : "●";
+
   return (
     <span className="text-xs" style={{ color: `var(--color-${color})` }}>
-      {status === "completed" ? "✓" : status === "error" ? "✕" : "●"}
+      {symbol}
     </span>
   );
 }

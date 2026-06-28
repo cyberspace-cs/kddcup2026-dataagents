@@ -41,6 +41,7 @@ export default function TraceList({
             <option value="">All</option>
             <option value="completed">Completed</option>
             <option value="running">Running</option>
+            <option value="timeout">Timeout</option>
             <option value="error">Error</option>
           </select>
         </div>
