@@ -303,6 +303,9 @@ class AgentConfig:
     # Video sub-agent can need a larger reasoning+tool-call budget than the main ReAct loop.
     # None = inherit max_tokens; 0 = do not send max_tokens for video requests.
     video_max_tokens: StrictInt | None = None
+    # Video sub-agent thinking mode override.
+    # None = inherit enable_thinking from the main agent; True/False = explicit override.
+    video_enable_thinking: StrictBool | None = None
 
     @field_validator("model", "api_base", "api_key", mode="before")
     @classmethod
