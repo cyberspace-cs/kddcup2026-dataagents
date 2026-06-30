@@ -20,7 +20,7 @@ ENTITY_CHUNK_TOKEN_BUDGET = 2500
 # ETL orchestrator adapter and file-level parallelism settings. These are kept
 # separate from compression batch settings so future tuning can distinguish
 # API call limits from per-file task scheduling.
-ETL_ORCHESTRATOR_MAX_WORKERS = 4
+ETL_ORCHESTRATOR_MAX_WORKERS = 8
 ETL_ORCHESTRATOR_LLM_CALL_TIMEOUT = 180
 ETL_HTTP_TIMEOUT = 300.0
 ETL_MAX_OUTPUT_TOKENS = 4096

@@ -29,7 +29,7 @@ agent:
   min_p: 0.0                               # float in [0, 1]（经 extra_body 透传）
   presence_penalty: 0.0                    # float in [-2, 2] — Qwen3 thinking-mode default
 
-  seed: 1024                               # int；与评测机 vLLM `--seed 1024` 对齐
+  # seed: 1024                             # 留空/删除即不下发，走服务端默认
 
   # ---- Pre-Act Planning (optional) ----
   # enable_preact: true adds a planning instruction on the first turn.
@@ -56,8 +56,8 @@ agent:
 run:
   output_dir: artifacts/runs               # 相对路径以 PROJECT_ROOT 为基锚定
   run_id: null                             # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`
-  max_workers: 4                           # int >= 1; 8 with dual-key keeps throughput high
-  task_timeout_seconds: 1800               # int；<= 0 关闭单任务超时
+  max_workers: 6                           # int >= 1; 8 with dual-key keeps throughput high
+  task_timeout_seconds: 1200               # int；<= 0 关闭单任务超时
 
   # 跳过名单：问题歧义 / gold 错误 / 数据缺失的题，提交时移除不影响评分。
   blocklist:

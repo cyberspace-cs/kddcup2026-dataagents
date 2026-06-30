@@ -118,6 +118,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   alternative (e.g. `E:/tmp/dabench` on Windows) without patching the source.
 
 ### Changed
+- **ReAct example and ETL defaults increase run throughput.** The example
+  config now leaves `agent.seed` unset, runs six benchmark tasks in parallel,
+  and lowers the per-task timeout to 1200 seconds. Prose ETL now permits
+  eight file-level orchestrator workers so extraction can keep pace with
+  higher task concurrency.
 - **Answer submission guidance and verifier checks updated.** Inline
   answers now consistently allow up to 10 rows and 50 cells, with larger
   payloads directed to `from_csv`; error text points models to

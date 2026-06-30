@@ -185,3 +185,64 @@ def test_run_etl_for_task_timeout_skips_unfinished_files(
     assert [item.source_file for item in result] == ["good.md"]
     assert executor.futures[1].cancelled
     assert executor.shutdown_args == (False, True)
+
+
+def test_run_etl_for_task_caps_orchestrator_workers_at_eight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = _make_task(tmp_path)
+    _stub_run_etl_dependencies(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        _router,
+        "route_prose_files",
+        lambda _adapter, _question, prose_files, _km_text: list(prose_files),
+    )
+    for idx in range(9):
+        (task.context_dir / f"doc_{idx}.md").write_text(f"doc_{idx} prose\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        extractor,
+        "extract_prose_file",
+        lambda _adapter, path, *_args, **_kwargs: extractor.ETLResult(
+            source_file=path.name,
+            csv_path=str(tmp_path / "etl" / task.task_id / "_etl" / f"{path.stem}.csv"),
+            columns=["id"],
+            row_count=1,
+        ),
+    )
+
+    class FakeFuture:
+        def __init__(self, result: object | None = None) -> None:
+            self._result = result
+
+        def result(self) -> object | None:
+            return self._result
+
+        def done(self) -> bool:
+            return True
+
+    class FakeExecutor:
+        instances: ClassVar[list[FakeExecutor]] = []
+
+        def __init__(self, *, max_workers: int) -> None:
+            self.max_workers = max_workers
+            FakeExecutor.instances.append(self)
+
+        def submit(self, fn: object, *args: object, **kwargs: object) -> FakeFuture:
+            return FakeFuture(fn(*args, **kwargs))  # type: ignore[operator]
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            return None
+
+    def fake_as_completed(futures: Iterable[FakeFuture], *, timeout: int) -> Iterator[FakeFuture]:
+        yield from futures
+
+    monkeypatch.setattr(extractor, "ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(extractor, "as_completed", fake_as_completed)
+
+    result = extractor.run_etl_for_task(task, object())
+
+    executor = FakeExecutor.instances[0]
+    assert result is not None
+    assert len(result) == 9
+    assert executor.max_workers == extractor.ETL_ORCHESTRATOR_MAX_WORKERS == 8
