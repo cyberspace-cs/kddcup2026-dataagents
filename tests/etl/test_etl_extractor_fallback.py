@@ -187,7 +187,7 @@ def test_run_etl_for_task_timeout_skips_unfinished_files(
     assert executor.shutdown_args == (False, True)
 
 
-def test_run_etl_for_task_caps_orchestrator_workers_at_eight(
+def test_run_etl_for_task_caps_orchestrator_workers_at_configured_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     task = _make_task(tmp_path)
@@ -245,4 +245,4 @@ def test_run_etl_for_task_caps_orchestrator_workers_at_eight(
     executor = FakeExecutor.instances[0]
     assert result is not None
     assert len(result) == 9
-    assert executor.max_workers == extractor.ETL_ORCHESTRATOR_MAX_WORKERS == 8
+    assert executor.max_workers == extractor.ETL_ORCHESTRATOR_MAX_WORKERS
