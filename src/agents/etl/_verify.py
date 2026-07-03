@@ -420,7 +420,12 @@ def retry_missing_values(
                     rf"(\b{re.escape(col)}\s*:)\s*(\||$)",
                     re.IGNORECASE,
                 )
-                new_line, n = empty_pat.subn(rf"\1 {val} \2", line, count=1)
+                # callable 替换：LLM 值不得进入 regex 模板（\1/\U 注入）
+                new_line, n = empty_pat.subn(
+                    lambda m, _val=val: f"{m.group(1)} {_val} {m.group(2)}",
+                    line,
+                    count=1,
+                )
                 if n:
                     line = new_line
                     changed = True
@@ -730,7 +735,12 @@ def verify_field_values(
                     rf"(\b{re.escape(col)}\s*:)\s*[^|]*(\||$)",
                     re.IGNORECASE,
                 )
-                new_line, n = pat.subn(rf"\1 {val} \2", line, count=1)
+                # callable 替换：LLM 值不得进入 regex 模板（\1/\U 注入）
+                new_line, n = pat.subn(
+                    lambda m, _val=val: f"{m.group(1)} {_val} {m.group(2)}",
+                    line,
+                    count=1,
+                )
                 if n:
                     line = new_line
             return line

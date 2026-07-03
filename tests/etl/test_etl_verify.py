@@ -105,6 +105,40 @@ def test_verify_field_values_allows_none_when_value_empty() -> None:
     assert result == "RecordID: 1 | TotalAssets: "
 
 
+def test_retry_missing_values_treats_backreference_like_reply_literally() -> None:
+    r"""LLM 值含 \1 时必须按字面落地，不得被解释为 regex 组引用。"""
+    text = "RecordID: 1 | Code: "
+
+    result = retry_missing_values(
+        cast(Any, _ReplyAdapter(r"code: \1")),
+        text,
+        schema_columns=["RecordID", "Code"],
+        primary_key="RecordID",
+        anchor_keys=["RecordID"],
+        entity_groups={"1": [r"RecordID 1 has Code \1."]},
+        forced_gaps={"1": ["Code"]},
+    )
+
+    assert result == "RecordID: 1 | Code: \\1 "
+
+
+def test_verify_field_values_survive_windows_path_correction() -> None:
+    r"""值含 C:\Users\x（\U 在 regex 模板中是非法转义）不得抛异常或损坏相邻字段。"""
+    text = "RecordID: 1 | Path: old | Status: open"
+
+    result = verify_field_values(
+        cast(Any, _ReplyAdapter(r"path: C:\Users\x")),
+        text,
+        schema_columns=["RecordID", "Path", "Status"],
+        primary_key="RecordID",
+        anchor_keys=["RecordID"],
+        entity_groups={"1": [r"RecordID 1 stores files at C:\Users\x."]},
+        schema_field_types={"Path": "string"},
+    )
+
+    assert result == "RecordID: 1 | Path: C:\\Users\\x | Status: open"
+
+
 def test_verify_field_values_accepts_string_corrections() -> None:
     text = "RecordID: 1 | Status: open"
 
