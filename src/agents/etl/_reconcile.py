@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import csv
 import json
 import logging
 import re
@@ -356,17 +355,18 @@ def _move_unit_meta(units_meta: dict[str, Any], src: str, dst: str) -> bool:
     return changed
 
 
-def unify_csv_synonyms(
+def unify_table_synonyms(
     adapter: ModelAdapter,
-    csv_path: Path,
+    header: list[str],
+    rows: list[list[str]],
     prose_stem: str,
     governance_columns: list[str],
     anchor_keys: list[str],
     field_defs: dict[str, str],
     question: str,
     units_path: Path | None,
-) -> list[tuple[str, str]]:
-    """Detect and repair value-split columns in a freshly materialized CSV.
+) -> tuple[list[str], list[list[str]], list[tuple[str, str]]]:
+    """Detect and repair value-split columns in an in-memory table.
 
     Value split: the schema keeps a governance-canonical column AND an
     extraction-discovered column for the same concept; values land partly or
@@ -382,18 +382,13 @@ def unify_csv_synonyms(
     are protected and any row-level disagreement vetoes the pair. On merge,
     unit-sidecar metadata follows the values to the canonical name.
 
-    Returns the applied (source, canonical) pairs; [] when nothing changed.
+    Returns ``(header, rows, applied)``; ``applied`` is [] when nothing
+    changed. CSV I/O belongs to the caller — only the unit sidecar is
+    read/written here.
     """
-    try:
-        with csv_path.open(encoding="utf-8") as f:
-            reader = csv.reader(f)
-            header = next(reader, None)
-            rows = list(reader)
-    except (OSError, csv.Error):
-        return []
     if not header or not rows:
-        return []
-    current_header = header
+        return header, rows, []
+    current_header = list(header)
     width = len(current_header)
     current_rows = [
         row + [""] * (width - len(row)) if len(row) < width else row[:width] for row in rows
@@ -401,13 +396,11 @@ def unify_csv_synonyms(
 
     pending_applied: list[tuple[str, str]] = []
 
-    def _commit(applied: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    def _commit(
+        applied: list[tuple[str, str]],
+    ) -> tuple[list[str], list[list[str]], list[tuple[str, str]]]:
         if not applied:
-            return []
-        with csv_path.open("w", encoding="utf-8", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(current_header)
-            writer.writerows(current_rows)
+            return current_header, current_rows, []
 
         units_meta: dict[str, Any] = {}
         if units_path is not None and units_path.is_file():
@@ -429,9 +422,9 @@ def unify_csv_synonyms(
                 "ETL synonym-unify: merged column '%s' → '%s' in %s",
                 src,
                 dst,
-                csv_path.name,
+                prose_stem,
             )
-        return applied
+        return current_header, current_rows, applied
 
     case_merges = _case_only_header_merges(current_header, governance_columns)
     if case_merges:

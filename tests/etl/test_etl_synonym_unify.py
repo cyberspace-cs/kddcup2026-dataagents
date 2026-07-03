@@ -1,13 +1,12 @@
 """Behavior tests for value-split synonym column unification.
 
 Covers the deterministic merge gates (`apply_synonym_merges`), adjudication
-response parsing, and the CSV-level repair orchestration
-(`unify_csv_synonyms`) with a stubbed adapter.
+response parsing, and the in-memory table repair orchestration
+(`unify_table_synonyms`) with a stubbed adapter.
 """
 
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -15,7 +14,7 @@ from typing import Any
 import pytest
 
 from agents.etl._merge import apply_synonym_merges, column_fill_counts
-from agents.etl._reconcile import _parse_alias_response, unify_csv_synonyms
+from agents.etl._reconcile import _parse_alias_response, unify_table_synonyms
 from agents.llm.types import ModelResponse
 
 
@@ -214,7 +213,7 @@ def test_parse_alias_response_unlisted_discovered_defaults_to_distinct() -> None
 
 
 # ---------------------------------------------------------------------------
-# unify_csv_synonyms — orchestration on disk
+# unify_table_synonyms — in-memory orchestration (unit sidecar on disk)
 # ---------------------------------------------------------------------------
 
 
@@ -255,34 +254,19 @@ _FIELD_DEFS = {
 }
 
 
-def _write_csv(path: Path, header: list[str], rows: list[list[str]]) -> None:
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        writer.writerows(rows)
-
-
-def _read_csv(path: Path) -> tuple[list[str], list[list[str]]]:
-    with path.open(encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header = next(reader)
-        return header, list(reader)
-
-
 def _run_unify(
     tmp_path: Path,
     adapter: _StubAdapter,
     rows: list[list[str]] | None = None,
     units: dict[str, str] | None = None,
-) -> tuple[Path, Path, list[tuple[str, str]]]:
-    csv_path = tmp_path / "lc_sharetransfer.csv"
-    _write_csv(csv_path, _HEADER, rows if rows is not None else _ROWS)
+) -> tuple[list[str], list[list[str]], Path, list[tuple[str, str]]]:
     units_path = tmp_path / "lc_sharetransfer_units.json"
     if units is not None:
         units_path.write_text(json.dumps(units, ensure_ascii=False), encoding="utf-8")
-    applied = unify_csv_synonyms(
+    header, out_rows, applied = unify_table_synonyms(
         adapter,  # type: ignore[arg-type]
-        csv_path,
+        list(_HEADER),
+        [list(r) for r in (rows if rows is not None else _ROWS)],
         "lc_sharetransfer",
         ["sumbeforetran", "pctbeforetran", "secucode"],
         ["record_id", "secucode"],
@@ -290,7 +274,7 @@ def _run_unify(
         "显示300707的出让前持股数量和出让前持股比例",
         units_path,
     )
-    return csv_path, units_path, applied
+    return header, out_rows, units_path, applied
 
 
 def test_unify_repairs_value_split_and_moves_unit_metadata(tmp_path: Path) -> None:
@@ -306,13 +290,12 @@ def test_unify_repairs_value_split_and_moves_unit_metadata(tmp_path: Path) -> No
         "_factor_pctbeforetran": "0.01",
     }
 
-    csv_path, units_path, applied = _run_unify(tmp_path, adapter, units=units)
+    header, rows, units_path, applied = _run_unify(tmp_path, adapter, units=units)
 
     assert sorted(applied) == [
         ("transferor_pct_before", "pctbeforetran"),
         ("transferor_shares_before", "sumbeforetran"),
     ]
-    header, rows = _read_csv(csv_path)
     assert "transferor_shares_before" not in header
     assert "transferor_pct_before" not in header
     assert "transferee_shares_before" in header  # DISTINCT survives
@@ -333,24 +316,14 @@ def test_unify_with_complete_canonicals_makes_no_llm_call(tmp_path: Path) -> Non
         ["30", "300707", "5469268", "3.48", "5469268", "3.48", ""],
     ]
 
-    csv_path, _units_path, applied = _run_unify(tmp_path, adapter, rows=filled_rows)
+    header, _rows, _units_path, applied = _run_unify(tmp_path, adapter, rows=filled_rows)
 
     assert applied == []
     assert adapter.calls == 0
-    header, _ = _read_csv(csv_path)
     assert header == _HEADER
 
 
 def test_unify_folds_case_only_governance_duplicates_without_llm(tmp_path: Path) -> None:
-    csv_path = tmp_path / "qt_dailyquote.csv"
-    _write_csv(
-        csv_path,
-        ["record_id", "secucode", "SecuCode", "tradingday", "TradingDay", "turnoverdeals"],
-        [
-            ["2706", "", "601908", "", "2021-01-08", "122610"],
-            ["2718", "601908", "601908", "2021-01-26", "2021-01-26", "71041"],
-        ],
-    )
     units_path = tmp_path / "qt_dailyquote_units.json"
     units_path.write_text(
         json.dumps({"SecuCode": "code", "_target_TradingDay": "date"}, ensure_ascii=False),
@@ -358,9 +331,13 @@ def test_unify_folds_case_only_governance_duplicates_without_llm(tmp_path: Path)
     )
     adapter = _StubAdapter("SHOULD_NOT_BE_USED")
 
-    applied = unify_csv_synonyms(
+    header, rows, applied = unify_table_synonyms(
         adapter,  # type: ignore[arg-type]
-        csv_path,
+        ["record_id", "secucode", "SecuCode", "tradingday", "TradingDay", "turnoverdeals"],
+        [
+            ["2706", "", "601908", "", "2021-01-08", "122610"],
+            ["2718", "601908", "601908", "2021-01-26", "2021-01-26", "71041"],
+        ],
         "qt_dailyquote",
         ["secucode", "tradingday", "turnoverdeals"],
         ["record_id", "secucode", "tradingday"],
@@ -371,7 +348,6 @@ def test_unify_folds_case_only_governance_duplicates_without_llm(tmp_path: Path)
 
     assert applied == [("SecuCode", "secucode"), ("TradingDay", "tradingday")]
     assert adapter.calls == 0
-    header, rows = _read_csv(csv_path)
     assert header == ["record_id", "secucode", "tradingday", "turnoverdeals"]
     assert rows == [
         ["2706", "601908", "2021-01-08", "122610"],
@@ -398,13 +374,12 @@ def test_unify_repairs_partial_split(tmp_path: Path) -> None:
         "transferee_shares_before=DISTINCT"
     )
 
-    csv_path, _units_path, applied = _run_unify(tmp_path, adapter, rows=rows)
+    header, out_rows, _units_path, applied = _run_unify(tmp_path, adapter, rows=rows)
 
     assert sorted(applied) == [
         ("transferor_pct_before", "pctbeforetran"),
         ("transferor_shares_before", "sumbeforetran"),
     ]
-    header, out_rows = _read_csv(csv_path)
     sum_idx = header.index("sumbeforetran")
     assert [r[sum_idx] for r in out_rows] == ["2441732", "5469268", "3487568"]
 
@@ -418,21 +393,19 @@ def test_unify_conflicting_overlap_blocks_pair_before_llm(tmp_path: Path) -> Non
     ]
     adapter = _StubAdapter("transferor_shares_before=sumbeforetran")
 
-    csv_path, _units_path, applied = _run_unify(tmp_path, adapter, rows=rows)
+    header, _rows, _units_path, applied = _run_unify(tmp_path, adapter, rows=rows)
 
     assert applied == []
     assert adapter.calls == 0
-    header, _ = _read_csv(csv_path)
     assert header == _HEADER
 
 
-def test_unify_adapter_failure_leaves_csv_untouched(tmp_path: Path) -> None:
+def test_unify_adapter_failure_leaves_table_untouched(tmp_path: Path) -> None:
     adapter = _StubAdapter(RuntimeError("boom"))
 
-    csv_path, _units_path, applied = _run_unify(tmp_path, adapter)
+    header, rows, _units_path, applied = _run_unify(tmp_path, adapter)
 
     assert applied == []
-    header, rows = _read_csv(csv_path)
     assert header == _HEADER
     assert rows == _ROWS
 
@@ -444,10 +417,9 @@ def test_unify_collision_on_one_canonical_merges_nothing_into_it(tmp_path: Path)
         "transferor_pct_before=pctbeforetran"
     )
 
-    csv_path, _units_path, applied = _run_unify(tmp_path, adapter)
+    header, _rows, _units_path, applied = _run_unify(tmp_path, adapter)
 
     assert applied == [("transferor_pct_before", "pctbeforetran")]
-    header, _ = _read_csv(csv_path)
     assert "transferor_shares_before" in header
     assert "transferee_shares_before" in header
 
@@ -458,10 +430,9 @@ def test_unify_unit_family_mismatch_blocks_merge(tmp_path: Path) -> None:
     )
     units = {"PctBeforeTran": "ratio", "TRANSFEROR_PCT_BEFORE": "%"}
 
-    csv_path, _units_path, applied = _run_unify(tmp_path, adapter, units=units)
+    header, _rows, _units_path, applied = _run_unify(tmp_path, adapter, units=units)
 
     assert applied == [("transferor_shares_before", "sumbeforetran")]
-    header, _ = _read_csv(csv_path)
     assert "transferor_pct_before" in header
 
 
@@ -478,11 +449,10 @@ def test_unify_never_offers_anchor_columns(tmp_path: Path) -> None:
         "transferee_shares_before=DISTINCT"
     )
 
-    csv_path, _units_path, applied = _run_unify(tmp_path, adapter, rows=rows)
+    header, _rows, _units_path, applied = _run_unify(tmp_path, adapter, rows=rows)
 
     assert sorted(applied) == [
         ("transferor_pct_before", "pctbeforetran"),
         ("transferor_shares_before", "sumbeforetran"),
     ]
-    header, _ = _read_csv(csv_path)
     assert "secucode" in header

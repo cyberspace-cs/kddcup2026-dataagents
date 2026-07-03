@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import logging
 import re
 import textwrap
@@ -20,7 +19,6 @@ from agents.etl._constants import (
     SCHEMA_RESPONSE_PREFIX,
     SCHEMA_SAMPLE_ROUNDS,
 )
-from agents.etl._identity import repair_numeric_identities
 from agents.etl.knowledge import km_table_fields
 from agents.llm import ModelAdapter, ModelMessage, ModelResponse
 
@@ -271,46 +269,6 @@ def _complete_schema_field_types(
         if column:
             result[column] = field_type
     return result
-
-
-def repair_csv_numeric_identities(csv_path: Path) -> list[tuple[int, str, str, str]]:
-    """Run additive-identity repair over a materialized CSV, in place.
-
-    Recomputes approximate numerals (tagged ``~`` by compression, or untagged
-    coarse values) from table invariants mined deterministically from the
-    exact rows, and strips all approx tags. Rewrites the file only when a
-    cell changed. Returns the applied repairs.
-    """
-    try:
-        with csv_path.open(encoding="utf-8") as f:
-            reader = csv.reader(f)
-            header = next(reader, None)
-            rows = list(reader)
-    except (OSError, csv.Error):
-        return []
-    if not header or not rows:
-        return []
-    width = len(header)
-    rows = [row + [""] * (width - len(row)) if len(row) < width else row[:width] for row in rows]
-
-    repaired_rows, repairs = repair_numeric_identities(header, rows)
-    if repaired_rows == rows:
-        return repairs
-
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        writer.writerows(repaired_rows)
-    for row_idx, column, old, new in repairs:
-        logger.info(
-            "ETL identity-repair: %s row %d '%s': %s → %s",
-            csv_path.name,
-            row_idx,
-            column,
-            old,
-            new,
-        )
-    return repairs
 
 
 def merge_prose_schema_into_governance(

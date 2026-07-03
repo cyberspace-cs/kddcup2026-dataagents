@@ -34,7 +34,7 @@ from agents.etl._constants import (
     ETL_RESERVE_OUTPUT_TOKENS,
 )
 from agents.etl._detect import ETLResult, detect_prose_files
-from agents.etl._identity import validate_csv
+from agents.etl._identity import repair_numeric_identities, validate_csv
 from agents.etl._merge import (
     pre_merge_entity_lines,
     resolve_id_conflicts,
@@ -43,9 +43,11 @@ from agents.etl._pdf import pdf_to_markdown
 from agents.etl._reconcile import (
     fix_malformed_lines,
     reconcile_field_names,
-    unify_csv_synonyms,
+    unify_table_synonyms,
 )
 from agents.etl._record import (
+    EntityTable,
+    atomic_write_text,
     normalize_records,
     parse_kv_text,
     records_to_rows,
@@ -57,7 +59,6 @@ from agents.etl._schema import (
     infer_schema_from_sample,
     merge_prose_schema_into_governance,
     parse_knowledge_schema,
-    repair_csv_numeric_identities,
 )
 from agents.etl._threading import submit_in_context
 from agents.etl._trace import (
@@ -204,51 +205,6 @@ def extract_prose_file(
     csv_path = etl_dir / f"{path.stem}.csv"
     full_text = prose_text
 
-    def _finalize(phase: str) -> ETLResult | None:
-        """Validate the materialized CSV, unify value-split synonym columns,
-        repair approximate numerals from mined identities, build result."""
-        result = validate_csv(csv_path)
-        if not result:
-            return None
-        changed = False
-        with etl_phase("identity_repair") as p:
-            repaired = repair_csv_numeric_identities(csv_path)
-            p.metrics["repaired"] = bool(repaired)
-            if repaired:
-                changed = True
-        if governance_columns:
-            with etl_phase("synonym_unify") as p:
-                applied = unify_csv_synonyms(
-                    adapter,
-                    csv_path,
-                    path.stem,
-                    governance_columns,
-                    anchor_keys or [],
-                    schema_field_defs or {},
-                    task.question,
-                    cache_dir / f"{path.stem}_units.json",
-                )
-                p.metrics["applied"] = bool(applied)
-                if applied:
-                    changed = True
-        if changed:
-            result = validate_csv(csv_path) or result
-        header, row_count = result
-        logger.info(
-            "ETL %s: %s → %s (%d cols, %d rows)",
-            phase,
-            path.name,
-            csv_path,
-            len(header),
-            row_count,
-        )
-        return ETLResult(
-            source_file=path.name,
-            csv_path=str(csv_path),
-            columns=header,
-            row_count=row_count,
-        )
-
     if path.suffix.lower() == ".pdf":
         md_path = cache_dir / f"{path.stem}.md"
         md_path.write_text(full_text, encoding="utf-8")
@@ -314,6 +270,7 @@ def extract_prose_file(
     if not primary_key:
         compressed = resolve_id_conflicts(compressed)
 
+    table: EntityTable | None = None
     with etl_phase("pre_merge", input_size=len(compressed)) as p:
         compressed = pre_merge_entity_lines(
             compressed,
@@ -394,17 +351,62 @@ def extract_prose_file(
         write_units_sidecar(task, path.stem, field_units)
 
     # ---- Phase 2a: deterministic serialization (when schema known) ----
-    if schema_columns:
-        with etl_phase("csv") as p:
-            header, rows = records_to_rows(table)
-            p.metrics["produced"] = bool(rows)
-        if rows:
-            csv_path.write_text(to_csv_text(header, rows), encoding="utf-8")
-            result = _finalize("deterministic")
-            if result:
-                return result
-            logger.warning("ETL deterministic extraction produced invalid CSV")
-    return None
+    if not schema_columns or table is None:
+        return None
+
+    header, rows = records_to_rows(table)
+    if not rows:
+        logger.warning("ETL deterministic extraction produced no rows for %s", path.name)
+        return None
+    with etl_phase("identity_repair") as p:
+        rows, repairs = repair_numeric_identities(header, rows)
+        p.metrics["repaired"] = bool(repairs)
+        for row_idx, column, old, new in repairs:
+            logger.info(
+                "ETL identity-repair: %s row %d '%s': %s → %s",
+                path.name,
+                row_idx,
+                column,
+                old,
+                new,
+            )
+    if governance_columns:
+        with etl_phase("synonym_unify") as p:
+            header, rows, applied = unify_table_synonyms(
+                adapter,
+                header,
+                rows,
+                path.stem,
+                governance_columns,
+                anchor_keys or [],
+                schema_field_defs or {},
+                task.question,
+                cache_dir / f"{path.stem}_units.json",
+            )
+            p.metrics["applied"] = bool(applied)
+
+    # 全管道唯一一次 CSV 写：原子落盘，读者永远看不到半写状态。
+    with etl_phase("csv") as p:
+        atomic_write_text(csv_path, to_csv_text(header, rows))
+        p.metrics["rows"] = len(rows)
+    result = validate_csv(csv_path)
+    if not result:
+        logger.warning("ETL deterministic extraction produced invalid CSV for %s", path.name)
+        return None
+    header, row_count = result
+    logger.info(
+        "ETL deterministic: %s → %s (%d cols, %d rows)",
+        path.name,
+        csv_path,
+        len(header),
+        row_count,
+    )
+    return ETLResult(
+        source_file=path.name,
+        csv_path=str(csv_path),
+        columns=header,
+        row_count=row_count,
+    )
 
 
 def run_etl_for_task(
