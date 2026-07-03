@@ -20,8 +20,15 @@ def _link_or_copy_file(source: Path, dest: Path) -> None:
 
 
 def build_virtual_context(task: PublicTask) -> Path:
-    """Create /tmp/dabench/<task_id>/context/ with symlinks merging real context + ETL."""
+    """Create /tmp/dabench/<task_id>/context/ with symlinks merging real context + ETL.
+
+    Prose sources (.md/.pdf) are hidden only when ETL produced a *valid* CSV
+    for that stem; files whose ETL failed, was skipped, or produced an
+    unreadable CSV stay visible so the agent can fall back to the raw source.
+    """
     import shutil
+
+    from agents.etl._identity import validate_csv
 
     virtual_dir = ETL_SCRATCH_ROOT / task.task_id / "context"
     if virtual_dir.exists():
@@ -31,10 +38,20 @@ def build_virtual_context(task: PublicTask) -> Path:
     real_context = task.context_dir.resolve()
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
 
+    etl_covered_stems: set[str] = set()
+    if etl_dir.is_dir():
+        for etl_file in etl_dir.iterdir():
+            if etl_file.suffix == ".csv" and validate_csv(etl_file) is not None:
+                etl_covered_stems.add(etl_file.stem)
+
     for child in real_context.rglob("*"):
         if not child.is_file():
             continue
-        if child.suffix.lower() in {".md", ".pdf"} and child.name.lower() != "knowledge.md":
+        if (
+            child.suffix.lower() in {".md", ".pdf"}
+            and child.name.lower() != "knowledge.md"
+            and child.stem in etl_covered_stems
+        ):
             continue
         rel = child.relative_to(real_context)
         dest = virtual_dir / rel
