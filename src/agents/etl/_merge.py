@@ -28,12 +28,23 @@ logger = logging.getLogger(__name__)
 
 
 def strip_key(s: str) -> str:
-    return s.lower().replace("_", "").replace("-", "")
+    return s.strip().lower().replace("_", "").replace("-", "")
 
 
 def canonical_key_map(keys: list[str]) -> dict[str, str]:
     """Map normalized field names to their canonical schema spelling."""
-    return {strip_key(key): key for key in keys}
+    key_map: dict[str, str] = {}
+    for key in keys:
+        normalized = strip_key(key)
+        if normalized in key_map and key_map[normalized] != key:
+            logger.warning(
+                "ETL schema: columns %r and %r collide after key normalization (%r)",
+                key_map[normalized],
+                key,
+                normalized,
+            )
+        key_map[normalized] = key
+    return key_map
 
 
 def canonicalize_key(key: str, key_map: dict[str, str]) -> str:

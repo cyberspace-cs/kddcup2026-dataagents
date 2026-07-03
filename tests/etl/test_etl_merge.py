@@ -6,11 +6,37 @@ import io
 import pytest
 
 from agents.etl._merge import (
+    canonical_key_map,
+    canonicalize_key,
     collect_unmatched_keys,
     deterministic_kv_to_csv,
+    line_has_kv_key,
     normalize_entity_lines,
     pre_merge_entity_lines,
 )
+
+
+def test_strip_key_canonicalization_ignores_surrounding_whitespace() -> None:
+    """KV 行里 `| record_id: 5` 的键带前导空格，规范化必须命中。"""
+    assert line_has_kv_key("name: X | record_id: 5", "record_id") is True
+    key_map = canonical_key_map(["Height_CM", "record_id"])
+    assert canonicalize_key(" Height-CM", key_map) == "Height_CM"
+
+
+def test_deterministic_kv_to_csv_pk_not_first_column() -> None:
+    """PK 非首列时（键带前导空格）整文件不得产出 None。"""
+    text = "\n".join(
+        [
+            "name: Alice | record_id: 1 | score: 10",
+            "name: Bob | record_id: 2 | score: 20",
+        ]
+    )
+    out = deterministic_kv_to_csv(text, ["record_id", "name", "score"], "record_id")
+    assert out is not None
+    rows = list(csv.reader(io.StringIO(out)))
+    assert rows[0] == ["record_id", "name", "score"]
+    assert rows[1] == ["1", "Alice", "10"]
+    assert rows[2] == ["2", "Bob", "20"]
 
 
 def test_pre_merge_uses_secondary_anchor_when_primary_key_is_blank() -> None:
