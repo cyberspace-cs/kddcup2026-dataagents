@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
 import re
 
-from agents.etl._columns import metadata_by_name
 from agents.etl._constants import (
     APPROX_TAG,
     DATE_SCALAR,
@@ -523,53 +520,6 @@ def detect_malformed_lines(text: str, schema_columns: list[str]) -> list[str]:
     return bad
 
 
-def normalize_entity_lines(
-    text: str,
-    schema_columns: list[str],
-    primary_key: str | None = None,
-) -> str:
-    """Reorder fields in every entity line to match schema_columns order.
-
-    Drops fields not in the schema and fills missing fields with empty
-    values, so downstream CSV extraction sees a uniform tabular layout.
-    """
-    field_map = canonical_key_map(schema_columns)
-    col_set = set(schema_columns)
-
-    normalized: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        is_entity = (
-            line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
-        )
-        if not is_entity:
-            normalized.append(line)
-            continue
-
-        fields: dict[str, str] = {}
-        for part in stripped.split("|"):
-            if ":" not in part:
-                continue
-            key, _, val = part.partition(":")
-            key = canonicalize_key(key, field_map)
-            if key in col_set:
-                v = val.strip()
-                if key.lower() in _NAME_ABBR_FIELDS:
-                    digits = v.replace(",", "").replace(".", "").lstrip("-")
-                    if digits and digits.isdigit():
-                        v = ""
-                v = strip_reasoning_leak(v)
-                v = _normalize_fund_type(v, key)
-                fields[key] = v
-
-        parts = [f"{c}: {fields.get(c, '')}" for c in schema_columns]
-        normalized.append(" | ".join(parts))
-
-    return "\n".join(normalized)
-
-
 def clean_cell(val: str) -> str:
     """Normalize a single KV value into a CSV-ready cell."""
     if not val or is_placeholder(val):
@@ -686,60 +636,6 @@ def clean_cell_for_type(
     if normalized != cleaned and NUMERIC_SCALAR.match(normalized):
         return normalized
     return clean_cell(val)
-
-
-def deterministic_kv_to_csv(
-    text: str,
-    schema_columns: list[str],
-    primary_key: str | None = None,
-    schema_field_types: dict[str, str] | None = None,
-) -> str | None:
-    """Parse normalized KV entity lines directly into CSV without LLM.
-
-    Each entity line is expected to be in the form:
-      col_a: val | col_b: val | ...
-    with columns in schema_columns order (produced by normalize_entity_lines).
-    """
-    field_map = canonical_key_map(schema_columns)
-    col_set = set(schema_columns)
-    field_types = metadata_by_name(schema_columns, schema_field_types)
-
-    rows: list[list[str]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        is_entity = (
-            line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
-        )
-        if not is_entity:
-            continue
-
-        fields: dict[str, str] = {}
-        for part in stripped.split("|"):
-            if ":" not in part:
-                continue
-            key, _, val = part.partition(":")
-            key = canonicalize_key(key, field_map)
-            if key in col_set:
-                fields[key] = clean_cell_for_type(
-                    _strip_cjk_ascii_spaces(val.strip()),
-                    field_types.get(key),
-                    field_name=key,
-                )
-
-        row = [fields.get(c, "") for c in schema_columns]
-        if any(row):
-            rows.append(row)
-
-    if not rows:
-        return None
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(schema_columns)
-    writer.writerows(rows)
-    return buf.getvalue()
 
 
 def cells_agree(a: str, b: str) -> bool:

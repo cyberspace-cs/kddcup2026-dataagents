@@ -23,10 +23,13 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from agents.etl._columns import metadata_by_name
 from agents.etl._constants import APPROX_TAG, ENTITY_LINE
 from agents.etl._merge import (
+    _strip_cjk_ascii_spaces,
     canonical_key_map,
     canonicalize_key,
+    clean_cell_for_type,
     strip_key,
     strip_reasoning_leak,
 )
@@ -180,6 +183,45 @@ def parse_kv_text(
         rejects=rejects,
         conflicts=conflicts,
     )
+
+
+def set_record_field(record: Record, col: str, val: str, writer: str) -> None:
+    """Store a cleaned cell value on a record, keeping the approx set coherent."""
+    bare, approx = split_approx_tag(val)
+    record.fields[col] = bare
+    if approx and bare:
+        record.approx.add(col)
+    else:
+        record.approx.discard(col)
+    record.provenance[col] = writer
+
+
+def normalize_records(table: EntityTable) -> None:
+    """Type-clean every schema-column value in place.
+
+    取代 ``normalize_entity_lines`` 的清洗半边 + 旧 ``deterministic_kv_to_csv``
+    的逐格类型清洗（``clean_cell_for_type``：占位符、单位后缀、名称/缩写字段
+    数字拦截、fund-type 归一、类型强制）。未匹配 schema 的键不清洗也不丢——
+    投影推迟到 :func:`records_to_rows`。
+    """
+    field_types = metadata_by_name(table.columns, table.field_types)
+    col_set = set(table.columns)
+    pk = table.primary_key
+    for record in table.records:
+        for col in record.fields:
+            if col not in col_set:
+                continue
+            raw = record.fields[col]
+            if col in record.approx:
+                raw = f"{APPROX_TAG}{raw}"
+            cleaned = clean_cell_for_type(
+                _strip_cjk_ascii_spaces(raw.strip()),
+                field_types.get(col),
+                field_name=col,
+            )
+            set_record_field(record, col, cleaned, "normalize")
+        if pk:
+            record.pk = record.fields.get(pk) or None
 
 
 def records_to_rows(table: EntityTable) -> tuple[list[str], list[list[str]]]:

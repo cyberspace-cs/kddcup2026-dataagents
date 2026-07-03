@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agents.etl._compress import _generate_compress_guide
+from agents.etl._record import parse_kv_text
 from agents.etl._schema import merge_prose_schema_into_governance
 from agents.etl._verify import retry_missing_values
 from agents.llm.types import ModelMessage, ModelResponse
@@ -101,12 +102,15 @@ def test_compress_guide_prompt_disambiguates_fund_classification() -> None:
 def test_retry_missing_type_prompt_uses_fund_classification_triggers() -> None:
     adapter = _SequenceAdapter(["type: 股票型"])
 
-    result = retry_missing_values(
-        adapter,  # type: ignore[arg-type]
+    table = parse_kv_text(
         "record_id: 748 | secuabbr: 工银创新药ETF | type: ",
-        schema_columns=["record_id", "secuabbr", "type"],
+        columns=["record_id", "secuabbr", "type"],
         primary_key="record_id",
         anchor_keys=["record_id"],
+    )
+    retry_missing_values(
+        adapter,  # type: ignore[arg-type]
+        table,
         entity_groups={
             "748": [
                 "战略单元 748（工银创新药ETF）是一只ETF，属于常规基金。"
@@ -118,7 +122,7 @@ def test_retry_missing_type_prompt_uses_fund_classification_triggers() -> None:
         forced_gaps={"748": ["type"]},
     )
 
-    assert "type: 股票型" in result
+    assert table.records[0].fields["type"] == "股票型"
     assert len(adapter.prompts) == 1
     prompt = adapter.prompts[0]
     assert "Fund field disambiguation" in prompt

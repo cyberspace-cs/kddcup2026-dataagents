@@ -1,4 +1,10 @@
-"""Value-level retry, cross-field dedup, and outlier verification."""
+"""Value-level retry, cross-field dedup, and outlier verification.
+
+这三个阶段直接操作 :class:`~agents.etl._record.EntityTable`（in place）：
+修正按 ``by_pk[rid].fields[col] = ...`` 精确落地（大小写敏感），LLM 文本经
+:func:`~agents.etl._record.sanitize_llm_value` 收口 + ``clean_cell_for_type``
+类型清洗后入库——不存在正则回填，值内容不可能破坏行结构。
+"""
 
 from __future__ import annotations
 
@@ -11,7 +17,6 @@ from typing import TYPE_CHECKING
 from agents.etl._columns import metadata_by_name
 from agents.etl._constants import (
     DEDUP_CONTEXT_WINDOW,
-    ENTITY_LINE,
     FILL_RATE_THRESHOLD,
     FUND_FIELD_DISAMBIGUATION_PROMPT,
     LLM_CALL_TIMEOUT,
@@ -19,7 +24,8 @@ from agents.etl._constants import (
     MAX_VERIFY_ENTITIES,
     MAX_WORKERS,
 )
-from agents.etl._merge import strip_reasoning_leak
+from agents.etl._merge import clean_cell_for_type, strip_reasoning_leak
+from agents.etl._record import EntityTable, Record, sanitize_llm_value, set_record_field
 from agents.etl._threading import submit_in_context
 
 if TYPE_CHECKING:
@@ -28,62 +34,43 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _parse_kv_lines(
-    text: str,
-    schema_columns: list[str],
-    primary_key: str | None,
-) -> list[dict[str, str]]:
-    """Parse normalized KV text into list of {col: val} dicts."""
-    from agents.etl._merge import (
-        canonical_key_map,
-        canonicalize_key,
-        line_has_kv_key,
-    )
+def _records_by_pk(table: EntityTable) -> dict[str, list[Record]]:
+    by_pk: dict[str, list[Record]] = {}
+    for record in table.records:
+        if record.pk:
+            by_pk.setdefault(record.pk, []).append(record)
+    return by_pk
 
-    field_map = canonical_key_map(schema_columns)
-    col_set = set(schema_columns)
-    rows: list[dict[str, str]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        is_entity = (
-            line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
-        )
-        if not is_entity:
-            continue
-        fields: dict[str, str] = {}
-        for part in stripped.split("|"):
-            if ":" not in part:
-                continue
-            key, _, val = part.partition(":")
-            key = canonicalize_key(key, field_map)
-            if key in col_set:
-                fields[key] = val.strip()
-        rows.append(fields)
-    return rows
+
+def _apply_llm_value(table: EntityTable, record: Record, col: str, val: str, writer: str) -> None:
+    """LLM 修正值落地的唯一路径：sanitize → 类型清洗 → 入库。"""
+    field_types = metadata_by_name(table.columns, table.field_types)
+    cleaned = clean_cell_for_type(
+        sanitize_llm_value(val),
+        field_types.get(col),
+        field_name=col,
+    )
+    set_record_field(record, col, cleaned, writer)
 
 
 def _detect_gap_cells(
-    rows: list[dict[str, str]],
-    schema_columns: list[str],
-    primary_key: str | None,
-    anchor_keys: list[str] | None,
+    table: EntityTable,
 ) -> dict[str, list[str]]:
     """Return {record_id: [missing_col, ...]} for high-fill columns with gaps."""
-    if not rows or not primary_key:
+    primary_key = table.primary_key
+    if not table.records or not primary_key:
         return {}
 
-    skip_lower = {a.lower() for a in anchor_keys or []}
-    candidate_cols = [c for c in schema_columns if c.lower() not in skip_lower]
+    skip_lower = {a.lower() for a in table.anchor_keys}
+    candidate_cols = [c for c in table.columns if c.lower() not in skip_lower]
     if not candidate_cols:
         return {}
 
-    n = len(rows)
+    n = len(table.records)
     fill_counts: dict[str, int] = dict.fromkeys(candidate_cols, 0)
-    for row in rows:
+    for record in table.records:
         for c in candidate_cols:
-            if row.get(c, "").strip():
+            if record.fields.get(c, "").strip():
                 fill_counts[c] += 1
 
     gap_cols = [
@@ -95,13 +82,12 @@ def _detect_gap_cells(
         return {}
 
     gaps: dict[str, list[str]] = {}
-    for row in rows:
-        pk_val = row.get(primary_key, "").strip()
-        if not pk_val:
+    for record in table.records:
+        if not record.pk:
             continue
-        missing = [c for c in gap_cols if not row.get(c, "").strip()]
+        missing = [c for c in gap_cols if not record.fields.get(c, "").strip()]
         if missing:
-            gaps[pk_val] = missing
+            gaps[record.pk] = missing
     return gaps
 
 
@@ -145,13 +131,9 @@ def _extract_value_context(value_str: str, source_text: str, *, max_hits: int = 
 
 def dedup_cross_field_copies(
     adapter: ModelAdapter,
-    text: str,
-    schema_columns: list[str],
-    primary_key: str | None,
-    anchor_keys: list[str] | None,
+    table: EntityTable,
     source_text: str | None,
-    schema_field_types: dict[str, str] | None = None,
-) -> tuple[str, dict[str, list[str]]]:
+) -> dict[str, list[str]]:
     """Clear values duplicated across distinct fields by the same entity.
 
     When compress puts the same numeric value into two columns, one is
@@ -160,27 +142,23 @@ def dedup_cross_field_copies(
     duplicate value actually belongs to, then clears the wrong column
     so retry can re-extract it.
 
-    Returns (text, cleared) where cleared maps pk_val → [col, ...].
+    Mutates *table* in place and returns cleared as {pk_val: [col, ...]}.
     """
-    if not primary_key or not source_text:
-        return text, {}
+    primary_key = table.primary_key
+    if not primary_key or not source_text or not table.records:
+        return {}
 
-    rows = _parse_kv_lines(text, schema_columns, primary_key)
-    if not rows:
-        return text, {}
-
-    skip_lower = {a.lower() for a in anchor_keys or []}
-    data_cols = [c for c in schema_columns if c.lower() not in skip_lower]
+    skip_lower = {a.lower() for a in table.anchor_keys}
+    data_cols = [c for c in table.columns if c.lower() not in skip_lower]
 
     dupes: list[tuple[str, str, list[str], str]] = []
-    for row in rows:
-        pk_val = row.get(primary_key, "").strip()
-        if not pk_val:
+    for record in table.records:
+        if not record.pk:
             continue
 
         val_to_cols: dict[str, list[str]] = {}
         for c in data_cols:
-            v = row.get(c, "").strip().replace(",", "")
+            v = record.fields.get(c, "").strip().replace(",", "")
             if not v:
                 continue
             try:
@@ -193,10 +171,10 @@ def dedup_cross_field_copies(
             if len(cols) < 2:
                 continue
             ctx = _extract_value_context(val, source_text)
-            dupes.append((pk_val, val, cols, ctx))
+            dupes.append((record.pk, val, cols, ctx))
 
     if not dupes:
-        return text, {}
+        return {}
 
     from agents.llm.types import ModelMessage
 
@@ -233,7 +211,7 @@ def dedup_cross_field_copies(
         response = adapter.complete(messages)
     except Exception as exc:
         logger.warning("ETL dedup LLM resolution failed: %s", exc)
-        return text, {}
+        return {}
 
     raw = response.content.strip()
     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
@@ -262,27 +240,16 @@ def dedup_cross_field_copies(
                 to_clear.setdefault(pk_val, []).append(c)
 
     if not to_clear:
-        return text, {}
+        return {}
 
+    by_pk = _records_by_pk(table)
     cleared = 0
     for pk_val, cols in to_clear.items():
-        for col in cols:
-            pk_pat = re.compile(
-                rf"^(.*?\b{re.escape(primary_key)}\s*:\s*{re.escape(pk_val)}\b.*)$",
-                re.MULTILINE | re.IGNORECASE,
-            )
-
-            def _clear(m: re.Match[str], _col: str = col) -> str:
-                line = m.group(1)
-                field_pat = re.compile(
-                    rf"(\b{re.escape(_col)}\s*:)\s*[^|]+(\||$)",
-                    re.IGNORECASE,
-                )
-                return field_pat.sub(r"\1 \2", line, count=1)
-
-            new_text, n = pk_pat.subn(_clear, text)
-            if n:
-                text = new_text
+        for record in by_pk.get(pk_val, []):
+            for col in cols:
+                if not record.fields.get(col, "").strip():
+                    continue
+                set_record_field(record, col, "", "dedup")
                 cleared += 1
 
     if cleared:
@@ -291,32 +258,30 @@ def dedup_cross_field_copies(
             cleared,
             len(to_clear),
         )
-    return text, to_clear
+    return to_clear
 
 
 def retry_missing_values(
     adapter: ModelAdapter,
-    text: str,
-    schema_columns: list[str],
-    primary_key: str | None,
-    anchor_keys: list[str] | None,
+    table: EntityTable,
     entity_groups: dict[str, list[str]] | None,
-    schema_field_types: dict[str, str] | None = None,
     schema_field_defs: dict[str, str] | None = None,
     forced_gaps: dict[str, list[str]] | None = None,
-) -> str:
-    """Re-extract missing values for high-fill columns from source paragraphs."""
-    if not primary_key or not entity_groups or not schema_columns:
-        return text
+) -> None:
+    """Re-extract missing values for high-fill columns from source paragraphs.
 
-    rows = _parse_kv_lines(text, schema_columns, primary_key)
-    gaps = _detect_gap_cells(rows, schema_columns, primary_key, anchor_keys)
+    Mutates *table* in place; only fills cells that are still empty.
+    """
+    if not table.primary_key or not entity_groups or not table.columns:
+        return
+
+    gaps = _detect_gap_cells(table)
     if forced_gaps:
         for pk_val, cols in forced_gaps.items():
             existing = gaps.get(pk_val, [])
             gaps[pk_val] = sorted(set(existing + cols))
     if not gaps:
-        return text
+        return
 
     retry_ids = sorted(gaps.keys())[:MAX_RETRY_ENTITIES]
     all_missing_cols = sorted({c for cols in gaps.values() for c in cols})
@@ -327,6 +292,7 @@ def retry_missing_values(
         all_missing_cols,
     )
 
+    by_pk = _records_by_pk(table)
     patched = 0
     for rid in retry_ids:
         source_paras = entity_groups.get(rid)
@@ -407,98 +373,70 @@ def retry_missing_values(
         if not extracted:
             continue
 
-        pk_pattern = re.compile(
-            rf"^(.*?\b{re.escape(primary_key)}\s*:\s*{re.escape(rid)}\b.*)$",
-            re.MULTILINE | re.IGNORECASE,
-        )
-
-        def _patch_line(m: re.Match[str], _extracted: dict[str, str] = extracted) -> str:
-            line = m.group(1)
-            changed = False
-            for col, val in _extracted.items():
-                empty_pat = re.compile(
-                    rf"(\b{re.escape(col)}\s*:)\s*(\||$)",
-                    re.IGNORECASE,
-                )
-                # callable 替换：LLM 值不得进入 regex 模板（\1/\U 注入）
-                new_line, n = empty_pat.subn(
-                    lambda m, _val=val: f"{m.group(1)} {_val} {m.group(2)}",
-                    line,
-                    count=1,
-                )
-                if n:
-                    line = new_line
-                    changed = True
-            if changed:
-                return line
-            return m.group(1)
-
-        new_text, n = pk_pattern.subn(_patch_line, text)
-        if n:
-            text = new_text
-            patched += len(extracted)
+        applied: list[str] = []
+        for record in by_pk.get(rid, []):
+            for col, val in extracted.items():
+                if record.fields.get(col, "").strip():
+                    continue  # 只回填仍为空的格
+                _apply_llm_value(table, record, col, val, "retry")
+                applied.append(col)
+        if applied:
+            patched += len(applied)
             logger.info(
                 "ETL value retry: patched %d fields for entity %s: %s",
-                len(extracted),
+                len(applied),
                 rid,
-                list(extracted.keys()),
+                sorted(set(applied)),
             )
 
     if patched:
         logger.info(
             "ETL value retry: total %d values patched across %d entities", patched, len(retry_ids)
         )
-    return text
 
 
 def _sample_verify_entities(
-    rows: list[dict[str, str]],
-    primary_key: str,
+    table: EntityTable,
     entity_groups: dict[str, list[str]],
 ) -> list[str]:
     """Select a spread of entity IDs for verification, prioritizing entities
     with more source paragraphs (higher chance of cross-paragraph confusion)."""
     candidates: list[tuple[str, int]] = []
-    for row in rows:
-        pk = row.get(primary_key, "").strip()
-        if pk and pk in entity_groups:
-            candidates.append((pk, len(entity_groups[pk])))
+    for record in table.records:
+        if record.pk and record.pk in entity_groups:
+            candidates.append((record.pk, len(entity_groups[record.pk])))
     candidates.sort(key=lambda x: -x[1])
     return [pk for pk, _ in candidates[:MAX_VERIFY_ENTITIES]]
 
 
 def verify_field_values(
     adapter: ModelAdapter,
-    text: str,
-    schema_columns: list[str],
-    primary_key: str | None,
-    anchor_keys: list[str] | None,
+    table: EntityTable,
     entity_groups: dict[str, list[str]] | None,
-    schema_field_types: dict[str, str] | None = None,
     schema_field_defs: dict[str, str] | None = None,
     compress_guide: str | None = None,
-) -> str:
-    """Verify extracted field values against source paragraphs using LLM."""
-    if not primary_key or not entity_groups or not schema_columns:
-        return text
+) -> None:
+    """Verify extracted field values against source paragraphs using LLM.
 
-    rows = _parse_kv_lines(text, schema_columns, primary_key)
-    if not rows:
-        return text
+    Mutates *table* in place with validated corrections.
+    """
+    primary_key = table.primary_key
+    if not primary_key or not entity_groups or not table.columns or not table.records:
+        return
 
-    verify_ids = _sample_verify_entities(rows, primary_key, entity_groups)
+    verify_ids = _sample_verify_entities(table, entity_groups)
     if not verify_ids:
-        return text
+        return
 
-    skip_lower = {a.lower() for a in anchor_keys or []}
-    types = metadata_by_name(schema_columns, schema_field_types)
+    skip_lower = {a.lower() for a in table.anchor_keys}
+    types = metadata_by_name(table.columns, table.field_types)
     verify_cols = [
         c
-        for c in schema_columns
+        for c in table.columns
         if c.lower() not in skip_lower and "date" not in types.get(c, "").lower()
     ]
     if not verify_cols:
-        return text
+        return
 
     logger.info(
         "ETL field verify: checking %d entities (%d numeric fields each)",
@@ -525,15 +463,16 @@ def verify_field_values(
             f"{compress_guide}\n"
         )
 
-    anchor_lower = {a.lower() for a in anchor_keys or []}
+    anchor_lower = {a.lower() for a in table.anchor_keys}
     anchor_lower.add(primary_key.lower())
+    by_pk = _records_by_pk(table)
 
     def _verify_one(rid: str) -> tuple[str, dict[str, str]]:
         source_paras = entity_groups.get(rid)
         if not source_paras:
             return rid, {}
-        row = next((r for r in rows if r.get(primary_key, "").strip() == rid), None)
-        if not row:
+        row = next((r.fields for r in by_pk.get(rid, [])), None)
+        if row is None:
             return rid, {}
 
         current_kv = " | ".join(f"{c}: {row.get(c, '')}" for c in verify_cols)
@@ -611,7 +550,7 @@ def verify_field_values(
         # (b) a value from a field with a different schema type.
         _anchor_vals: set[str] = set()
         _typed_vals: dict[str, set[str]] = {}
-        for c in schema_columns:
+        for c in table.columns:
             v = row.get(c, "").strip()
             if not v:
                 continue
@@ -719,36 +658,19 @@ def verify_field_values(
 
     if not all_corrections:
         logger.info("ETL field verify: all values confirmed correct")
-        return text
+        return
 
     patched = 0
     for rid, corrections in all_corrections.items():
-        pk_pattern = re.compile(
-            rf"^(.*?\b{re.escape(primary_key)}\s*:\s*{re.escape(rid)}\b.*)$",
-            re.MULTILINE | re.IGNORECASE,
-        )
-
-        def _patch_line(m: re.Match[str], _corr: dict[str, str] = corrections) -> str:
-            line = m.group(1)
-            for col, val in _corr.items():
-                pat = re.compile(
-                    rf"(\b{re.escape(col)}\s*:)\s*[^|]*(\||$)",
-                    re.IGNORECASE,
-                )
-                # callable 替换：LLM 值不得进入 regex 模板（\1/\U 注入）
-                new_line, n = pat.subn(
-                    lambda m, _val=val: f"{m.group(1)} {_val} {m.group(2)}",
-                    line,
-                    count=1,
-                )
-                if n:
-                    line = new_line
-            return line
-
-        new_text, n = pk_pattern.subn(_patch_line, text)
-        if n:
-            text = new_text
-            patched += len(corrections)
+        applied = 0
+        for record in by_pk.get(rid, []):
+            for col, val in corrections.items():
+                if val == "":
+                    continue  # NONE 修正在解析层已被拦（非空现值）或为 no-op
+                _apply_llm_value(table, record, col, val, "verify")
+                applied += 1
+        if applied:
+            patched += applied
             logger.info(
                 "ETL field verify: corrected entity %s: %s",
                 rid,
@@ -760,4 +682,3 @@ def verify_field_values(
         patched,
         len(all_corrections),
     )
-    return text

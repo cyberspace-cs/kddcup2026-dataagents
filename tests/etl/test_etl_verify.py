@@ -1,9 +1,10 @@
-"""Regression tests for ETL value retry and field verification."""
+"""Regression tests for ETL value retry and field verification (EntityTable API)."""
 
 from __future__ import annotations
 
 from typing import Any, cast
 
+from agents.etl._record import EntityTable, parse_kv_text
 from agents.etl._verify import retry_missing_values, verify_field_values
 from agents.llm.types import ModelResponse
 
@@ -18,48 +19,75 @@ class _ReplyAdapter:
         return ModelResponse(content=self.reply)
 
 
-def test_retry_missing_values_matches_mixed_case_reply_keys() -> None:
-    text = "RecordID: 1 | PersonalCode: "
-
-    result = retry_missing_values(
-        cast(Any, _ReplyAdapter("personalcode: 123")),
+def _table(
+    text: str,
+    columns: list[str],
+    primary_key: str,
+    field_types: dict[str, str] | None = None,
+    anchor_keys: list[str] | None = None,
+) -> EntityTable:
+    return parse_kv_text(
         text,
-        schema_columns=["RecordID", "PersonalCode"],
-        primary_key="RecordID",
-        anchor_keys=["RecordID"],
+        columns=columns,
+        primary_key=primary_key,
+        anchor_keys=anchor_keys or [primary_key],
+        field_types=field_types,
+    )
+
+
+def test_retry_missing_values_matches_mixed_case_reply_keys() -> None:
+    table = _table("RecordID: 1 | PersonalCode: ", ["RecordID", "PersonalCode"], "RecordID")
+
+    retry_missing_values(
+        cast(Any, _ReplyAdapter("personalcode: 123")),
+        table,
         entity_groups={"1": ["RecordID 1 has PersonalCode 123."]},
         forced_gaps={"1": ["PersonalCode"]},
     )
 
-    assert result == "RecordID: 1 | PersonalCode: 123 "
+    assert table.records[0].fields["PersonalCode"] == "123"
+    assert table.records[0].provenance["PersonalCode"] == "retry"
+
+
+def test_retry_missing_values_never_overwrites_existing_value() -> None:
+    table = _table("RecordID: 1 | PersonalCode: 999", ["RecordID", "PersonalCode"], "RecordID")
+
+    retry_missing_values(
+        cast(Any, _ReplyAdapter("personalcode: 123")),
+        table,
+        entity_groups={"1": ["RecordID 1 has PersonalCode 123."]},
+        forced_gaps={"1": ["PersonalCode"]},
+    )
+
+    assert table.records[0].fields["PersonalCode"] == "999"
 
 
 def test_verify_field_values_matches_mixed_case_reply_keys() -> None:
-    text = "RecordID: 1 | PersonalCode: 123"
+    table = _table("RecordID: 1 | PersonalCode: 123", ["RecordID", "PersonalCode"], "RecordID")
 
-    result = verify_field_values(
+    verify_field_values(
         cast(Any, _ReplyAdapter("personalcode: 456")),
-        text,
-        schema_columns=["RecordID", "PersonalCode"],
-        primary_key="RecordID",
-        anchor_keys=["RecordID"],
+        table,
         entity_groups={"1": ["RecordID 1 has PersonalCode 456."]},
     )
 
-    assert result == "RecordID: 1 | PersonalCode: 456 "
+    assert table.records[0].fields["PersonalCode"] == "456"
+    assert table.records[0].provenance["PersonalCode"] == "verify"
 
 
 def test_verify_field_values_matches_metadata_case_insensitively() -> None:
     adapter = _ReplyAdapter("ALL_CORRECT")
+    table = _table(
+        "RecordID: 1 | TradingDay: 2021-01-08 | Amount: 10",
+        ["RecordID", "TradingDay", "Amount"],
+        "RecordID",
+        field_types={"tradingday": "date", "amount": "number"},
+    )
 
     verify_field_values(
         cast(Any, adapter),
-        "RecordID: 1 | TradingDay: 2021-01-08 | Amount: 10",
-        schema_columns=["RecordID", "TradingDay", "Amount"],
-        primary_key="RecordID",
-        anchor_keys=["RecordID"],
+        table,
         entity_groups={"1": ["RecordID 1 traded on 2021-01-08 with amount 10."]},
-        schema_field_types={"tradingday": "date", "amount": "number"},
         schema_field_defs={"amount": "Reported amount."},
     )
 
@@ -73,83 +101,105 @@ def test_verify_field_values_matches_metadata_case_insensitively() -> None:
 
 def test_verify_field_values_rejects_none_when_value_exists() -> None:
     """NONE correction must not clear an already-populated field."""
-    text = "RecordID: 1 | TotalAssets: 123"
-
-    result = verify_field_values(
-        cast(Any, _ReplyAdapter("totalassets: NONE")),
-        text,
-        schema_columns=["RecordID", "TotalAssets"],
-        primary_key="RecordID",
-        anchor_keys=["RecordID"],
-        entity_groups={"1": ["RecordID 1 does not mention TotalAssets."]},
-        schema_field_types={"TotalAssets": "number"},
+    table = _table(
+        "RecordID: 1 | TotalAssets: 123",
+        ["RecordID", "TotalAssets"],
+        "RecordID",
+        field_types={"TotalAssets": "number"},
     )
 
-    assert result == "RecordID: 1 | TotalAssets: 123"
+    verify_field_values(
+        cast(Any, _ReplyAdapter("totalassets: NONE")),
+        table,
+        entity_groups={"1": ["RecordID 1 does not mention TotalAssets."]},
+    )
+
+    assert table.records[0].fields["TotalAssets"] == "123"
 
 
 def test_verify_field_values_allows_none_when_value_empty() -> None:
     """NONE on an already-empty field is a no-op (no change)."""
-    text = "RecordID: 1 | TotalAssets: "
-
-    result = verify_field_values(
-        cast(Any, _ReplyAdapter("totalassets: NONE")),
-        text,
-        schema_columns=["RecordID", "TotalAssets"],
-        primary_key="RecordID",
-        anchor_keys=["RecordID"],
-        entity_groups={"1": ["RecordID 1 does not mention TotalAssets."]},
-        schema_field_types={"TotalAssets": "number"},
+    table = _table(
+        "RecordID: 1 | TotalAssets: ",
+        ["RecordID", "TotalAssets"],
+        "RecordID",
+        field_types={"TotalAssets": "number"},
     )
 
-    assert result == "RecordID: 1 | TotalAssets: "
+    verify_field_values(
+        cast(Any, _ReplyAdapter("totalassets: NONE")),
+        table,
+        entity_groups={"1": ["RecordID 1 does not mention TotalAssets."]},
+    )
+
+    assert table.records[0].fields["TotalAssets"] == ""
 
 
 def test_retry_missing_values_treats_backreference_like_reply_literally() -> None:
     r"""LLM 值含 \1 时必须按字面落地，不得被解释为 regex 组引用。"""
-    text = "RecordID: 1 | Code: "
+    table = _table("RecordID: 1 | Code: ", ["RecordID", "Code"], "RecordID")
 
-    result = retry_missing_values(
+    retry_missing_values(
         cast(Any, _ReplyAdapter(r"code: \1")),
-        text,
-        schema_columns=["RecordID", "Code"],
-        primary_key="RecordID",
-        anchor_keys=["RecordID"],
+        table,
         entity_groups={"1": [r"RecordID 1 has Code \1."]},
         forced_gaps={"1": ["Code"]},
     )
 
-    assert result == "RecordID: 1 | Code: \\1 "
+    assert table.records[0].fields["Code"] == "\\1"
 
 
 def test_verify_field_values_survive_windows_path_correction() -> None:
-    r"""值含 C:\Users\x（\U 在 regex 模板中是非法转义）不得抛异常或损坏相邻字段。"""
-    text = "RecordID: 1 | Path: old | Status: open"
-
-    result = verify_field_values(
-        cast(Any, _ReplyAdapter(r"path: C:\Users\x")),
-        text,
-        schema_columns=["RecordID", "Path", "Status"],
-        primary_key="RecordID",
-        anchor_keys=["RecordID"],
-        entity_groups={"1": [r"RecordID 1 stores files at C:\Users\x."]},
-        schema_field_types={"Path": "string"},
+    r"""值含 C:\Users\x 不得抛异常或损坏相邻字段。"""
+    table = _table(
+        "RecordID: 1 | Path: old | Status: open",
+        ["RecordID", "Path", "Status"],
+        "RecordID",
+        field_types={"Path": "string"},
     )
 
-    assert result == "RecordID: 1 | Path: C:\\Users\\x | Status: open"
+    verify_field_values(
+        cast(Any, _ReplyAdapter(r"path: C:\Users\x")),
+        table,
+        entity_groups={"1": [r"RecordID 1 stores files at C:\Users\x."]},
+    )
+
+    assert table.records[0].fields["Path"] == "C:\\Users\\x"
+    assert table.records[0].fields["Status"] == "open"
+
+
+def test_verify_correction_with_pipes_and_newlines_cannot_split_records() -> None:
+    """历史事故输入：修正值带竖线/换行——入库经 sanitize，行结构不可能再被破坏。"""
+    table = _table(
+        "RecordID: 1 | Name: old | Status: open",
+        ["RecordID", "Name", "Status"],
+        "RecordID",
+        field_types={"Name": "string"},
+    )
+
+    verify_field_values(
+        cast(Any, _ReplyAdapter("name: first\nsecond")),
+        table,
+        entity_groups={"1": ["RecordID 1 is named first second."]},
+    )
+
+    assert len(table.records) == 1
+    assert table.records[0].fields["Name"] == "first"
+    assert table.records[0].fields["Status"] == "open"
 
 
 def test_verify_field_values_accepts_string_corrections() -> None:
-    text = "RecordID: 1 | Status: open"
-
-    result = verify_field_values(
-        cast(Any, _ReplyAdapter("status: closed")),
-        text,
-        schema_columns=["RecordID", "Status"],
-        primary_key="RecordID",
-        anchor_keys=["RecordID"],
-        entity_groups={"1": ["RecordID 1 has status closed."]},
-        schema_field_types={"Status": "category"},
+    table = _table(
+        "RecordID: 1 | Status: open",
+        ["RecordID", "Status"],
+        "RecordID",
+        field_types={"Status": "category"},
     )
 
-    assert result == "RecordID: 1 | Status: closed "
+    verify_field_values(
+        cast(Any, _ReplyAdapter("status: closed")),
+        table,
+        entity_groups={"1": ["RecordID 1 has status closed."]},
+    )
+
+    assert table.records[0].fields["Status"] == "closed"

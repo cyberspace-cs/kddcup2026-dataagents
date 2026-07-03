@@ -36,8 +36,6 @@ from agents.etl._constants import (
 from agents.etl._detect import ETLResult, detect_prose_files
 from agents.etl._identity import validate_csv
 from agents.etl._merge import (
-    deterministic_kv_to_csv,
-    normalize_entity_lines,
     pre_merge_entity_lines,
     resolve_id_conflicts,
 )
@@ -46,6 +44,13 @@ from agents.etl._reconcile import (
     fix_malformed_lines,
     reconcile_field_names,
     unify_csv_synonyms,
+)
+from agents.etl._record import (
+    normalize_records,
+    parse_kv_text,
+    records_to_rows,
+    table_to_kv_text,
+    to_csv_text,
 )
 from agents.etl._schema import (
     infer_field_units_from_prose,
@@ -152,6 +157,25 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
         inner = TracedModelAdapter(inner)
 
     return inner
+
+
+def _record_conservation(
+    phase: Any,
+    name: str,
+    before: dict[str, int],
+    after: dict[str, int],
+) -> None:
+    """记录阶段前后的表统计；记录数净减少即守恒告警（dedup 清格是预期，丢记录不是）。"""
+    phase.metrics["records"] = after["records"]
+    phase.metrics["nonempty_cells"] = after["nonempty_cells"]
+    phase.metrics["cells_delta"] = after["nonempty_cells"] - before["nonempty_cells"]
+    if after["records"] < before["records"]:
+        logger.warning(
+            "ETL %s: record count dropped %d → %d (conservation violation)",
+            name,
+            before["records"],
+            after["records"],
+        )
 
 
 def extract_prose_file(
@@ -315,65 +339,67 @@ def extract_prose_file(
                 schema_field_defs,
             )
             p.output_size = len(compressed)
-        with etl_phase("normalize", input_size=len(compressed)) as p:
-            compressed = normalize_entity_lines(compressed, schema_columns, primary_key)
-            p.output_size = len(compressed)
-        with etl_phase("dedup", input_size=len(compressed)) as p:
-            compressed, dedup_cleared = dedup_cross_field_copies(
-                adapter,
-                compressed,
-                schema_columns,
-                primary_key,
-                anchor_keys,
-                full_text,
-                schema_field_types,
+        # ---- 解析边界：文本只解析这一次，之后全程内存表 ----
+        table = parse_kv_text(
+            compressed,
+            columns=schema_columns,
+            primary_key=primary_key,
+            anchor_keys=anchor_keys,
+            field_types=schema_field_types,
+        )
+        if table.rejects:
+            from collections import Counter
+
+            logger.info(
+                "ETL parse: %s → %d records, %d rejected lines (%s)",
+                path.name,
+                len(table.records),
+                len(table.rejects),
+                dict(Counter(r.reason for r in table.rejects)),
             )
-            p.output_size = len(compressed)
+        with etl_phase("normalize") as p:
+            before = table.stats()
+            normalize_records(table)
+            _record_conservation(p, "normalize", before, table.stats())
+        with etl_phase("dedup") as p:
+            before = table.stats()
+            dedup_cleared = dedup_cross_field_copies(adapter, table, full_text)
             p.metrics["cleared_count"] = len(dedup_cleared) if dedup_cleared else 0
-        with etl_phase("retry", input_size=len(compressed)) as p:
-            compressed = retry_missing_values(
+            _record_conservation(p, "dedup", before, table.stats())
+        with etl_phase("retry") as p:
+            before = table.stats()
+            retry_missing_values(
                 adapter,
-                compressed,
-                schema_columns,
-                primary_key,
-                anchor_keys,
+                table,
                 entity_groups,
-                schema_field_types,
                 schema_field_defs,
                 forced_gaps=dedup_cleared,
             )
-            p.output_size = len(compressed)
-        with etl_phase("verify", input_size=len(compressed)) as p:
-            compressed = verify_field_values(
+            _record_conservation(p, "retry", before, table.stats())
+        with etl_phase("verify") as p:
+            before = table.stats()
+            verify_field_values(
                 adapter,
-                compressed,
-                schema_columns,
-                primary_key,
-                anchor_keys,
+                table,
                 entity_groups,
-                schema_field_types,
                 schema_field_defs,
                 compress_guide=compress_guide,
             )
-            p.output_size = len(compressed)
-    compressed_path.write_text(compressed, encoding="utf-8")
+            _record_conservation(p, "verify", before, table.stats())
+        # trace 快照：仅供人读，永不回读进管道
+        compressed_path.write_text(table_to_kv_text(table), encoding="utf-8")
 
     if field_units:
         apply_proportion_convention(field_units, proportion_conventions)
         write_units_sidecar(task, path.stem, field_units)
 
-    # ---- Phase 2a: deterministic KV→CSV (when normalized) ----
+    # ---- Phase 2a: deterministic serialization (when schema known) ----
     if schema_columns:
-        with etl_phase("csv", input_size=len(compressed)) as p:
-            csv_text = deterministic_kv_to_csv(
-                compressed,
-                schema_columns,
-                primary_key,
-                schema_field_types,
-            )
-            p.metrics["produced"] = csv_text is not None
-        if csv_text:
-            csv_path.write_text(csv_text, encoding="utf-8")
+        with etl_phase("csv") as p:
+            header, rows = records_to_rows(table)
+            p.metrics["produced"] = bool(rows)
+        if rows:
+            csv_path.write_text(to_csv_text(header, rows), encoding="utf-8")
             result = _finalize("deterministic")
             if result:
                 return result
