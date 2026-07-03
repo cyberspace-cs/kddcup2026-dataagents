@@ -81,6 +81,22 @@ def test_compress_clean_blanks_values_with_wrong_schema_type() -> None:
     assert "establishmentdate:  | iffof:  | ifinitiatingfund: false" in cleaned
 
 
+def test_compress_clean_preserves_approx_tag_on_numeric_values() -> None:
+    """~ 是恒等式修复的显式证据，压缩清洗规范数字但不得剥掉标记。"""
+    cleaned = _clean_compressed_entity_lines(
+        "record_id: 1 | gdp: ~1,234.5 | population: ～99 | area: 10",
+        schema_columns=["record_id", "gdp", "population", "area"],
+        schema_field_types={
+            "record_id": "integer_scalar local_record_id",
+            "gdp": "number",
+            "population": "number",
+            "area": "number",
+        },
+    )
+
+    assert cleaned == "record_id: 1 | gdp: ~1234.5 | population: ~99 | area: 10"
+
+
 def test_compress_hints_match_metadata_case_insensitively() -> None:
     columns = ["SecuCode", "TradingDay"]
 

@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 from agents.etl._columns import metadata_by_name
 from agents.etl._constants import (
+    APPROX_PREFIXES,
+    APPROX_TAG,
     COMPRESS_CHUNK_SIZE,
     DATE_SCALAR,
     FUND_FIELD_DISAMBIGUATION_PROMPT,
@@ -44,14 +46,19 @@ def _clean_numeric_scalar(val: str) -> str | None:
     if is_placeholder(stripped):
         return ""
     normalized = stripped.replace(",", "")
-    if normalized.startswith(("~", "～")):
+    # 保留 ~ 模糊标记：它是恒等式修复（repair_numeric_identities）的显式证据，
+    # 压缩清洗只规范数字本体，不得吃掉标记。
+    approx = normalized.startswith(APPROX_PREFIXES)
+    if approx:
         normalized = normalized[1:].strip()
     if normalized.endswith("%"):
         normalized = normalized[:-1].strip()
     unit_match = re.match(r"^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)\s+\S+$", normalized)
     if unit_match:
         normalized = unit_match.group(1)
-    return normalized if NUMERIC_SCALAR.match(normalized) else None
+    if not NUMERIC_SCALAR.match(normalized):
+        return None
+    return f"{APPROX_TAG}{normalized}" if approx else normalized
 
 
 def _clean_typed_scalar(val: str, field_type: str) -> str | None:
