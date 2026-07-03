@@ -112,13 +112,23 @@ def run_single_task_core(
         task = app.dataset.get_task(task_id)
         from agents.etl.extractor import run_etl_for_task
 
-        if _trace_ctx is not None:
-            from agents.tracing.create import function_span
+        # ETL 是可选优化：编排层任何异常都不许杀掉任务本身。
+        try:
+            if _trace_ctx is not None:
+                from agents.tracing.create import function_span
 
-            with function_span("etl"):
+                with function_span("etl"):
+                    run_etl_for_task(task, app.model_adapter)
+            else:
                 run_etl_for_task(task, app.model_adapter)
-        else:
-            run_etl_for_task(task, app.model_adapter)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "ETL orchestration failed for %s; continuing without ETL output",
+                task_id,
+                exc_info=True,
+            )
 
         from agents.tools.context import build_virtual_context
 
