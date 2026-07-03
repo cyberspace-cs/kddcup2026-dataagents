@@ -448,20 +448,6 @@ def clean_cell(val: str) -> str:
     return val
 
 
-_CJK_ASCII_SPACE = re.compile(
-    r"([一-鿿㐀-䶿]) +([\x21-\x7e])"
-    r"|"
-    r"([\x21-\x7e]) +([一-鿿㐀-䶿])"
-)
-
-
-def _strip_cjk_ascii_spaces(s: str) -> str:
-    """Remove spurious spaces between CJK characters and ASCII characters."""
-    while _CJK_ASCII_SPACE.search(s):
-        s = _CJK_ASCII_SPACE.sub(lambda m: (m[1] or m[3]) + (m[2] or m[4]), s)
-    return s
-
-
 _REASONING_LEAK = re.compile(
     r"\s*\(?"
     r"(?:"

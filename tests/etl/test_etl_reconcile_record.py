@@ -6,15 +6,18 @@ from typing import Any
 
 from agents.etl._reconcile import fix_malformed_lines, reconcile_field_names
 from agents.etl._record import parse_kv_text
-from agents.llm.types import ModelResponse
+from agents.llm.types import ModelMessage, ModelResponse
 
 
 class _ReplyAdapter:
     def __init__(self, reply: str | Exception) -> None:
         self.reply = reply
-        self.messages: list[Any] = []
+        self.messages: list[list[ModelMessage]] = []
 
-    def complete(self, messages: list[Any]) -> ModelResponse:
+    def complete(
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
+    ) -> ModelResponse:
+        del tools, kwargs
         self.messages.append(messages)
         if isinstance(self.reply, Exception):
             raise self.reply

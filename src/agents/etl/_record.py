@@ -32,7 +32,6 @@ from agents.etl._constants import (
     RECORD_ID_RANGE,
 )
 from agents.etl._merge import (
-    _strip_cjk_ascii_spaces,
     canonical_key_map,
     canonicalize_key,
     clean_cell_for_type,
@@ -53,6 +52,30 @@ NO_SCHEMA_PK = "ID"
 MAX_LLM_VALUE_CHARS = 500
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+_CJK_ASCII_SPACE = re.compile(
+    r"([一-鿿㐀-䶿]) +([\x21-\x7e])"
+    r"|"
+    r"([\x21-\x7e]) +([一-鿿㐀-䶿])"
+)
+
+
+def _new_fields() -> dict[str, str]:
+    return {}
+
+
+def _new_approx() -> set[str]:
+    return set()
+
+
+def _new_provenance() -> dict[str, str]:
+    return {}
+
+
+def _strip_cjk_ascii_spaces(s: str) -> str:
+    """Remove spurious spaces between CJK characters and ASCII characters."""
+    while _CJK_ASCII_SPACE.search(s):
+        s = _CJK_ASCII_SPACE.sub(lambda m: (m[1] or m[3]) + (m[2] or m[4]), s)
+    return s
 
 
 @dataclass(slots=True)
@@ -67,10 +90,10 @@ class Reject:
 class Record:
     """One entity: canonical-spelling fields (+ unmatched original keys) → bare values."""
 
-    fields: dict[str, str] = field(default_factory=dict)
+    fields: dict[str, str] = field(default_factory=_new_fields)
     pk: str | None = None
-    approx: set[str] = field(default_factory=set)  # 带 ~ 模糊标记的字段名
-    provenance: dict[str, str] = field(default_factory=dict)  # 字段 → 最后写入者
+    approx: set[str] = field(default_factory=_new_approx)  # 带 ~ 模糊标记的字段名
+    provenance: dict[str, str] = field(default_factory=_new_provenance)  # 字段 → 最后写入者
     source_chunk: int | None = None
 
 
@@ -297,14 +320,14 @@ def table_to_kv_text(table: EntityTable) -> str:
     """
     lines: list[str] = []
     for record in table.records:
-        cols = table.columns or list(record.fields)
-        parts = []
+        cols: list[str] = table.columns or list(record.fields)
+        parts: list[str] = []
         for col in cols:
             val = record.fields.get(col, "")
             if val and col in record.approx:
                 val = f"{APPROX_TAG}{val}"
             parts.append(f"{col}: {val}")
-        known = set(cols)
+        known: set[str] = set(cols)
         parts.extend(f"{key}: {val}" for key, val in record.fields.items() if key not in known)
         lines.append(" | ".join(parts))
     return "\n".join(lines)
