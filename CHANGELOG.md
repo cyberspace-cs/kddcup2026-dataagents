@@ -13,8 +13,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stages mutate records instead of regex-patching text lines.
   `dedup_cross_field_copies`, `retry_missing_values` and
   `verify_field_values` now take an `EntityTable`; `normalize_entity_lines`,
-  `deterministic_kv_to_csv` (`agents.etl._merge`) and
-  `repair_csv_numeric_identities` (`agents.etl._schema`) are removed;
+  `deterministic_kv_to_csv`, `pre_merge_entity_lines`
+  (`agents.etl._merge`) and `repair_csv_numeric_identities`
+  (`agents.etl._schema`) are removed;
   `unify_csv_synonyms` is replaced by the pure `unify_table_synonyms`
   (header/rows in, header/rows out — CSV I/O lives in the extractor).
   The final CSV is materialized exactly once, via an atomic write.

@@ -3,11 +3,11 @@
 Pipeline (when knowledge.md schema is available):
   1. **Compress** — LLM strips narrative filler from prose chunks, producing
      pipe-separated key-value entity lines.
-  2. **Pre-merge** — Python collapses multi-line entity records into one line
-     per unique primary key.
-  3. **Normalize** — reorder fields to match schema, drop unknowns.
-  4. **Deterministic CSV** — Python parses normalized KV lines into CSV
-     (no LLM needed).
+  2. **Parse** — Python parses compressed output once into ``EntityTable``.
+  3. **Repair/reconcile/pre-merge** — malformed rejects, variant field names,
+     ID conflicts, and multi-line entity fragments are handled in memory.
+  4. **Normalize/verify/CSV** — clean typed cells, run value-level repair passes,
+     then materialize one final CSV atomically.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from agents.etl._constants import (
 from agents.etl._detect import ETLResult, detect_prose_files
 from agents.etl._identity import repair_numeric_identities, validate_csv
 from agents.etl._merge import (
-    pre_merge_entity_lines,
+    merge_records,
     resolve_id_conflicts,
 )
 from agents.etl._pdf import pdf_to_markdown
@@ -48,6 +48,7 @@ from agents.etl._reconcile import (
 from agents.etl._record import (
     EntityTable,
     atomic_write_text,
+    normalize_local_record_ids,
     normalize_records,
     parse_kv_text,
     records_to_rows,
@@ -194,7 +195,7 @@ def extract_prose_file(
 ) -> ETLResult | None:
     """Extract structured data from a prose file.
 
-    Pipeline: compress → pre-merge → normalize → deterministic CSV.
+    Pipeline: compress → parse → fix/reconcile/pre-merge → normalize → CSV.
     """
     primary_key = anchor_keys[0] if anchor_keys else None
 
@@ -267,53 +268,53 @@ def extract_prose_file(
         len(compressed) / len(full_text) * 100,
     )
 
-    if not primary_key:
-        compressed = resolve_id_conflicts(compressed)
-
     table: EntityTable | None = None
-    with etl_phase("pre_merge", input_size=len(compressed)) as p:
-        compressed = pre_merge_entity_lines(
-            compressed,
-            primary_key=primary_key,
-            anchor_keys=anchor_keys,
-            source_text=full_text,
-        )
-        p.output_size = len(compressed)
     if schema_columns:
-        with etl_phase("fix_format", input_size=len(compressed)) as p:
-            compressed = fix_malformed_lines(
-                adapter,
+        # ---- 解析边界：compress 输出只解析这一次，之后全程内存表 ----
+        with etl_phase("parse", input_size=len(compressed)) as p:
+            table = parse_kv_text(
                 compressed,
-                schema_columns,
-                schema_field_defs,
+                columns=schema_columns,
+                primary_key=primary_key,
+                anchor_keys=anchor_keys,
+                field_types=schema_field_types,
             )
-            p.output_size = len(compressed)
-        with etl_phase("reconcile", input_size=len(compressed)) as p:
-            compressed = reconcile_field_names(
-                adapter,
-                compressed,
-                schema_columns,
-                schema_field_defs,
-            )
-            p.output_size = len(compressed)
-        # ---- 解析边界：文本只解析这一次，之后全程内存表 ----
-        table = parse_kv_text(
-            compressed,
-            columns=schema_columns,
-            primary_key=primary_key,
-            anchor_keys=anchor_keys,
-            field_types=schema_field_types,
-        )
-        if table.rejects:
-            from collections import Counter
+            dropped, normalized = normalize_local_record_ids(table)
+            p.metrics.update(table.stats())
+            p.metrics["local_id_dropped"] = dropped
+            p.metrics["local_id_normalized"] = normalized
+            if table.rejects:
+                from collections import Counter
 
-            logger.info(
-                "ETL parse: %s → %d records, %d rejected lines (%s)",
-                path.name,
-                len(table.records),
-                len(table.rejects),
-                dict(Counter(r.reason for r in table.rejects)),
-            )
+                logger.info(
+                    "ETL parse: %s → %d records, %d rejected lines (%s)",
+                    path.name,
+                    len(table.records),
+                    len(table.rejects),
+                    dict(Counter(r.reason for r in table.rejects)),
+                )
+            if dropped:
+                logger.info("ETL parse: dropped %d grouped/range record-id rows", dropped)
+        with etl_phase("fix_format") as p:
+            before = table.stats()
+            recovered = fix_malformed_lines(adapter, table, schema_field_defs)
+            p.metrics["recovered"] = recovered
+            _record_conservation(p, "fix_format", before, table.stats())
+        with etl_phase("reconcile") as p:
+            before = table.stats()
+            applied = reconcile_field_names(adapter, table, schema_field_defs)
+            p.metrics["applied"] = len(applied)
+            _record_conservation(p, "reconcile", before, table.stats())
+        if not primary_key:
+            with etl_phase("resolve_id_conflicts") as p:
+                before = table.stats()
+                fixed = resolve_id_conflicts(table)
+                p.metrics["fixed"] = fixed
+                _record_conservation(p, "resolve_id_conflicts", before, table.stats())
+        with etl_phase("pre_merge") as p:
+            before = table.stats()
+            merge_records(table, source_text=full_text)
+            _record_conservation(p, "pre_merge", before, table.stats())
         with etl_phase("normalize") as p:
             before = table.stats()
             normalize_records(table)

@@ -8,11 +8,16 @@ import pytest
 from agents.etl._merge import (
     canonical_key_map,
     canonicalize_key,
-    collect_unmatched_keys,
     line_has_kv_key,
-    pre_merge_entity_lines,
+    merge_records,
 )
-from agents.etl._record import normalize_records, parse_kv_text, records_to_rows, to_csv_text
+from agents.etl._record import (
+    normalize_records,
+    parse_kv_text,
+    records_to_rows,
+    table_to_kv_text,
+    to_csv_text,
+)
 
 
 def _kv_to_csv(
@@ -33,6 +38,22 @@ def _kv_to_csv(
     if not rows:
         return None
     return to_csv_text(header, rows)
+
+
+def _merge_text(
+    text: str,
+    primary_key: str | None,
+    anchor_keys: list[str] | None = None,
+    source_text: str | None = None,
+) -> str:
+    table = parse_kv_text(
+        text,
+        columns=[],
+        primary_key=primary_key,
+        anchor_keys=anchor_keys or ([] if primary_key is None else [primary_key]),
+    )
+    merge_records(table, source_text=source_text)
+    return table_to_kv_text(table)
 
 
 def test_strip_key_canonicalization_ignores_surrounding_whitespace() -> None:
@@ -67,7 +88,7 @@ def test_pre_merge_uses_secondary_anchor_when_primary_key_is_blank() -> None:
         ]
     )
 
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="personalcode",
         anchor_keys=["personalcode", "chinesename"],
@@ -88,7 +109,7 @@ def test_pre_merge_does_not_merge_distinct_primary_keys_by_shared_secondary_anch
         ]
     )
 
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "province_name", "enddate"],
@@ -108,7 +129,7 @@ def test_pre_merge_blocks_anchor_merge_when_another_anchor_conflicts() -> None:
         ]
     )
 
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="personalcode",
         anchor_keys=["personalcode", "chinesename", "dept"],
@@ -153,12 +174,6 @@ def test_kv_to_csv_matches_schema_keys_case_insensitively() -> None:
         "origin": "Emergency Department",
         "discharge_status": "Alive",
     }
-
-
-def test_collect_unmatched_keys_deduplicates_case_variants() -> None:
-    text = "id: 1 | Alias: 10\nid: 2 | alias: 20\nid: 3 | known: ok"
-
-    assert collect_unmatched_keys(text, ["id", "known"]) == ["Alias"]
 
 
 def test_kv_to_csv_matches_field_types_case_insensitively() -> None:
@@ -302,7 +317,7 @@ def test_pre_merge_repairs_fabricated_sequential_pks() -> None:
             "record_id: 2 | strategic_unit_id: 338 | indexvalue: 100.1",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "strategic_unit_id"],
@@ -325,7 +340,7 @@ def test_pre_merge_alias_column_need_not_be_declared_anchor() -> None:
             "record_id: 1 | strategic_unit_id: 532 | indexvalue: 99.8",
         ]
     )
-    merged = pre_merge_entity_lines(text, primary_key="record_id")
+    merged = _merge_text(text, primary_key="record_id")
     lines = [ln for ln in merged.splitlines() if ln.strip()]
 
     assert len(lines) == 3
@@ -343,7 +358,7 @@ def test_pre_merge_keeps_legitimate_id_disagreements() -> None:
             "record_id: 600009 | companycode: 81143 | label: d",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "companycode"],
@@ -363,7 +378,7 @@ def test_pre_merge_keeps_genuine_small_sequential_pks() -> None:
             "record_id: 3 | personalcode: 101003 | label: c",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "personalcode"],
@@ -393,7 +408,7 @@ def test_pre_merge_drops_identity_echo_fragment(fragment: str) -> None:
             fragment,
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "secucode"],
@@ -413,7 +428,7 @@ def test_pre_merge_keeps_data_carrying_fragment_with_ambiguous_anchor() -> None:
             "record_id:  | secucode: 300707 | transfer_shares: 99999",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "secucode"],
@@ -432,7 +447,7 @@ def test_pre_merge_single_real_row_disables_constant_echo_rule() -> None:
             "personalcode:  | chinesename: 柳军 | dept: B | city: X",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="personalcode",
         anchor_keys=["personalcode", "chinesename", "dept"],
@@ -464,7 +479,7 @@ def test_pre_merge_drops_source_unanchored_pk_and_heals_anchor_merge() -> None:
             "record_id:  | asset_id: 112 | liabilities_cb: 888100",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "asset_id"],
@@ -487,7 +502,7 @@ def test_pre_merge_drops_pk_only_embedded_in_larger_numbers() -> None:
             "record_id: 408 | asset_id: 408 | totalassets: 900",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "asset_id"],
@@ -507,7 +522,7 @@ def test_pre_merge_unanchored_gate_skips_non_digit_pks_and_no_source() -> None:
         ]
     )
     # non-digit pks survive even though absent from source_text
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id"],
@@ -517,7 +532,7 @@ def test_pre_merge_unanchored_gate_skips_non_digit_pks_and_no_source() -> None:
 
     # without source_text the gate is a no-op for digit pks too
     digit_text = "record_id: 9991 | label: a\nrecord_id: 9992 | label: b"
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         digit_text,
         primary_key="record_id",
         anchor_keys=["record_id"],

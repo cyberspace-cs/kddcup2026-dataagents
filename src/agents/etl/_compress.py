@@ -3,24 +3,16 @@
 from __future__ import annotations
 
 import logging
-import re
 import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
 from agents.etl._columns import metadata_by_name
 from agents.etl._constants import (
-    APPROX_PREFIXES,
-    APPROX_TAG,
     COMPRESS_CHUNK_SIZE,
-    DATE_SCALAR,
     FUND_FIELD_DISAMBIGUATION_PROMPT,
     LLM_CALL_TIMEOUT,
     MAX_WORKERS,
-    NUMERIC_SCALAR,
-    RECORD_ID_FIELDS,
-    RECORD_ID_LABEL,
-    RECORD_ID_RANGE,
     RECORD_LABEL_EXAMPLES,
     SCHEMA_SAMPLE_TOKEN_BUDGET,
 )
@@ -30,50 +22,11 @@ from agents.etl._grouping import (
     group_paragraphs_by_entity,
 )
 from agents.etl._threading import submit_in_context
-from agents.etl._types import (
-    is_placeholder,
-    normalize_boolean,
-)
 
 if TYPE_CHECKING:
     from agents.llm.types import ModelAdapter
 
 logger = logging.getLogger(__name__)
-
-
-def _clean_numeric_scalar(val: str) -> str | None:
-    stripped = val.strip()
-    if is_placeholder(stripped):
-        return ""
-    normalized = stripped.replace(",", "")
-    # 保留 ~ 模糊标记：它是恒等式修复（repair_numeric_identities）的显式证据，
-    # 压缩清洗只规范数字本体，不得吃掉标记。
-    approx = normalized.startswith(APPROX_PREFIXES)
-    if approx:
-        normalized = normalized[1:].strip()
-    if normalized.endswith("%"):
-        normalized = normalized[:-1].strip()
-    unit_match = re.match(r"^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)\s+\S+$", normalized)
-    if unit_match:
-        normalized = unit_match.group(1)
-    if not NUMERIC_SCALAR.match(normalized):
-        return None
-    return f"{APPROX_TAG}{normalized}" if approx else normalized
-
-
-def _clean_typed_scalar(val: str, field_type: str) -> str | None:
-    type_text = field_type.lower()
-    if ("number" in type_text or "integer" in type_text) and "rank" not in type_text:
-        return _clean_numeric_scalar(val)
-
-    stripped = val.strip()
-    if is_placeholder(stripped):
-        return ""
-    if "date" in type_text:
-        return stripped if DATE_SCALAR.match(stripped) else None
-    if "boolean" in type_text:
-        return normalize_boolean(stripped)
-    return stripped
 
 
 def _field_type_instruction(field: str, field_type: str) -> str:
@@ -180,84 +133,6 @@ def _format_hard_type_rules(
             f"Fields: {', '.join(boolean_fields)}."
         )
     return "\n" + "\n".join(lines) + "\n"
-
-
-def _normalize_kv_separators(line: str) -> str:
-    """Rewrite ``key=value`` parts to ``key: value`` so downstream code sees ``:`` only."""
-    if "=" not in line:
-        return line
-    parts: list[str] = []
-    for part in line.split("|"):
-        stripped = part.strip()
-        if "=" in stripped and ":" not in stripped:
-            key, _, val = stripped.partition("=")
-            parts.append(f"{key.strip()}: {val.strip()}")
-        else:
-            parts.append(stripped)
-    return " | ".join(parts)
-
-
-def _clean_compressed_entity_lines(
-    text: str,
-    schema_columns: list[str] | None = None,
-    schema_field_types: dict[str, str] | None = None,
-) -> str:
-    """Clean schema-specific mistakes while still in the compression stage."""
-    if not schema_columns:
-        return text
-
-    field_map = {field.lower(): field for field in schema_columns}
-    field_types = metadata_by_name(schema_columns, schema_field_types)
-    cleaned: list[str] = []
-    dropped = 0
-    normalized = 0
-
-    for line in text.splitlines():
-        stripped = _normalize_kv_separators(line.strip())
-        if not stripped or ":" not in stripped:
-            cleaned.append(line)
-            continue
-
-        parts: list[str] = []
-        drop_line = False
-        changed = False
-        for part in stripped.split("|"):
-            if ":" not in part:
-                parts.append(part.strip())
-                continue
-            key, _, val = part.partition(":")
-            key = field_map.get(key.strip().lower(), key.strip())
-            val = val.strip()
-            field_type = field_types.get(key, "").lower()
-            if key.lower() in RECORD_ID_FIELDS or "local_record_id" in field_type:
-                if RECORD_ID_RANGE.search(val):
-                    drop_line = True
-                    break
-                if m := RECORD_ID_LABEL.match(val):
-                    val = m.group(1)
-                    changed = True
-            else:
-                typed_val = _clean_typed_scalar(val, field_type)
-                if typed_val is None:
-                    val = ""
-                    changed = True
-                elif typed_val != val:
-                    val = typed_val
-                    changed = True
-            parts.append(f"{key}: {val}")
-
-        if drop_line:
-            dropped += 1
-            continue
-        if changed:
-            normalized += 1
-        cleaned.append(" | ".join(parts))
-
-    if dropped:
-        logger.info("ETL compress-clean: dropped %d grouped/range record-id lines", dropped)
-    if normalized:
-        logger.info("ETL compress-clean: normalized %d local record labels", normalized)
-    return "\n".join(cleaned)
 
 
 def sample_paragraphs(text: str, first_n: int = 3, stride_n: int = 10) -> str:
@@ -1009,22 +884,19 @@ def compress_prose(
     # the genuinely missing entities in a targeted recovery pass.
     recovered_parts: list[str] = []
     if entity_groups and primary_key:
-        # Scan the way the final cleaning pass normalizes lines (case,
-        # ``=`` separators) so casing quirks don't read as missing entities;
-        # ``(?<!\[)`` keeps echoed [RECORD_ID: N] markers from counting as
-        # output lines.
-        pk_re = re.compile(
-            rf"(?<!\[)\b{re.escape(primary_key)}\s*:\s*([^|\n]+)",
-            re.IGNORECASE,
-        )
 
         def _extracted_pks(chunk_text: str) -> set[str]:
-            got: set[str] = set()
-            for line in chunk_text.splitlines():
-                normalized = _normalize_kv_separators(line.strip())
-                for m in pk_re.finditer(normalized):
-                    got.add(m.group(1).strip())
-            return got
+            from agents.etl._record import normalize_local_record_ids, parse_kv_text
+
+            table = parse_kv_text(
+                chunk_text,
+                columns=schema_columns or [],
+                primary_key=primary_key,
+                anchor_keys=anchor_keys,
+                field_types=schema_field_types,
+            )
+            normalize_local_record_ids(table)
+            return {record.pk.strip() for record in table.records if record.pk}
 
         to_recover: set[str] = set()
         for idx, expected_rids in enumerate(chunk_rids):
@@ -1105,9 +977,4 @@ def compress_prose(
         if chunk_result:
             parts.append(chunk_result)
     parts.extend(recovered_parts)
-    result = _clean_compressed_entity_lines(
-        "\n\n".join(parts),
-        schema_columns,
-        schema_field_types,
-    )
-    return result, entity_groups, guide
+    return "\n\n".join(parts), entity_groups, guide

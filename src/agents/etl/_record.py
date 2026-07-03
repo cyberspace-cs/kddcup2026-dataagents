@@ -24,7 +24,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from agents.etl._columns import metadata_by_name
-from agents.etl._constants import APPROX_TAG, ENTITY_LINE
+from agents.etl._constants import (
+    APPROX_TAG,
+    ENTITY_LINE,
+    RECORD_ID_FIELDS,
+    RECORD_ID_LABEL,
+    RECORD_ID_RANGE,
+)
 from agents.etl._merge import (
     _strip_cjk_ascii_spaces,
     canonical_key_map,
@@ -222,6 +228,46 @@ def normalize_records(table: EntityTable) -> None:
             set_record_field(record, col, cleaned, "normalize")
         if pk:
             record.pk = record.fields.get(pk) or None
+
+
+def normalize_local_record_ids(table: EntityTable) -> tuple[int, int]:
+    """Normalize local record-id labels after parsing and drop range records.
+
+    This is the parser-side replacement for the old compress cleanup that
+    converted values like ``档案 286``/``Record 286`` to ``286`` and dropped
+    grouped range rows such as ``档案 197至217``. Type cleaning is deliberately
+    left to :func:`normalize_records` so field-name reconciliation can run first.
+
+    Returns ``(dropped_records, normalized_values)``.
+    """
+    normalized = 0
+    dropped = 0
+    field_types = metadata_by_name(table.columns, table.field_types)
+    kept: list[Record] = []
+    for record in table.records:
+        drop_record = False
+        for key, val in list(record.fields.items()):
+            field_type = field_types.get(key, "").lower()
+            is_local_id = key.lower() in RECORD_ID_FIELDS or "local_record_id" in field_type
+            if not is_local_id:
+                continue
+            if RECORD_ID_RANGE.search(val):
+                drop_record = True
+                break
+            match = RECORD_ID_LABEL.match(val)
+            if match:
+                set_record_field(record, key, match.group(1), "record_id_normalize")
+                normalized += 1
+        if drop_record:
+            dropped += 1
+            continue
+        if table.primary_key:
+            record.pk = record.fields.get(table.primary_key) or None
+        elif "ID" in record.fields:
+            record.pk = record.fields.get("ID") or None
+        kept.append(record)
+    table.records = kept
+    return dropped, normalized
 
 
 def records_to_rows(table: EntityTable) -> tuple[list[str], list[list[str]]]:

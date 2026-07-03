@@ -1,15 +1,14 @@
-"""ID conflict resolution, pre-merge, normalization, and deterministic KV→CSV."""
+"""ID conflict resolution, pre-merge, and scalar cell normalization helpers."""
 
 from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 
 from agents.etl._constants import (
     APPROX_TAG,
     DATE_SCALAR,
-    ENTITY_LINE,
-    KV_LINE,
     NUMERIC_SCALAR,
     TEMP_ANCHOR_PREFIX,
     UNIT_SUFFIX,
@@ -20,6 +19,9 @@ from agents.etl._types import (
     normalize_boolean,
     split_approx_tag,
 )
+
+if TYPE_CHECKING:
+    from agents.etl._record import EntityTable, Record
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +60,7 @@ def line_has_kv_key(line: str, key: str) -> bool:
     return False
 
 
-def resolve_id_conflicts(compressed: str) -> str:
+def resolve_id_conflicts(table: EntityTable) -> int:
     """Detect and fix systematic ID-shift errors in compressed prose.
 
     Pattern: the prose defines entity names in the first section (identity).
@@ -69,43 +71,48 @@ def resolve_id_conflicts(compressed: str) -> str:
     Strategy:
       1. Build the canonical name→ID mapping from the FIRST occurrence of each name.
       2. Scan all lines — if a line's (ID, name) pair disagrees with the canonical
-         mapping AND the canonical ID exists for that name, drop the line.
+         mapping AND the canonical ID exists for that name, rewrite the ID.
     """
+    if table.primary_key:
+        return 0
     _placeholder_set = {"-", "none", "nan", "placeholder", "- (placeholder)", ""}
 
     name_to_first_id: dict[str, int] = {}
     id_to_first_name: dict[int, str] = {}
-    for m in KV_LINE.finditer(compressed):
-        eid = int(m.group(1))
-        name = m.group(2).strip()
+    for record in table.records:
+        raw_id = record.fields.get("ID", "").strip()
+        name = record.fields.get("entity_name", "").strip()
+        if not raw_id.isdigit():
+            continue
+        eid = int(raw_id)
         if name.lower() in _placeholder_set:
             continue
         name_to_first_id.setdefault(name, eid)
         id_to_first_name.setdefault(eid, name)
 
-    fixed_lines: list[str] = []
     fixed_count = 0
-    for line in compressed.splitlines():
-        m = KV_LINE.match(line)
-        if m:
-            eid = int(m.group(1))
-            name = m.group(2).strip()
-            if name.lower() not in _placeholder_set:
-                canonical_id = name_to_first_id.get(name)
-                if canonical_id is not None and canonical_id != eid:
-                    line = line.replace(f"ID: {eid}", f"ID: {canonical_id}", 1)
-                    if fixed_count < 10:
-                        logger.info(
-                            "ETL ID-fix: '%s' ID %d → %d",
-                            name,
-                            eid,
-                            canonical_id,
-                        )
-                    fixed_count += 1
-        fixed_lines.append(line)
+    for record in table.records:
+        raw_id = record.fields.get("ID", "").strip()
+        name = record.fields.get("entity_name", "").strip()
+        if not raw_id.isdigit() or name.lower() in _placeholder_set:
+            continue
+        eid = int(raw_id)
+        canonical_id = name_to_first_id.get(name)
+        if canonical_id is not None and canonical_id != eid:
+            record.fields["ID"] = str(canonical_id)
+            record.pk = str(canonical_id)
+            record.provenance["ID"] = "id_conflict"
+            if fixed_count < 10:
+                logger.info(
+                    "ETL ID-fix: '%s' ID %d → %d",
+                    name,
+                    eid,
+                    canonical_id,
+                )
+            fixed_count += 1
     if fixed_count:
         logger.info("ETL ID-fix: corrected %d lines total", fixed_count)
-    return "\n".join(fixed_lines)
+    return fixed_count
 
 
 def _repair_fabricated_pks(
@@ -225,109 +232,99 @@ def _drop_unanchored_pks(
     return kept
 
 
-def pre_merge_entity_lines(
-    text: str,
-    primary_key: str | None = None,
-    anchor_keys: list[str] | None = None,
+def _record_pairs_for_merge(record: Record) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for key, val in record.fields.items():
+        if val and key in record.approx:
+            val = f"{APPROX_TAG}{val}"
+        pairs.append((key, val))
+    return pairs
+
+
+def _group_key_from_pairs(
+    pk_val: str | None,
+    pairs: list[tuple[str, str]],
+    anchor_keys: list[str] | None,
+) -> str | None:
+    """Pick a stable grouping key for one parsed record."""
+    if pk_val is not None and not is_placeholder(pk_val):
+        return pk_val
+    if anchor_keys and len(anchor_keys) > 1:
+        pair_map = dict(pairs)
+        for anchor in anchor_keys[1:]:
+            anchor_val, _approx = split_approx_tag(pair_map.get(anchor, ""))
+            anchor_val = anchor_val.strip()
+            if anchor_val and not is_placeholder(anchor_val):
+                return f"{TEMP_ANCHOR_PREFIX}{anchor}:{anchor_val}"
+    return None
+
+
+def merge_records(
+    table: EntityTable,
     source_text: str | None = None,
-) -> str:
-    """Merge multi-line entity records into one line per unique entity.
+) -> None:
+    """Merge multi-line entity records into one row per unique entity.
 
-    Compression can produce several lines for the same entity (each carrying
-    a different attribute subset).  This collapses them so downstream
-    extraction sees one complete record per entity.
+    Record-oriented port of the old ``pre_merge_entity_lines`` logic:
 
-    Round 1: group by primary key (existing behavior), after repairing
-    fabricated sequential pks and dropping pks with no standalone anchor in
-    ``source_text``.
-    Round 2: merge groups that share a secondary anchor value (e.g. same
-    ``chinesename`` but different ``personalcode`` across sections).
-    Round 3: drop unplaced identity-echo fragments.
+    - repair fabricated sequential pks from an alias column;
+    - drop digit pks that never appear as standalone source anchors;
+    - group by primary key;
+    - attach blank-pk fragments via secondary anchors;
+    - drop identity-echo fragments that carry no data.
+
+    Mutates ``table.records`` in place.
     """
-    pk_token = f"{primary_key}:" if primary_key else None
-    key_map = canonical_key_map([k for k in [primary_key, *(anchor_keys or [])] if k])
+    from agents.etl._record import Record, set_record_field
 
-    entity_lines: list[str] = []
-    header_lines: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        is_entity = (
-            line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
-        )
-        if is_entity:
-            entity_lines.append(stripped)
-        elif not entity_lines:
-            header_lines.append(line)
+    primary_key = table.primary_key
+    anchor_keys = table.anchor_keys
+    if len(table.records) <= 1:
+        return
 
-    if len(entity_lines) <= 1:
-        return text
-
-    _is_placeholder = is_placeholder
-
-    def _parse_kv(line: str) -> tuple[str | None, list[tuple[str, str]]]:
-        parts = line.split("|")
-        pk_val: str | None = None
-        pairs: list[tuple[str, str]] = []
-        for part in parts:
-            if ":" not in part:
-                continue
-            key, _, val = part.partition(":")
-            key = canonicalize_key(key, key_map)
-            val = val.strip()
-            if (primary_key and key == primary_key) or (not pk_token and key.upper() == "ID"):
-                pk_val = val
-            pairs.append((key, val))
-        return pk_val, pairs
-
-    def _group_key(pk_val: str | None, pairs: list[tuple[str, str]]) -> str | None:
-        """Pick a stable grouping key for one entity line.
-
-        LLM compression sometimes emits the primary key label with an empty
-        value while still providing a secondary identity anchor such as a
-        person's name.  Grouping all blank-PK lines together loses fields across
-        entities; use the first available secondary anchor as a temporary key
-        and let round-2 anchor merge attach it to the canonical primary-key row.
-        """
-        if pk_val is not None and not _is_placeholder(pk_val):
-            return pk_val
-        if anchor_keys and len(anchor_keys) > 1:
-            pair_map = dict(pairs)
-            for anchor in anchor_keys[1:]:
-                anchor_val = pair_map.get(anchor, "").strip()
-                if anchor_val and not _is_placeholder(anchor_val):
-                    return f"{TEMP_ANCHOR_PREFIX}{anchor}:{anchor_val}"
-        return None
-
-    parsed = [_parse_kv(line) for line in entity_lines]
+    parsed = [(record.pk, _record_pairs_for_merge(record)) for record in table.records]
     parsed = _repair_fabricated_pks(parsed, primary_key, anchor_keys)
     parsed = _drop_unanchored_pks(parsed, primary_key, source_text)
 
-    # Round 1: group by primary key
-    groups: dict[str, dict[str, str]] = {}
+    groups: dict[str, Record] = {}
     order: list[str] = []
+    dropped_unkeyed = 0
 
     for pk_val, pairs in parsed:
-        group_key = _group_key(pk_val, pairs)
+        group_key = _group_key_from_pairs(pk_val, pairs, anchor_keys)
         if group_key is None:
+            dropped_unkeyed += 1
             continue
         if group_key not in groups:
-            groups[group_key] = {}
+            groups[group_key] = Record()
             order.append(group_key)
-        rec = groups[group_key]
-        for k, v in pairs:
-            if k not in rec or (_is_placeholder(rec[k]) and not _is_placeholder(v)):
-                rec[k] = v
+        record = groups[group_key]
+        for key, raw_val in pairs:
+            val, _approx = split_approx_tag(raw_val)
+            val = val.strip()
+            existing = record.fields.get(key)
+            if existing is None or (is_placeholder(existing) and not is_placeholder(val)):
+                set_record_field(record, key, raw_val.strip(), "pre_merge")
+            elif (
+                val
+                and existing
+                and not is_placeholder(existing)
+                and not is_placeholder(val)
+                and existing != val
+            ):
+                table.conflicts += 1
+        if primary_key:
+            record.pk = record.fields.get(primary_key) or None
+        elif "ID" in record.fields:
+            record.pk = record.fields.get("ID") or None
 
-    # Round 2: merge groups that share secondary anchor values
     if anchor_keys and len(anchor_keys) > 1:
         groups_before_r2 = len(groups)
         for anchor in anchor_keys[1:]:
             anchor_to_pks: dict[str, list[str]] = {}
             for pk_val in list(groups.keys()):
-                a_val = groups[pk_val].get(anchor, "").strip()
-                if a_val and not _is_placeholder(a_val):
+                a_val = groups[pk_val].fields.get(anchor, "").strip()
+                if a_val and not is_placeholder(a_val):
                     anchor_to_pks.setdefault(a_val, []).append(pk_val)
 
             for _a_val, pk_list in anchor_to_pks.items():
@@ -341,25 +338,30 @@ def pre_merge_entity_lines(
                 canonical = real_pks[0]
                 for pk in temp_pks:
                     conflict = False
-                    for a in anchor_keys[1:]:
-                        t_val = groups[pk].get(a, "").strip()
-                        c_val = groups[canonical].get(a, "").strip()
+                    for anchor_name in anchor_keys[1:]:
+                        t_val = groups[pk].fields.get(anchor_name, "").strip()
+                        c_val = groups[canonical].fields.get(anchor_name, "").strip()
                         if (
                             t_val
                             and c_val
-                            and not _is_placeholder(t_val)
-                            and not _is_placeholder(c_val)
+                            and not is_placeholder(t_val)
+                            and not is_placeholder(c_val)
                             and t_val != c_val
                         ):
                             conflict = True
                             break
                     if conflict:
                         continue
-                    for k, v in groups[pk].items():
+                    for key, val in groups[pk].fields.items():
+                        current = groups[canonical].fields.get(key)
                         if (
-                            k not in groups[canonical] or _is_placeholder(groups[canonical][k])
-                        ) and not _is_placeholder(v):
-                            groups[canonical][k] = v
+                            (current is None or is_placeholder(current))
+                            and val
+                            and not is_placeholder(val)
+                        ):
+                            if key in groups[pk].approx:
+                                val = f"{APPROX_TAG}{val}"
+                            set_record_field(groups[canonical], key, val, "pre_merge")
                     del groups[pk]
 
         groups_after_r2 = len(groups)
@@ -371,33 +373,23 @@ def pre_merge_entity_lines(
                 anchor_keys,
             )
 
-    # Round 3: identity-echo fragments. A blank-PK group that round 2 could
-    # not attach (its anchor values are shared by several real records — e.g.
-    # secucode in a single-company table) and whose every populated field is
-    # an anchor or a value constant across all real records carries no
-    # record-distinguishing information: it is narrative echo, not a record.
-    # Compression emits such lines BY DESIGN as merge fodder for multi-entity
-    # documents; in single-entity documents they can never attach and would
-    # otherwise materialize as junk rows the gold table does not have.
-    # Fragments carrying actual data are kept as rows — a visible extra row
-    # beats silently destroying extracted values.
     real_keys = [key for key in order if key in groups and not key.startswith(TEMP_ANCHOR_PREFIX)]
     temp_keys = [key for key in order if key in groups and key.startswith(TEMP_ANCHOR_PREFIX)]
     if temp_keys and real_keys:
-        identity_fields = {key.lower() for key in [primary_key, *(anchor_keys or [])] if key}
+        identity_fields = {key.lower() for key in [primary_key, *anchor_keys] if key}
         real_field_values: dict[str, set[str]] = {}
         for key in real_keys:
-            for field, val in groups[key].items():
+            for field, val in groups[key].fields.items():
                 val = val.strip()
-                if val and not _is_placeholder(val):
+                if val and not is_placeholder(val):
                     real_field_values.setdefault(field, set()).add(val)
 
         echo_dropped = 0
         for key in temp_keys:
             informative: list[str] = []
-            for field, val in groups[key].items():
+            for field, val in groups[key].fields.items():
                 val = val.strip()
-                if not val or _is_placeholder(val):
+                if not val or is_placeholder(val):
                     continue
                 if field.lower() in identity_fields:
                     continue
@@ -422,102 +414,28 @@ def pre_merge_entity_lines(
                 echo_dropped,
             )
 
-    merged: list[str] = []
-    for pk_val in order:
-        if pk_val not in groups:
+    merged: list[Record] = []
+    for key in order:
+        record = groups.get(key)
+        if record is None:
             continue
-        parts = [f"{k}: {v}" for k, v in groups[pk_val].items()]
-        merged.append(" | ".join(parts))
+        if primary_key:
+            record.pk = record.fields.get(primary_key) or None
+        elif "ID" in record.fields:
+            record.pk = record.fields.get("ID") or None
+        merged.append(record)
 
-    before = len(entity_lines)
+    before = len(table.records)
     after = len(merged)
+    table.records = merged
     if before != after:
-        logger.info("ETL pre-merge: %d entity lines → %d unique entities", before, after)
-
-    header = "\n".join(header_lines).strip()
-    body = "\n".join(merged)
-    return f"{header}\n\n{body}" if header else body
-
-
-def collect_unmatched_keys(
-    text: str,
-    schema_columns: list[str],
-) -> list[str]:
-    """Return field keys in KV entity lines that don't match any schema column (case-insensitive)."""
-    col_lower = {c.lower() for c in schema_columns}
-    seen: dict[str, None] = {}
-    seen_lower: set[str] = set()
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        for part in stripped.split("|"):
-            if ":" not in part:
-                continue
-            key = part.partition(":")[0].strip()
-            key_lower = key.lower()
-            if key and key_lower not in col_lower and key_lower not in seen_lower:
-                seen[key] = None
-                seen_lower.add(key_lower)
-    return list(seen)
-
-
-def apply_field_name_map(
-    text: str,
-    field_map: dict[str, str],
-) -> str:
-    """Rewrite KV entity lines, replacing field keys per ``field_map`` (source→canonical)."""
-    if not field_map:
-        return text
-    lower_map = {k.lower(): v for k, v in field_map.items()}
-    out: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or "|" not in stripped:
-            out.append(line)
-            continue
-        parts: list[str] = []
-        for part in stripped.split("|"):
-            if ":" not in part:
-                parts.append(part)
-                continue
-            key, _, val = part.partition(":")
-            canonical = lower_map.get(key.strip().lower())
-            if canonical:
-                parts.append(f" {canonical}: {val}")
-            else:
-                parts.append(part)
-        out.append(" |".join(parts))
-    return "\n".join(out)
-
-
-def detect_malformed_lines(text: str, schema_columns: list[str]) -> list[str]:
-    """Return data-bearing lines whose format is not valid KV.
-
-    A valid KV line has at least one ``key: value`` segment where *key*
-    case-insensitively matches a schema column.  Lines that look like
-    data (contain ``|`` or multiple tokens) but fail this check are
-    malformed — bare pipe values, wrong separators, missing keys, etc.
-    """
-    col_lower = {c.lower() for c in schema_columns}
-    bad: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        has_kv_hit = False
-        for part in stripped.split("|"):
-            if ":" not in part:
-                continue
-            key = part.partition(":")[0].strip().lower()
-            if key in col_lower:
-                has_kv_hit = True
-                break
-        if has_kv_hit:
-            continue
-        if "|" in stripped or len(stripped.split()) >= 3:
-            bad.append(stripped)
-    return bad
+        logger.info(
+            "ETL pre-merge: %d entity records → %d unique entities",
+            before,
+            after,
+        )
+    if dropped_unkeyed:
+        logger.info("ETL pre-merge: dropped %d records without a grouping key", dropped_unkeyed)
 
 
 def clean_cell(val: str) -> str:

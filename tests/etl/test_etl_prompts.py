@@ -6,10 +6,15 @@ from typing import Any, cast
 import pytest
 
 from agents.etl._compress import (
-    _clean_compressed_entity_lines,
     _format_schema_def_hint,
     _format_schema_type_hint,
     _generate_compress_guide,
+)
+from agents.etl._record import (
+    normalize_local_record_ids,
+    normalize_records,
+    parse_kv_text,
+    table_to_kv_text,
 )
 from agents.etl._schema import (
     _ensure_local_record_anchor,
@@ -23,8 +28,26 @@ from agents.etl._units import _deterministic_factor, _parse_unit_factor_response
 from agents.llm.types import ModelResponse
 
 
-def test_compress_clean_drops_grouped_record_ids_before_clean_markdown() -> None:
-    cleaned = _clean_compressed_entity_lines(
+def _record_clean(
+    text: str,
+    columns: list[str],
+    field_types: dict[str, str],
+    primary_key: str,
+) -> str:
+    table = parse_kv_text(
+        text,
+        columns=columns,
+        primary_key=primary_key,
+        anchor_keys=[primary_key],
+        field_types=field_types,
+    )
+    normalize_local_record_ids(table)
+    normalize_records(table)
+    return table_to_kv_text(table)
+
+
+def test_record_pass_drops_grouped_record_ids_before_clean_markdown() -> None:
+    cleaned = _record_clean(
         "\n".join(
             [
                 (
@@ -34,29 +57,31 @@ def test_compress_clean_drops_grouped_record_ids_before_clean_markdown() -> None
                 ("record_id: 档案 286 | province_name: 山西省 | primary_industry_gdp: 302.48"),
             ]
         ),
-        schema_columns=["record_id", "province_name", "enddate", "gdp", "primary_industry_gdp"],
-        schema_field_types={
+        columns=["record_id", "province_name", "enddate", "gdp", "primary_industry_gdp"],
+        field_types={
             "record_id": "integer_scalar local_record_id",
             "province_name": "string",
             "enddate": "date",
             "gdp": "number",
             "primary_industry_gdp": "number",
         },
+        primary_key="record_id",
     )
 
     assert "197至217" not in cleaned
-    assert "record_id: 286 | province_name: 山西省 | primary_industry_gdp: 302.48" in cleaned
+    assert "record_id: 286 | province_name: 山西省" in cleaned
+    assert "primary_industry_gdp: 302.48" in cleaned
 
 
-def test_compress_clean_blanks_values_with_wrong_schema_type() -> None:
-    cleaned = _clean_compressed_entity_lines(
+def test_record_clean_blanks_values_with_wrong_schema_type() -> None:
+    cleaned = _record_clean(
         (
             "fundcode: 159001 | lowestsumsubscribing: 万家上证50交易型开放式指数证券投资基金 "
             "| lowestsumredemption: 900000.0 | foundedsize: 1,234.50 "
             "| establishmentdate: 股票型 | iffof: 万家上证50交易型开放式指数证券投资基金 "
             "| ifinitiatingfund: 否"
         ),
-        schema_columns=[
+        columns=[
             "fundcode",
             "lowestsumsubscribing",
             "lowestsumredemption",
@@ -65,7 +90,7 @@ def test_compress_clean_blanks_values_with_wrong_schema_type() -> None:
             "iffof",
             "ifinitiatingfund",
         ],
-        schema_field_types={
+        field_types={
             "fundcode": "scalar_id",
             "lowestsumsubscribing": "number",
             "lowestsumredemption": "number",
@@ -74,6 +99,7 @@ def test_compress_clean_blanks_values_with_wrong_schema_type() -> None:
             "iffof": "boolean",
             "ifinitiatingfund": "boolean",
         },
+        primary_key="fundcode",
     )
 
     assert "lowestsumsubscribing:  | lowestsumredemption: 900000.0" in cleaned
@@ -81,17 +107,18 @@ def test_compress_clean_blanks_values_with_wrong_schema_type() -> None:
     assert "establishmentdate:  | iffof:  | ifinitiatingfund: false" in cleaned
 
 
-def test_compress_clean_preserves_approx_tag_on_numeric_values() -> None:
+def test_record_clean_preserves_approx_tag_on_numeric_values() -> None:
     """~ 是恒等式修复的显式证据，压缩清洗规范数字但不得剥掉标记。"""
-    cleaned = _clean_compressed_entity_lines(
+    cleaned = _record_clean(
         "record_id: 1 | gdp: ~1,234.5 | population: ～99 | area: 10",
-        schema_columns=["record_id", "gdp", "population", "area"],
-        schema_field_types={
+        columns=["record_id", "gdp", "population", "area"],
+        field_types={
             "record_id": "integer_scalar local_record_id",
             "gdp": "number",
             "population": "number",
             "area": "number",
         },
+        primary_key="record_id",
     )
 
     assert cleaned == "record_id: 1 | gdp: ~1234.5 | population: ~99 | area: 10"
@@ -116,13 +143,14 @@ def test_compress_hints_match_metadata_case_insensitively() -> None:
 
 
 def test_compress_clean_matches_schema_types_case_insensitively() -> None:
-    cleaned = _clean_compressed_entity_lines(
+    cleaned = _record_clean(
         "RecordID: 档案 42 | Amount: 1,234",
-        schema_columns=["RecordID", "Amount"],
-        schema_field_types={
+        columns=["RecordID", "Amount"],
+        field_types={
             "recordid": "integer_scalar local_record_id",
             "amount": "number",
         },
+        primary_key="RecordID",
     )
 
     assert cleaned == "RecordID: 42 | Amount: 1234"
