@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING
 from agents.etl._columns import metadata_by_name
 from agents.etl._compress import sample_paragraphs_by_section
 from agents.etl._constants import (
-    ALPHANUM_RECORD_ID_RE,
+    AIRTABLE_ID_RE,
+    CODE_ID_RE,
     FUND_FIELD_DISAMBIGUATION_PROMPT,
     LOCAL_RECORD_ID_RE,
     RECORD_ID_FIELDS,
@@ -38,8 +39,15 @@ def _has_local_record_ids(prose_text: str) -> bool:
     matches = LOCAL_RECORD_ID_RE.findall(prose_text)
     if len(set(matches)) >= 3:
         return True
-    alphanum = ALPHANUM_RECORD_ID_RE.findall(prose_text)
-    return len(set(alphanum)) >= 3
+    if len(set(AIRTABLE_ID_RE.findall(prose_text))) >= 3:
+        return True
+    # Code-style IDs count only when one shared letter prefix carries >=3
+    # distinct numbers (TR391/TR483/TR512). Mixed prefixes are domain codes
+    # (exchange tickers, ISO labels), not a record-id scheme.
+    codes_by_prefix: dict[str, set[str]] = {}
+    for prefix, number in CODE_ID_RE.findall(prose_text):
+        codes_by_prefix.setdefault(prefix, set()).add(number)
+    return any(len(numbers) >= 3 for numbers in codes_by_prefix.values())
 
 
 def _ensure_local_record_anchor(

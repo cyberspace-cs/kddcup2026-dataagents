@@ -13,6 +13,7 @@ from agents.etl._compress import (
 )
 from agents.etl._schema import (
     _ensure_local_record_anchor,
+    _has_local_record_ids,
     _merge_multi_round_schemas,
     _merge_synonyms_into_km,
     _parse_schema_response,
@@ -141,6 +142,55 @@ def test_schema_adds_record_id_for_repeated_local_record_labels() -> None:
 
     assert columns == ["record_id", "personalcode", "manager_name"]
     assert anchors == ["record_id", "personalcode", "manager_name"]
+
+
+@pytest.mark.parametrize(
+    ("prose", "expected"),
+    [
+        # 关键词 + 数字：档案/Record 等标签方案
+        pytest.param("档案 21。\n战略单元 353。\n记录 418。", True, id="cjk-labels"),
+        pytest.param("Record 1, Record 2, Record 3.", True, id="english-labels"),
+        # 关键词作为长词内嵌子串不算（profile 含 file、briefcase 含 case）
+        pytest.param(
+            "profile 29 and profile 30 and profile 31 exist.", False, id="profile-not-file"
+        ),
+        pytest.param(
+            "briefcase 12, briefcase 13, briefcase 14 shipped.", False, id="briefcase-not-case"
+        ),
+        # Airtable 风格：rec 后首字符为大写/数字
+        pytest.param(
+            "rec0Si5cQ4rJRVzd6 then rec7SRmmw3oovHndK then recXq0Zz1Ab2Cd3Ef.",
+            True,
+            id="airtable-ids",
+        ),
+        # 驼峰英文词 rec 后是小写，不算
+        pytest.param(
+            "recordIdentifier, receivablesTurnover, reconciliationBalance ok; "
+            "recordIdentifier2, receivablesTurnoverX, reconciliationRatioY too.",
+            False,
+            id="camelcase-words",
+        ),
+        # code 风格：同一前缀 >=3 个编号
+        pytest.param("TR391 TR483 TR512 are specimens.", True, id="single-prefix-codes"),
+        # 混合前缀（交易所代码 + ISO 标准号）不算记录方案
+        pytest.param("SZ300707, SH600519 and ISO9001 are mentioned.", False, id="mixed-prefixes"),
+        pytest.param("SZ300707 and SZ300708 only.", False, id="two-codes-insufficient"),
+    ],
+)
+def test_has_local_record_ids_detection(prose: str, expected: bool) -> None:
+    assert _has_local_record_ids(prose) is expected
+
+
+def test_schema_skips_record_id_for_governance_prose_with_tickers() -> None:
+    """含 3 个交易所代码的治理 schema 不得被注入幽灵 record_id。"""
+    columns, anchors = _ensure_local_record_anchor(
+        "公司 SZ300707 的董事会与 SH600519、SZ000858 的治理结构对比。",
+        ["companycode", "board_size"],
+        ["companycode"],
+    )
+
+    assert columns == ["companycode", "board_size"]
+    assert anchors == ["companycode"]
 
 
 @pytest.mark.parametrize(
