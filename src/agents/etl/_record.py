@@ -30,6 +30,7 @@ from agents.etl._constants import (
     RECORD_ID_FIELDS,
     RECORD_ID_LABEL,
     RECORD_ID_RANGE,
+    SECTION_HEADING,
 )
 from agents.etl._merge import (
     canonical_key_map,
@@ -151,8 +152,8 @@ def parse_kv_text(
     - 键经 ``canonical_key_map``/``canonicalize_key`` 归一到 schema 拼写；
       未匹配 schema 的键**保留**原名（投影推迟到 :func:`records_to_rows`）。
     - 实体行判定：含规范化主键键名；无 schema 时沿用 ``ID:`` 行首约定。
-      缺主键键的 KV 行 → ``Reject("no_pk")``，非 KV 行 → ``Reject("no_kv")``
-      —— 均不静默丢弃。
+      缺主键键的 KV 行 → ``Reject("no_pk")``，非 KV 行 → ``Reject("no_kv")``。
+      Markdown 结构标题是 trace/section metadata，不参与修复流。
     - 行内重复键：保留首值；后值不一致时计入 ``conflicts``。
     - 值经 ``split_approx_tag`` 剥 ``~`` 入 ``Record.approx``，表内一律存裸值。
     """
@@ -169,6 +170,8 @@ def parse_kv_text(
     for raw_line in text.splitlines():
         stripped = raw_line.strip()
         if not stripped:
+            continue
+        if SECTION_HEADING.match(stripped):
             continue
         normalized = _normalize_kv_separators(stripped)
         if ":" not in normalized:

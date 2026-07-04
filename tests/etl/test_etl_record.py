@@ -179,12 +179,12 @@ def test_parse_equals_separator_preserves_colon_in_value() -> None:
     }
 
 
-def test_parse_classifies_rejects_instead_of_dropping() -> None:
+def test_parse_skips_markdown_headings_and_classifies_data_rejects() -> None:
     table = parse_kv_text(
         "\n".join(
             [
                 "record_id: 1 | name: A",
-                "## Section heading",  # 非 KV
+                "## Section heading",  # trace/section metadata, not malformed data
                 "name: orphan | score: 5",  # KV 但缺 pk
                 "",  # 空行静默跳过
             ]
@@ -195,7 +195,6 @@ def test_parse_classifies_rejects_instead_of_dropping() -> None:
 
     assert len(table.records) == 1
     assert [(r.reason, r.line) for r in table.rejects] == [
-        ("no_kv", "## Section heading"),
         ("no_pk", "name: orphan | score: 5"),
     ]
 
