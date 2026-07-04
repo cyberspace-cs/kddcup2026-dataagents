@@ -148,6 +148,7 @@ def create_explore_tool_definition(
             except (json.JSONDecodeError, TypeError):
                 content = {"findings": result.findings}
             content["explorer_steps_used"] = result.steps_used
+            content["explorer_fallback_used"] = result.fallback_used
             if has_video and result.video_findings:
                 # 确定性透传：视频精确数值不经 explorer 二次转写直达主 agent
                 content["video_findings"] = list(result.video_findings)

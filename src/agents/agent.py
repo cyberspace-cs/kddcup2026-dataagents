@@ -93,6 +93,7 @@ class ReActAgentConfig:
     max_steps: int = 16
     max_empty_tool_call_retries: int = 8
     enable_preact: bool = False
+    stop_after_final_step_retries: bool = False
 
 
 class ReActAgent:
@@ -196,6 +197,9 @@ class ReActAgent:
         budget_warning_fired = False
         last_step_retries = 0
         terminal_policy = TerminalAnswerPolicy(self.answer_verifier)
+        terminal_tool_names = tuple(
+            name for name, defn in self.tools.definitions.items() if defn.is_terminal
+        )
 
         _turn_span = None
         while effective_turns < self.config.max_steps:
@@ -215,6 +219,7 @@ class ReActAgent:
                 effective_turns=effective_turns,
                 max_steps=self.config.max_steps,
                 warning_fired=budget_warning_fired,
+                terminal_tool_names=terminal_tool_names,
             )
             if budget_prompt is not None:
                 messages.append(budget_prompt)
@@ -313,6 +318,7 @@ class ReActAgent:
                 status=budget_status,
                 last_step_retries=last_step_retries,
                 calls=turn.calls,
+                terminal_tool_names=terminal_tool_names,
             ) or (
                 reject_terminal_this_turn
                 and is_final_step_blocking_active(
@@ -326,7 +332,7 @@ class ReActAgent:
                     ToolErrorEvent(
                         thought=turn.thought,
                         arguments={},
-                        error=final_step_block_error(),
+                        error=final_step_block_error(terminal_tool_names=terminal_tool_names),
                         raw_response=response.raw_response,
                         tool_call_id=turn.calls[0].id if turn.calls else None,
                         raw_tool_calls=response.raw_tool_calls,
@@ -339,6 +345,12 @@ class ReActAgent:
                     turn_index=turn_index,
                     callback=self.step_callback,
                 )
+                if self.config.stop_after_final_step_retries and last_step_retries >= 2:
+                    state.failure_reason = final_step_block_error(
+                        terminal_tool_names=terminal_tool_names
+                    )
+                    terminated = True
+                    break
                 continue
 
             effective_turns += 1

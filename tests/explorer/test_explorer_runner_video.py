@@ -125,6 +125,52 @@ def test_each_turn_omits_video_tool_when_not_injected(tmp_path: Path) -> None:
     assert all("explore_video" not in names for names in per_turn)
 
 
+def test_final_budget_prompt_names_report_for_explorer(tmp_path: Path) -> None:
+    task = _make_task(tmp_path)
+    filler = [_call(f"f{i}", "inspect_files", {}) for i in range(9)]
+    adapter = _RecordingAdapter(
+        ScriptedNativeModelAdapter(
+            [
+                *filler,
+                _call("r1", "report", {"knowledge": {"done": True}}),
+            ]
+        )
+    )
+
+    result = run_explorer(task, task.question, adapter, max_steps=10)
+
+    assert result.success is True
+    critical_messages = [
+        m.content
+        for m in adapter.seen[9]
+        if isinstance(m.content, str) and "CRITICAL:" in m.content
+    ]
+    assert len(critical_messages) == 1
+    assert "call `report` NOW" in critical_messages[0]
+    assert "`answer`" not in critical_messages[0]
+
+
+def test_explorer_stops_after_final_report_retry_blocks(tmp_path: Path) -> None:
+    task = _make_task(tmp_path)
+    filler = [_call(f"f{i}", "inspect_files", {}) for i in range(9)]
+    adapter = _RecordingAdapter(
+        ScriptedNativeModelAdapter(
+            [
+                *filler,
+                _call("bad1", "inspect_files", {}),
+                _call("bad2", "inspect_files", {}),
+            ]
+        )
+    )
+
+    result = run_explorer(task, task.question, adapter, max_steps=10)
+
+    assert result.success is True
+    assert result.fallback_used is True
+    assert "files" in json.loads(result.findings)
+    assert len(adapter.seen) == 11
+
+
 def test_synthesize_findings_keeps_json_and_text_preview_file_observations() -> None:
     synthesized = _synthesize_findings(
         [
