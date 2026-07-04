@@ -36,6 +36,7 @@ def test_prose_without_etl_csv_stays_visible(tmp_path: Path, monkeypatch) -> Non
 
     assert not (virtual_context / "doc" / "covered.md").exists()
     assert (virtual_context / "doc" / "orphan.md").exists()
+    assert (virtual_context / "csv" / "covered.csv").exists()
 
 
 def test_prose_with_invalid_etl_csv_stays_visible(tmp_path: Path, monkeypatch) -> None:
@@ -56,6 +57,8 @@ def test_prose_with_invalid_etl_csv_stays_visible(tmp_path: Path, monkeypatch) -
 
     assert (virtual_context / "doc" / "broken.md").exists()
     assert (virtual_context / "doc" / "broken.pdf").exists()
+    assert not (virtual_context / "csv" / "broken.csv").exists()
+    assert not (virtual_context / "csv").exists()
 
 
 @pytest.mark.parametrize("etl_dir_exists", [False, True])

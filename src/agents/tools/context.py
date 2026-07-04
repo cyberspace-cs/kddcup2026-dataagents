@@ -38,11 +38,11 @@ def build_virtual_context(task: PublicTask) -> Path:
     real_context = task.context_dir.resolve()
     etl_dir = ETL_SCRATCH_ROOT / task.task_id / "_etl"
 
-    etl_covered_stems: set[str] = set()
+    valid_etl_csvs: dict[str, Path] = {}
     if etl_dir.is_dir():
         for etl_file in etl_dir.iterdir():
             if etl_file.suffix == ".csv" and validate_csv(etl_file) is not None:
-                etl_covered_stems.add(etl_file.stem)
+                valid_etl_csvs[etl_file.stem] = etl_file
 
     for child in real_context.rglob("*"):
         if not child.is_file():
@@ -50,7 +50,7 @@ def build_virtual_context(task: PublicTask) -> Path:
         if (
             child.suffix.lower() in {".md", ".pdf"}
             and child.name.lower() != "knowledge.md"
-            and child.stem in etl_covered_stems
+            and child.stem in valid_etl_csvs
         ):
             continue
         rel = child.relative_to(real_context)
@@ -59,14 +59,13 @@ def build_virtual_context(task: PublicTask) -> Path:
         if not dest.exists():
             _link_or_copy_file(child, dest)
 
-    if etl_dir.is_dir():
+    if valid_etl_csvs:
         csv_dir = virtual_dir / "csv"
         csv_dir.mkdir(parents=True, exist_ok=True)
-        for etl_file in etl_dir.iterdir():
-            if etl_file.suffix == ".csv":
-                dest = csv_dir / etl_file.name
-                if not dest.exists():
-                    _link_or_copy_file(etl_file, dest)
+        for etl_file in valid_etl_csvs.values():
+            dest = csv_dir / etl_file.name
+            if not dest.exists():
+                _link_or_copy_file(etl_file, dest)
 
     for dirpath in sorted(virtual_dir.rglob("*"), reverse=True):
         if dirpath.is_dir() and not any(dirpath.iterdir()):
