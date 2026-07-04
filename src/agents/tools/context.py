@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ def _link_or_copy_file(source: Path, dest: Path) -> None:
 
     if source.suffix.lower() in SQLITE_EXTS:
         shutil.copy2(source, dest)
+        dest.chmod(dest.stat().st_mode | stat.S_IWUSR)
         return
     try:
         dest.symlink_to(source)
