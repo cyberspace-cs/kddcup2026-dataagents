@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import csv
 import json
 import logging
 import re
@@ -18,6 +17,8 @@ from agents.etl._merge import (
     cells_agree,
     column_fill_counts,
 )
+from agents.etl._record import EntityTable, Reject, parse_kv_text
+from agents.etl._types import is_placeholder
 from agents.llm import ModelMessage, ModelResponse
 
 if TYPE_CHECKING:
@@ -141,37 +142,45 @@ def _adjudicate_synonym_columns(
 
 def fix_malformed_lines(
     adapter: ModelAdapter,
-    compressed: str,
-    schema_columns: list[str],
+    table: EntityTable,
     schema_field_defs: dict[str, str] | None,
-) -> str:
-    """Detect and LLM-rewrite malformed lines, up to 3 retries.
+) -> int:
+    """LLM-rewrite rejected parser lines, up to 3 retries.
 
     After compression the output should be ``key: val | key: val | ...``
-    with keys from the schema.  Any line that looks like data but does
-    not follow this format is sent back to the LLM for rewriting.
-    """
-    from agents.etl._merge import detect_malformed_lines
+    with keys from the schema and the primary-key field present. Parser
+    rejects are sent back with a numbered protocol (``1) ...``); replies are
+    matched by number rather than by position. A malformed numbered reply is
+    discarded wholesale.
 
-    defs = metadata_by_name(schema_columns, schema_field_defs)
-    schema_block = ", ".join(schema_columns)
+    Successful rewrites are parsed through the same ``parse_kv_text`` path and
+    appended to ``table.records``; failures remain in ``table.rejects``.
+    Returns the number of records recovered.
+    """
+    if not table.rejects:
+        return 0
+
+    defs = metadata_by_name(table.columns, schema_field_defs)
+    schema_block = ", ".join(table.columns)
     defs_block = "\n".join(
-        f"- {col}: {defs.get(col, '')}" for col in schema_columns if defs.get(col)
+        f"- {col}: {defs.get(col, '')}" for col in table.columns if defs.get(col)
     )
+    total_recovered = 0
 
     for attempt in range(1, FIX_FORMAT_MAX_RETRIES + 1):
-        bad = detect_malformed_lines(compressed, schema_columns)
-        if not bad:
-            return compressed
+        if not table.rejects:
+            return total_recovered
 
-        batch = bad[:FIX_FORMAT_MAX_LINES]
+        batch = list(table.rejects[:FIX_FORMAT_MAX_LINES])
         logger.info(
-            "ETL fix-format attempt %d: %d malformed lines detected",
+            "ETL fix-format attempt %d: %d rejected lines detected",
             attempt,
-            len(bad),
+            len(table.rejects),
         )
 
         prompt = f"Target schema columns: {schema_block}\n"
+        if table.primary_key:
+            prompt += f"Primary-key field: {table.primary_key}\n"
         if defs_block:
             prompt += f"Column definitions:\n{defs_block}\n"
         prompt += (
@@ -180,8 +189,10 @@ def fix_malformed_lines(
             "the schema columns above.\n"
             "Required format: col1: val1 | col2: val2 | col3: val3 | ...\n"
             "Use COLON (:) between key and value. Use PIPE (|) between fields.\n"
-            "NEVER drop, merge, or reorder lines. Output the SAME number of lines.\n\n"
-            + "\n".join(batch)
+            "NEVER drop, merge, or reorder lines.\n"
+            "Preserve the line numbers exactly. Output the SAME numbered lines:\n"
+            "1) col1: val1 | col2: val2\n\n"
+            + "\n".join(f"{idx}) {reject.line}" for idx, reject in enumerate(batch, start=1))
         )
 
         messages = [
@@ -199,55 +210,85 @@ def fix_malformed_lines(
 
         content = response.content.strip()
         content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-        rewritten = [ln.strip() for ln in content.splitlines() if ln.strip() and ":" in ln]
+        numbered: dict[int, str] = {}
+        for line in content.splitlines():
+            match = re.match(r"^\s*(\d+)\)\s*(.+?)\s*$", line)
+            if not match:
+                continue
+            idx = int(match.group(1))
+            if idx in numbered:
+                continue
+            numbered[idx] = match.group(2)
 
-        if not rewritten:
+        expected = set(range(1, len(batch) + 1))
+        if set(numbered) != expected:
+            logger.warning(
+                "ETL fix-format attempt %d discarded: numbered response mismatch (%s != %s)",
+                attempt,
+                sorted(numbered),
+                sorted(expected),
+            )
             break
 
-        batch_set = set(batch)
-        lines = compressed.splitlines()
-        out: list[str] = []
-        ri = 0
-        for line in lines:
-            if line.strip() in batch_set and ri < len(rewritten):
-                out.append(rewritten[ri])
-                ri += 1
+        recovered = 0
+        kept_rejects: list[Reject] = []
+        for idx, original in enumerate(batch, start=1):
+            candidate = numbered[idx]
+            parsed = parse_kv_text(
+                candidate,
+                columns=table.columns,
+                primary_key=table.primary_key,
+                anchor_keys=table.anchor_keys,
+                field_types=table.field_types,
+            )
+            if parsed.records:
+                for record in parsed.records:
+                    for field in record.fields:
+                        record.provenance[field] = "fix_format"
+                    table.records.append(record)
+                    recovered += 1
             else:
-                out.append(line)
-
-        compressed = "\n".join(out)
+                kept_rejects.extend(parsed.rejects or [original])
+        table.rejects = kept_rejects + list(table.rejects[len(batch) :])
+        total_recovered += recovered
         logger.info(
             "ETL fix-format attempt %d: rewrote %d/%d lines",
             attempt,
-            ri,
+            recovered,
             len(batch),
         )
 
-    return compressed
+    return total_recovered
 
 
 def reconcile_field_names(
     adapter: ModelAdapter,
-    compressed: str,
-    schema_columns: list[str],
+    table: EntityTable,
     schema_field_defs: dict[str, str] | None,
-) -> str:
+) -> dict[str, str]:
     """Map variant field names in compressed output back to schema columns.
 
     Compression can emit different field names for the same concept across
     chunks (e.g. ``patient_id`` vs ``uniquepid``, ``height_cm`` vs
     ``admissionheight_cm``). This function collects all unmatched keys,
-    asks the LLM to map them to schema columns, and rewrites the compressed
-    text with canonical names — before normalize_entity_lines drops them.
+    asks the LLM to map them to schema columns, and rewrites record fields.
     """
-    from agents.etl._merge import apply_field_name_map, collect_unmatched_keys
-
-    unmatched = collect_unmatched_keys(compressed, schema_columns)
+    col_set = set(table.columns)
+    unmatched: list[str] = []
+    seen_lower: set[str] = set()
+    for record in table.records:
+        for key in record.fields:
+            if key in col_set:
+                continue
+            key_lower = key.lower()
+            if key_lower not in seen_lower:
+                unmatched.append(key)
+                seen_lower.add(key_lower)
     if not unmatched:
-        return compressed
+        return {}
 
-    defs = metadata_by_name(schema_columns, schema_field_defs)
-    schema_block = "\n".join(f"- {col}: {defs.get(col, '')}" for col in schema_columns)
+    defs = metadata_by_name(table.columns, schema_field_defs)
+    schema_block = "\n".join(f"- {col}: {defs.get(col, '')}" for col in table.columns)
     unmatched_block = "\n".join(f"- {k}" for k in unmatched)
 
     prompt = textwrap.dedent(f"""\
@@ -277,34 +318,66 @@ def reconcile_field_names(
         response: ModelResponse = adapter.complete(messages)
     except Exception as exc:
         logger.warning("Field name reconciliation failed: %s", exc)
-        return compressed
+        return {}
 
     content = response.content.strip()
     content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-    col_lower = {c.lower(): c for c in schema_columns}
+    col_lower = {c.lower(): c for c in table.columns}
+    unmatched_by_lower = {k.lower(): k for k in unmatched}
     field_map: dict[str, str] = {}
     for line in content.splitlines():
         line = line.strip().lstrip("- ")
         if "=" not in line:
             continue
         src, _, dst = line.partition("=")
-        src = src.strip()
+        src_key = unmatched_by_lower.get(src.strip().lower())
         dst = dst.strip().lower()
         if dst == "none" or not dst:
             continue
         canon = col_lower.get(dst)
-        if canon and src.lower() != canon.lower():
-            field_map[src] = canon
+        if src_key and canon and src_key.lower() != canon.lower():
+            field_map[src_key] = canon
 
     if not field_map:
-        return compressed
+        return {}
+
+    applied: dict[str, str] = {}
+    for record in table.records:
+        for src, dst in field_map.items():
+            actual_src = next(
+                (key for key in record.fields if key.lower() == src.lower()),
+                None,
+            )
+            if actual_src is None:
+                continue
+            dst_val = record.fields.get(dst)
+            if dst_val is not None and not is_placeholder(dst_val):
+                logger.warning(
+                    "ETL field-name reconciliation: skipped %s → %s for entity %s "
+                    "(target already populated)",
+                    actual_src,
+                    dst,
+                    record.pk,
+                )
+                continue
+            record.fields[dst] = record.fields.pop(actual_src)
+            if actual_src in record.approx:
+                record.approx.remove(actual_src)
+                record.approx.add(dst)
+            else:
+                record.approx.discard(dst)
+            provenance = record.provenance.pop(actual_src, "reconcile")
+            record.provenance[dst] = provenance if provenance != "parse" else "reconcile"
+            if table.primary_key and dst.lower() == table.primary_key.lower():
+                record.pk = record.fields.get(dst) or None
+            applied[actual_src] = dst
 
     logger.info(
         "ETL field-name reconciliation: %d variant(s) mapped → %s",
-        len(field_map),
-        dict(list(field_map.items())[:10]),
+        len(applied),
+        dict(list(applied.items())[:10]),
     )
-    return apply_field_name_map(compressed, field_map)
+    return applied
 
 
 def _case_only_header_merges(
@@ -356,17 +429,18 @@ def _move_unit_meta(units_meta: dict[str, Any], src: str, dst: str) -> bool:
     return changed
 
 
-def unify_csv_synonyms(
+def unify_table_synonyms(
     adapter: ModelAdapter,
-    csv_path: Path,
+    header: list[str],
+    rows: list[list[str]],
     prose_stem: str,
     governance_columns: list[str],
     anchor_keys: list[str],
     field_defs: dict[str, str],
     question: str,
     units_path: Path | None,
-) -> list[tuple[str, str]]:
-    """Detect and repair value-split columns in a freshly materialized CSV.
+) -> tuple[list[str], list[list[str]], list[tuple[str, str]]]:
+    """Detect and repair value-split columns in an in-memory table.
 
     Value split: the schema keeps a governance-canonical column AND an
     extraction-discovered column for the same concept; values land partly or
@@ -382,18 +456,13 @@ def unify_csv_synonyms(
     are protected and any row-level disagreement vetoes the pair. On merge,
     unit-sidecar metadata follows the values to the canonical name.
 
-    Returns the applied (source, canonical) pairs; [] when nothing changed.
+    Returns ``(header, rows, applied)``; ``applied`` is [] when nothing
+    changed. CSV I/O belongs to the caller — only the unit sidecar is
+    read/written here.
     """
-    try:
-        with csv_path.open(encoding="utf-8") as f:
-            reader = csv.reader(f)
-            header = next(reader, None)
-            rows = list(reader)
-    except (OSError, csv.Error):
-        return []
     if not header or not rows:
-        return []
-    current_header = header
+        return header, rows, []
+    current_header = list(header)
     width = len(current_header)
     current_rows = [
         row + [""] * (width - len(row)) if len(row) < width else row[:width] for row in rows
@@ -401,13 +470,11 @@ def unify_csv_synonyms(
 
     pending_applied: list[tuple[str, str]] = []
 
-    def _commit(applied: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    def _commit(
+        applied: list[tuple[str, str]],
+    ) -> tuple[list[str], list[list[str]], list[tuple[str, str]]]:
         if not applied:
-            return []
-        with csv_path.open("w", encoding="utf-8", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(current_header)
-            writer.writerows(current_rows)
+            return current_header, current_rows, []
 
         units_meta: dict[str, Any] = {}
         if units_path is not None and units_path.is_file():
@@ -429,9 +496,9 @@ def unify_csv_synonyms(
                 "ETL synonym-unify: merged column '%s' → '%s' in %s",
                 src,
                 dst,
-                csv_path.name,
+                prose_stem,
             )
-        return applied
+        return current_header, current_rows, applied
 
     case_merges = _case_only_header_merges(current_header, governance_columns)
     if case_merges:

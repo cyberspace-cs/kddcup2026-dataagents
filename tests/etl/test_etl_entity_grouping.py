@@ -475,10 +475,12 @@ def test_compress_prose_recovers_missing_and_ignores_casing() -> None:
         primary_key="record_id",
     )
 
-    # Marker-style casing is normalized by the scan: entity 5 is not treated as
-    # missing, so the main chunk is followed by exactly one recovery chunk and
-    # that chunk re-requests entity 7 alone.
-    assert "record_id: 5 | metric: fifty" in result
+    # Marker-style casing is normalized by the parser-backed integrity scan:
+    # entity 5 is not treated as missing, so the main chunk is followed by
+    # exactly one recovery chunk and that chunk re-requests entity 7 alone.
+    # The raw compress output itself is no longer case-normalized here; the
+    # downstream parser canonicalizes schema spelling once.
+    assert "RECORD_ID: 5 | metric: fifty" in result
     assert len(adapter.chunk_prompts) == 2
     recovery = next(p for p in adapter.chunk_prompts if "[RECORD_ID: 5]" not in p)
     assert "[RECORD_ID: 7]" in recovery

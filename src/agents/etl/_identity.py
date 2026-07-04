@@ -350,7 +350,14 @@ def repair_numeric_identities(
 
 
 def validate_csv(csv_path: Path) -> tuple[list[str], int] | None:
-    """Read a CSV and return (header, row_count), or None if invalid."""
+    """Read a CSV and return (header, row_count), or None if invalid.
+
+    Rejects (returns None) instead of raising so a truncated or corrupted
+    cache file triggers re-extraction rather than poisoning every run:
+    - undecodable bytes (e.g. a multi-byte char cut in half by truncation)
+    - empty column names in the header
+    - ragged data rows (width != header width, the truncated-tail signature)
+    """
     if not csv_path.is_file():
         return None
     try:
@@ -359,7 +366,13 @@ def validate_csv(csv_path: Path) -> tuple[list[str], int] | None:
             header = next(reader, None)
             if not header:
                 return None
-            row_count = sum(1 for _ in reader)
+            if any(not col.strip() for col in header):
+                return None
+            row_count = 0
+            for row in reader:
+                if len(row) != len(header):
+                    return None
+                row_count += 1
         return (header, row_count) if row_count > 0 else None
-    except csv.Error:
+    except (csv.Error, OSError, UnicodeDecodeError):
         return None

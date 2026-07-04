@@ -6,11 +6,77 @@ import io
 import pytest
 
 from agents.etl._merge import (
-    collect_unmatched_keys,
-    deterministic_kv_to_csv,
-    normalize_entity_lines,
-    pre_merge_entity_lines,
+    canonical_key_map,
+    canonicalize_key,
+    line_has_kv_key,
+    merge_records,
 )
+from agents.etl._record import (
+    normalize_records,
+    parse_kv_text,
+    records_to_rows,
+    table_to_kv_text,
+    to_csv_text,
+)
+
+
+def _kv_to_csv(
+    text: str,
+    schema_columns: list[str],
+    primary_key: str | None,
+    schema_field_types: dict[str, str] | None = None,
+) -> str | None:
+    """新管道尾部的组合：parse → normalize → records_to_rows → to_csv_text。"""
+    table = parse_kv_text(
+        text,
+        columns=schema_columns,
+        primary_key=primary_key,
+        field_types=schema_field_types,
+    )
+    normalize_records(table)
+    header, rows = records_to_rows(table)
+    if not rows:
+        return None
+    return to_csv_text(header, rows)
+
+
+def _merge_text(
+    text: str,
+    primary_key: str | None,
+    anchor_keys: list[str] | None = None,
+    source_text: str | None = None,
+) -> str:
+    table = parse_kv_text(
+        text,
+        columns=[],
+        primary_key=primary_key,
+        anchor_keys=anchor_keys or ([] if primary_key is None else [primary_key]),
+    )
+    merge_records(table, source_text=source_text)
+    return table_to_kv_text(table)
+
+
+def test_strip_key_canonicalization_ignores_surrounding_whitespace() -> None:
+    """KV 行里 `| record_id: 5` 的键带前导空格，规范化必须命中。"""
+    assert line_has_kv_key("name: X | record_id: 5", "record_id") is True
+    key_map = canonical_key_map(["Height_CM", "record_id"])
+    assert canonicalize_key(" Height-CM", key_map) == "Height_CM"
+
+
+def test_kv_to_csv_pk_not_first_column() -> None:
+    """PK 非首列时（键带前导空格）整文件不得产出 None。"""
+    text = "\n".join(
+        [
+            "name: Alice | record_id: 1 | score: 10",
+            "name: Bob | record_id: 2 | score: 20",
+        ]
+    )
+    out = _kv_to_csv(text, ["record_id", "name", "score"], "record_id")
+    assert out is not None
+    rows = list(csv.reader(io.StringIO(out)))
+    assert rows[0] == ["record_id", "name", "score"]
+    assert rows[1] == ["1", "Alice", "10"]
+    assert rows[2] == ["2", "Bob", "20"]
 
 
 def test_pre_merge_uses_secondary_anchor_when_primary_key_is_blank() -> None:
@@ -22,7 +88,7 @@ def test_pre_merge_uses_secondary_anchor_when_primary_key_is_blank() -> None:
         ]
     )
 
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="personalcode",
         anchor_keys=["personalcode", "chinesename"],
@@ -43,7 +109,7 @@ def test_pre_merge_does_not_merge_distinct_primary_keys_by_shared_secondary_anch
         ]
     )
 
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "province_name", "enddate"],
@@ -63,7 +129,7 @@ def test_pre_merge_blocks_anchor_merge_when_another_anchor_conflicts() -> None:
         ]
     )
 
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="personalcode",
         anchor_keys=["personalcode", "chinesename", "dept"],
@@ -76,7 +142,7 @@ def test_pre_merge_blocks_anchor_merge_when_another_anchor_conflicts() -> None:
     assert "dept: A" in real_line
 
 
-def test_deterministic_kv_to_csv_matches_schema_keys_case_insensitively() -> None:
+def test_kv_to_csv_matches_schema_keys_case_insensitively() -> None:
     text = (
         "ID: 1688094 | pid: 017-30133 | height_cm: 173.0 "
         "| admission_weight_kg: 86.10 | weight_loss_kg: 1.2 "
@@ -94,8 +160,7 @@ def test_deterministic_kv_to_csv_matches_schema_keys_case_insensitively() -> Non
         "discharge_status",
     ]
 
-    normalized = normalize_entity_lines(text, schema, primary_key="id")
-    csv_text = deterministic_kv_to_csv(normalized, schema, primary_key="id")
+    csv_text = _kv_to_csv(text, schema, "id")
     assert csv_text is not None
 
     row = next(csv.DictReader(io.StringIO(csv_text)))
@@ -111,14 +176,8 @@ def test_deterministic_kv_to_csv_matches_schema_keys_case_insensitively() -> Non
     }
 
 
-def test_collect_unmatched_keys_deduplicates_case_variants() -> None:
-    text = "id: 1 | Alias: 10\nid: 2 | alias: 20\nid: 3 | known: ok"
-
-    assert collect_unmatched_keys(text, ["id", "known"]) == ["Alias"]
-
-
-def test_deterministic_kv_to_csv_matches_field_types_case_insensitively() -> None:
-    csv_text = deterministic_kv_to_csv(
+def test_kv_to_csv_matches_field_types_case_insensitively() -> None:
+    csv_text = _kv_to_csv(
         "RecordID: 1 | Amount: 1,234 | IsActive: 是",
         ["RecordID", "Amount", "IsActive"],
         primary_key="RecordID",
@@ -137,7 +196,7 @@ def test_deterministic_kv_to_csv_matches_field_types_case_insensitively() -> Non
 
 def test_primary_key_detection_does_not_match_key_substrings() -> None:
     schema = ["id", "pid", "height_cm"]
-    csv_text = deterministic_kv_to_csv(
+    csv_text = _kv_to_csv(
         "pid: 017-30133 | height_cm: 173.0",
         schema,
         primary_key="id",
@@ -146,7 +205,7 @@ def test_primary_key_detection_does_not_match_key_substrings() -> None:
     assert csv_text is None
 
 
-def test_deterministic_kv_to_csv_preserves_rows_without_semantic_filtering() -> None:
+def test_kv_to_csv_preserves_rows_without_semantic_filtering() -> None:
     schema = [
         "record_id",
         "province_name",
@@ -171,7 +230,7 @@ def test_deterministic_kv_to_csv_preserves_rows_without_semantic_filtering() -> 
         ]
     )
 
-    csv_text = deterministic_kv_to_csv(
+    csv_text = _kv_to_csv(
         text,
         schema,
         primary_key="record_id",
@@ -186,8 +245,8 @@ def test_deterministic_kv_to_csv_preserves_rows_without_semantic_filtering() -> 
     assert rows[1]["primary_industry_gdp"] == "302.48"
 
 
-def test_deterministic_kv_to_csv_handles_cleaned_record_id_and_text_spacing() -> None:
-    csv_text = deterministic_kv_to_csv(
+def test_kv_to_csv_handles_cleaned_record_id_and_text_spacing() -> None:
+    csv_text = _kv_to_csv(
         "record_id: 286 | fund_name: 华夏 A",
         ["record_id", "fund_name"],
         primary_key="record_id",
@@ -200,7 +259,7 @@ def test_deterministic_kv_to_csv_handles_cleaned_record_id_and_text_spacing() ->
     assert row["fund_name"] == "华夏A"
 
 
-def test_deterministic_kv_to_csv_blanks_values_with_wrong_schema_type() -> None:
+def test_kv_to_csv_blanks_values_with_wrong_schema_type() -> None:
     schema = [
         "fundcode",
         "lowestsumsubscribing",
@@ -210,7 +269,7 @@ def test_deterministic_kv_to_csv_blanks_values_with_wrong_schema_type() -> None:
         "iffof",
         "ifinitiatingfund",
     ]
-    csv_text = deterministic_kv_to_csv(
+    csv_text = _kv_to_csv(
         (
             "fundcode: 159001 | lowestsumsubscribing: 万家上证50交易型开放式指数证券投资基金 "
             "| lowestsumredemption: 900000.0 | foundedsize: 1,234.50 "
@@ -258,7 +317,7 @@ def test_pre_merge_repairs_fabricated_sequential_pks() -> None:
             "record_id: 2 | strategic_unit_id: 338 | indexvalue: 100.1",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "strategic_unit_id"],
@@ -281,7 +340,7 @@ def test_pre_merge_alias_column_need_not_be_declared_anchor() -> None:
             "record_id: 1 | strategic_unit_id: 532 | indexvalue: 99.8",
         ]
     )
-    merged = pre_merge_entity_lines(text, primary_key="record_id")
+    merged = _merge_text(text, primary_key="record_id")
     lines = [ln for ln in merged.splitlines() if ln.strip()]
 
     assert len(lines) == 3
@@ -299,7 +358,7 @@ def test_pre_merge_keeps_legitimate_id_disagreements() -> None:
             "record_id: 600009 | companycode: 81143 | label: d",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "companycode"],
@@ -319,7 +378,7 @@ def test_pre_merge_keeps_genuine_small_sequential_pks() -> None:
             "record_id: 3 | personalcode: 101003 | label: c",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "personalcode"],
@@ -349,7 +408,7 @@ def test_pre_merge_drops_identity_echo_fragment(fragment: str) -> None:
             fragment,
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "secucode"],
@@ -369,7 +428,7 @@ def test_pre_merge_keeps_data_carrying_fragment_with_ambiguous_anchor() -> None:
             "record_id:  | secucode: 300707 | transfer_shares: 99999",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "secucode"],
@@ -388,7 +447,7 @@ def test_pre_merge_single_real_row_disables_constant_echo_rule() -> None:
             "personalcode:  | chinesename: 柳军 | dept: B | city: X",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="personalcode",
         anchor_keys=["personalcode", "chinesename", "dept"],
@@ -420,7 +479,7 @@ def test_pre_merge_drops_source_unanchored_pk_and_heals_anchor_merge() -> None:
             "record_id:  | asset_id: 112 | liabilities_cb: 888100",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "asset_id"],
@@ -443,7 +502,7 @@ def test_pre_merge_drops_pk_only_embedded_in_larger_numbers() -> None:
             "record_id: 408 | asset_id: 408 | totalassets: 900",
         ]
     )
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id", "asset_id"],
@@ -463,7 +522,7 @@ def test_pre_merge_unanchored_gate_skips_non_digit_pks_and_no_source() -> None:
         ]
     )
     # non-digit pks survive even though absent from source_text
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         text,
         primary_key="record_id",
         anchor_keys=["record_id"],
@@ -473,7 +532,7 @@ def test_pre_merge_unanchored_gate_skips_non_digit_pks_and_no_source() -> None:
 
     # without source_text the gate is a no-op for digit pks too
     digit_text = "record_id: 9991 | label: a\nrecord_id: 9992 | label: b"
-    merged = pre_merge_entity_lines(
+    merged = _merge_text(
         digit_text,
         primary_key="record_id",
         anchor_keys=["record_id"],

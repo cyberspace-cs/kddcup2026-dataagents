@@ -39,7 +39,7 @@ RECORD_ID_FIELDS = frozenset(
 RECORD_ID_KEYWORDS = r"档案|记录|条目|战略单元|Record|File|Case"
 RECORD_ID_SEPARATOR = r"\s*(?:\(?(?:ID|id|Id)[：:]\s*)?[：:#\-]?\s*"
 RECORD_ID_INLINE = re.compile(
-    rf"(?:{RECORD_ID_KEYWORDS}){RECORD_ID_SEPARATOR}(\d{{1,8}})",
+    rf"(?<![A-Za-z])(?:{RECORD_ID_KEYWORDS}){RECORD_ID_SEPARATOR}(\d{{1,8}})",
     re.IGNORECASE,
 )
 RECORD_ID_LABEL = re.compile(
@@ -52,20 +52,19 @@ RECORD_ID_RANGE = re.compile(
 )
 DIGIT_RUN = re.compile(r"\d{1,8}")
 LOCAL_RECORD_ID_RE = re.compile(
-    rf"(?:{RECORD_ID_KEYWORDS}){RECORD_ID_SEPARATOR}(\d{{1,8}})",
+    rf"(?<![A-Za-z])(?:{RECORD_ID_KEYWORDS}){RECORD_ID_SEPARATOR}(\d{{1,8}})",
     re.IGNORECASE,
 )
 # Alphanumeric entity identifiers embedded in prose without keyword prefixes.
-# Airtable-style: rec + 10-20 mixed chars that contain at least one uppercase
-# letter after the "rec" prefix. English words (reconciliation, reconstruction)
-# are all-lowercase after "rec"; Airtable IDs always have mixed case.
-# Code-style: 2-4 uppercase letters + 3+ digits (e.g. TR391, SC170).
-AIRTABLE_ID_RE = re.compile(r"\brec(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]{10,20}\b")
-CODE_ID_RE = re.compile(r"\b([A-Z]{2,4}\d{3,6})\b")
-ALPHANUM_RECORD_ID_RE = re.compile(
-    r"\brec(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]{10,20}\b"
-    r"|\b[A-Z]{2,4}\d{3,6}\b"
-)
+# Airtable-style: rec + an uppercase-or-digit char + 9-19 more mixed chars.
+# English words (reconciliation, recordIdentifier, receivablesTurnover) have a
+# lowercase char right after "rec"; Airtable IDs never do (rec0Si5cQ4rJRVzd6).
+# Code-style: 2-4 uppercase letters + 3+ digits (e.g. TR391, SC170). Detection
+# additionally requires >=3 distinct codes sharing ONE letter prefix so mixed
+# domain codes (SZ300707 + SH600519 + ISO9001) are not mistaken for a
+# document-local record-id scheme.
+AIRTABLE_ID_RE = re.compile(r"\brec[A-Z0-9][A-Za-z0-9]{9,19}\b")
+CODE_ID_RE = re.compile(r"\b([A-Z]{2,4})(\d{3,6})\b")
 # Quoted example list for extraction prompts. It uses <N> rather than a
 # concrete number so prompt examples cannot be echoed as fabricated records.
 RECORD_LABEL_EXAMPLES = ", ".join(f'"{lbl} <N>"' for lbl in RECORD_ID_KEYWORDS.split("|"))

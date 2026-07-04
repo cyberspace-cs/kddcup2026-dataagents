@@ -45,7 +45,7 @@ def test_extract_prose_file_stops_when_deterministic_csv_fails(
         "compress_prose",
         lambda *_args, **_kwargs: ("id: 1 | value: source", None, None),
     )
-    monkeypatch.setattr(extractor, "deterministic_kv_to_csv", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(extractor, "records_to_rows", lambda _table: (["id", "value"], []))
 
     prose_path = task.context_dir / "patient.md"
     prose_path.write_text("ID 1 has value source.", encoding="utf-8")

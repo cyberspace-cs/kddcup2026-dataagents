@@ -3,11 +3,11 @@
 Pipeline (when knowledge.md schema is available):
   1. **Compress** — LLM strips narrative filler from prose chunks, producing
      pipe-separated key-value entity lines.
-  2. **Pre-merge** — Python collapses multi-line entity records into one line
-     per unique primary key.
-  3. **Normalize** — reorder fields to match schema, drop unknowns.
-  4. **Deterministic CSV** — Python parses normalized KV lines into CSV
-     (no LLM needed).
+  2. **Parse** — Python parses compressed output once into ``EntityTable``.
+  3. **Repair/reconcile/pre-merge** — malformed rejects, variant field names,
+     ID conflicts, and multi-line entity fragments are handled in memory.
+  4. **Normalize/verify/CSV** — clean typed cells, run value-level repair passes,
+     then materialize one final CSV atomically.
 """
 
 from __future__ import annotations
@@ -34,25 +34,32 @@ from agents.etl._constants import (
     ETL_RESERVE_OUTPUT_TOKENS,
 )
 from agents.etl._detect import ETLResult, detect_prose_files
-from agents.etl._identity import validate_csv
+from agents.etl._identity import repair_numeric_identities, validate_csv
 from agents.etl._merge import (
-    deterministic_kv_to_csv,
-    normalize_entity_lines,
-    pre_merge_entity_lines,
+    merge_records,
     resolve_id_conflicts,
 )
 from agents.etl._pdf import pdf_to_markdown
 from agents.etl._reconcile import (
     fix_malformed_lines,
     reconcile_field_names,
-    unify_csv_synonyms,
+    unify_table_synonyms,
+)
+from agents.etl._record import (
+    EntityTable,
+    atomic_write_text,
+    normalize_local_record_ids,
+    normalize_records,
+    parse_kv_text,
+    records_to_rows,
+    table_to_kv_text,
+    to_csv_text,
 )
 from agents.etl._schema import (
     infer_field_units_from_prose,
     infer_schema_from_sample,
     merge_prose_schema_into_governance,
     parse_knowledge_schema,
-    repair_csv_numeric_identities,
 )
 from agents.etl._threading import submit_in_context
 from agents.etl._trace import (
@@ -154,6 +161,25 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
     return inner
 
 
+def _record_conservation(
+    phase: Any,
+    name: str,
+    before: dict[str, int],
+    after: dict[str, int],
+) -> None:
+    """记录阶段前后的表统计；记录数净减少即守恒告警（dedup 清格是预期，丢记录不是）。"""
+    phase.metrics["records"] = after["records"]
+    phase.metrics["nonempty_cells"] = after["nonempty_cells"]
+    phase.metrics["cells_delta"] = after["nonempty_cells"] - before["nonempty_cells"]
+    if after["records"] < before["records"]:
+        logger.warning(
+            "ETL %s: record count dropped %d → %d (conservation violation)",
+            name,
+            before["records"],
+            after["records"],
+        )
+
+
 def extract_prose_file(
     adapter: ModelAdapter,
     path: Path,
@@ -169,7 +195,7 @@ def extract_prose_file(
 ) -> ETLResult | None:
     """Extract structured data from a prose file.
 
-    Pipeline: compress → pre-merge → normalize → deterministic CSV.
+    Pipeline: compress → parse → fix/reconcile/pre-merge → normalize → CSV.
     """
     primary_key = anchor_keys[0] if anchor_keys else None
 
@@ -179,51 +205,6 @@ def extract_prose_file(
     cache_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
     full_text = prose_text
-
-    def _finalize(phase: str) -> ETLResult | None:
-        """Validate the materialized CSV, unify value-split synonym columns,
-        repair approximate numerals from mined identities, build result."""
-        result = validate_csv(csv_path)
-        if not result:
-            return None
-        changed = False
-        with etl_phase("identity_repair") as p:
-            repaired = repair_csv_numeric_identities(csv_path)
-            p.metrics["repaired"] = bool(repaired)
-            if repaired:
-                changed = True
-        if governance_columns:
-            with etl_phase("synonym_unify") as p:
-                applied = unify_csv_synonyms(
-                    adapter,
-                    csv_path,
-                    path.stem,
-                    governance_columns,
-                    anchor_keys or [],
-                    schema_field_defs or {},
-                    task.question,
-                    cache_dir / f"{path.stem}_units.json",
-                )
-                p.metrics["applied"] = bool(applied)
-                if applied:
-                    changed = True
-        if changed:
-            result = validate_csv(csv_path) or result
-        header, row_count = result
-        logger.info(
-            "ETL %s: %s → %s (%d cols, %d rows)",
-            phase,
-            path.name,
-            csv_path,
-            len(header),
-            row_count,
-        )
-        return ETLResult(
-            source_file=path.name,
-            csv_path=str(csv_path),
-            columns=header,
-            row_count=row_count,
-        )
 
     if path.suffix.lower() == ".pdf":
         md_path = cache_dir / f"{path.stem}.md"
@@ -287,98 +268,146 @@ def extract_prose_file(
         len(compressed) / len(full_text) * 100,
     )
 
-    if not primary_key:
-        compressed = resolve_id_conflicts(compressed)
-
-    with etl_phase("pre_merge", input_size=len(compressed)) as p:
-        compressed = pre_merge_entity_lines(
-            compressed,
-            primary_key=primary_key,
-            anchor_keys=anchor_keys,
-            source_text=full_text,
-        )
-        p.output_size = len(compressed)
+    table: EntityTable | None = None
     if schema_columns:
-        with etl_phase("fix_format", input_size=len(compressed)) as p:
-            compressed = fix_malformed_lines(
-                adapter,
+        # ---- 解析边界：compress 输出只解析这一次，之后全程内存表 ----
+        with etl_phase("parse", input_size=len(compressed)) as p:
+            table = parse_kv_text(
                 compressed,
-                schema_columns,
-                schema_field_defs,
+                columns=schema_columns,
+                primary_key=primary_key,
+                anchor_keys=anchor_keys,
+                field_types=schema_field_types,
             )
-            p.output_size = len(compressed)
-        with etl_phase("reconcile", input_size=len(compressed)) as p:
-            compressed = reconcile_field_names(
-                adapter,
-                compressed,
-                schema_columns,
-                schema_field_defs,
-            )
-            p.output_size = len(compressed)
-        with etl_phase("normalize", input_size=len(compressed)) as p:
-            compressed = normalize_entity_lines(compressed, schema_columns, primary_key)
-            p.output_size = len(compressed)
-        with etl_phase("dedup", input_size=len(compressed)) as p:
-            compressed, dedup_cleared = dedup_cross_field_copies(
-                adapter,
-                compressed,
-                schema_columns,
-                primary_key,
-                anchor_keys,
-                full_text,
-                schema_field_types,
-            )
-            p.output_size = len(compressed)
+            dropped, normalized = normalize_local_record_ids(table)
+            p.metrics.update(table.stats())
+            p.metrics["local_id_dropped"] = dropped
+            p.metrics["local_id_normalized"] = normalized
+            if table.rejects:
+                from collections import Counter
+
+                logger.info(
+                    "ETL parse: %s → %d records, %d rejected lines (%s)",
+                    path.name,
+                    len(table.records),
+                    len(table.rejects),
+                    dict(Counter(r.reason for r in table.rejects)),
+                )
+            if dropped:
+                logger.info("ETL parse: dropped %d grouped/range record-id rows", dropped)
+        with etl_phase("fix_format") as p:
+            before = table.stats()
+            recovered = fix_malformed_lines(adapter, table, schema_field_defs)
+            p.metrics["recovered"] = recovered
+            _record_conservation(p, "fix_format", before, table.stats())
+        with etl_phase("reconcile") as p:
+            before = table.stats()
+            applied = reconcile_field_names(adapter, table, schema_field_defs)
+            p.metrics["applied"] = len(applied)
+            _record_conservation(p, "reconcile", before, table.stats())
+        if not primary_key:
+            with etl_phase("resolve_id_conflicts") as p:
+                before = table.stats()
+                fixed = resolve_id_conflicts(table)
+                p.metrics["fixed"] = fixed
+                _record_conservation(p, "resolve_id_conflicts", before, table.stats())
+        with etl_phase("pre_merge") as p:
+            before = table.stats()
+            merge_records(table, source_text=full_text)
+            _record_conservation(p, "pre_merge", before, table.stats())
+        with etl_phase("normalize") as p:
+            before = table.stats()
+            normalize_records(table)
+            _record_conservation(p, "normalize", before, table.stats())
+        with etl_phase("dedup") as p:
+            before = table.stats()
+            dedup_cleared = dedup_cross_field_copies(adapter, table, full_text)
             p.metrics["cleared_count"] = len(dedup_cleared) if dedup_cleared else 0
-        with etl_phase("retry", input_size=len(compressed)) as p:
-            compressed = retry_missing_values(
+            _record_conservation(p, "dedup", before, table.stats())
+        with etl_phase("retry") as p:
+            before = table.stats()
+            retry_missing_values(
                 adapter,
-                compressed,
-                schema_columns,
-                primary_key,
-                anchor_keys,
+                table,
                 entity_groups,
-                schema_field_types,
                 schema_field_defs,
                 forced_gaps=dedup_cleared,
             )
-            p.output_size = len(compressed)
-        with etl_phase("verify", input_size=len(compressed)) as p:
-            compressed = verify_field_values(
+            _record_conservation(p, "retry", before, table.stats())
+        with etl_phase("verify") as p:
+            before = table.stats()
+            verify_field_values(
                 adapter,
-                compressed,
-                schema_columns,
-                primary_key,
-                anchor_keys,
+                table,
                 entity_groups,
-                schema_field_types,
                 schema_field_defs,
                 compress_guide=compress_guide,
             )
-            p.output_size = len(compressed)
-    compressed_path.write_text(compressed, encoding="utf-8")
+            _record_conservation(p, "verify", before, table.stats())
+        # trace 快照：仅供人读，永不回读进管道
+        compressed_path.write_text(table_to_kv_text(table), encoding="utf-8")
 
     if field_units:
         apply_proportion_convention(field_units, proportion_conventions)
         write_units_sidecar(task, path.stem, field_units)
 
-    # ---- Phase 2a: deterministic KV→CSV (when normalized) ----
-    if schema_columns:
-        with etl_phase("csv", input_size=len(compressed)) as p:
-            csv_text = deterministic_kv_to_csv(
-                compressed,
-                schema_columns,
-                primary_key,
-                schema_field_types,
+    # ---- Phase 2a: deterministic serialization (when schema known) ----
+    if not schema_columns or table is None:
+        return None
+
+    header, rows = records_to_rows(table)
+    if not rows:
+        logger.warning("ETL deterministic extraction produced no rows for %s", path.name)
+        return None
+    with etl_phase("identity_repair") as p:
+        rows, repairs = repair_numeric_identities(header, rows)
+        p.metrics["repaired"] = bool(repairs)
+        for row_idx, column, old, new in repairs:
+            logger.info(
+                "ETL identity-repair: %s row %d '%s': %s → %s",
+                path.name,
+                row_idx,
+                column,
+                old,
+                new,
             )
-            p.metrics["produced"] = csv_text is not None
-        if csv_text:
-            csv_path.write_text(csv_text, encoding="utf-8")
-            result = _finalize("deterministic")
-            if result:
-                return result
-            logger.warning("ETL deterministic extraction produced invalid CSV")
-    return None
+    if governance_columns:
+        with etl_phase("synonym_unify") as p:
+            header, rows, applied = unify_table_synonyms(
+                adapter,
+                header,
+                rows,
+                path.stem,
+                governance_columns,
+                anchor_keys or [],
+                schema_field_defs or {},
+                task.question,
+                cache_dir / f"{path.stem}_units.json",
+            )
+            p.metrics["applied"] = bool(applied)
+
+    # 全管道唯一一次 CSV 写：原子落盘，读者永远看不到半写状态。
+    with etl_phase("csv") as p:
+        atomic_write_text(csv_path, to_csv_text(header, rows))
+        p.metrics["rows"] = len(rows)
+    result = validate_csv(csv_path)
+    if not result:
+        logger.warning("ETL deterministic extraction produced invalid CSV for %s", path.name)
+        return None
+    header, row_count = result
+    logger.info(
+        "ETL deterministic: %s → %s (%d cols, %d rows)",
+        path.name,
+        csv_path,
+        len(header),
+        row_count,
+    )
+    return ETLResult(
+        source_file=path.name,
+        csv_path=str(csv_path),
+        columns=header,
+        row_count=row_count,
+    )
 
 
 def run_etl_for_task(

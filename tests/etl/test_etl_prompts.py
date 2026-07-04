@@ -6,13 +6,19 @@ from typing import Any, cast
 import pytest
 
 from agents.etl._compress import (
-    _clean_compressed_entity_lines,
     _format_schema_def_hint,
     _format_schema_type_hint,
     _generate_compress_guide,
 )
+from agents.etl._record import (
+    normalize_local_record_ids,
+    normalize_records,
+    parse_kv_text,
+    table_to_kv_text,
+)
 from agents.etl._schema import (
     _ensure_local_record_anchor,
+    _has_local_record_ids,
     _merge_multi_round_schemas,
     _merge_synonyms_into_km,
     _parse_schema_response,
@@ -22,8 +28,26 @@ from agents.etl._units import _deterministic_factor, _parse_unit_factor_response
 from agents.llm.types import ModelResponse
 
 
-def test_compress_clean_drops_grouped_record_ids_before_clean_markdown() -> None:
-    cleaned = _clean_compressed_entity_lines(
+def _record_clean(
+    text: str,
+    columns: list[str],
+    field_types: dict[str, str],
+    primary_key: str,
+) -> str:
+    table = parse_kv_text(
+        text,
+        columns=columns,
+        primary_key=primary_key,
+        anchor_keys=[primary_key],
+        field_types=field_types,
+    )
+    normalize_local_record_ids(table)
+    normalize_records(table)
+    return table_to_kv_text(table)
+
+
+def test_record_pass_drops_grouped_record_ids_before_clean_markdown() -> None:
+    cleaned = _record_clean(
         "\n".join(
             [
                 (
@@ -33,29 +57,31 @@ def test_compress_clean_drops_grouped_record_ids_before_clean_markdown() -> None
                 ("record_id: 档案 286 | province_name: 山西省 | primary_industry_gdp: 302.48"),
             ]
         ),
-        schema_columns=["record_id", "province_name", "enddate", "gdp", "primary_industry_gdp"],
-        schema_field_types={
+        columns=["record_id", "province_name", "enddate", "gdp", "primary_industry_gdp"],
+        field_types={
             "record_id": "integer_scalar local_record_id",
             "province_name": "string",
             "enddate": "date",
             "gdp": "number",
             "primary_industry_gdp": "number",
         },
+        primary_key="record_id",
     )
 
     assert "197至217" not in cleaned
-    assert "record_id: 286 | province_name: 山西省 | primary_industry_gdp: 302.48" in cleaned
+    assert "record_id: 286 | province_name: 山西省" in cleaned
+    assert "primary_industry_gdp: 302.48" in cleaned
 
 
-def test_compress_clean_blanks_values_with_wrong_schema_type() -> None:
-    cleaned = _clean_compressed_entity_lines(
+def test_record_clean_blanks_values_with_wrong_schema_type() -> None:
+    cleaned = _record_clean(
         (
             "fundcode: 159001 | lowestsumsubscribing: 万家上证50交易型开放式指数证券投资基金 "
             "| lowestsumredemption: 900000.0 | foundedsize: 1,234.50 "
             "| establishmentdate: 股票型 | iffof: 万家上证50交易型开放式指数证券投资基金 "
             "| ifinitiatingfund: 否"
         ),
-        schema_columns=[
+        columns=[
             "fundcode",
             "lowestsumsubscribing",
             "lowestsumredemption",
@@ -64,7 +90,7 @@ def test_compress_clean_blanks_values_with_wrong_schema_type() -> None:
             "iffof",
             "ifinitiatingfund",
         ],
-        schema_field_types={
+        field_types={
             "fundcode": "scalar_id",
             "lowestsumsubscribing": "number",
             "lowestsumredemption": "number",
@@ -73,11 +99,29 @@ def test_compress_clean_blanks_values_with_wrong_schema_type() -> None:
             "iffof": "boolean",
             "ifinitiatingfund": "boolean",
         },
+        primary_key="fundcode",
     )
 
     assert "lowestsumsubscribing:  | lowestsumredemption: 900000.0" in cleaned
     assert "foundedsize: 1234.50" in cleaned
     assert "establishmentdate:  | iffof:  | ifinitiatingfund: false" in cleaned
+
+
+def test_record_clean_preserves_approx_tag_on_numeric_values() -> None:
+    """~ 是恒等式修复的显式证据，压缩清洗规范数字但不得剥掉标记。"""
+    cleaned = _record_clean(
+        "record_id: 1 | gdp: ~1,234.5 | population: ～99 | area: 10",
+        columns=["record_id", "gdp", "population", "area"],
+        field_types={
+            "record_id": "integer_scalar local_record_id",
+            "gdp": "number",
+            "population": "number",
+            "area": "number",
+        },
+        primary_key="record_id",
+    )
+
+    assert cleaned == "record_id: 1 | gdp: ~1234.5 | population: ~99 | area: 10"
 
 
 def test_compress_hints_match_metadata_case_insensitively() -> None:
@@ -99,13 +143,14 @@ def test_compress_hints_match_metadata_case_insensitively() -> None:
 
 
 def test_compress_clean_matches_schema_types_case_insensitively() -> None:
-    cleaned = _clean_compressed_entity_lines(
+    cleaned = _record_clean(
         "RecordID: 档案 42 | Amount: 1,234",
-        schema_columns=["RecordID", "Amount"],
-        schema_field_types={
+        columns=["RecordID", "Amount"],
+        field_types={
             "recordid": "integer_scalar local_record_id",
             "amount": "number",
         },
+        primary_key="RecordID",
     )
 
     assert cleaned == "RecordID: 42 | Amount: 1234"
@@ -141,6 +186,55 @@ def test_schema_adds_record_id_for_repeated_local_record_labels() -> None:
 
     assert columns == ["record_id", "personalcode", "manager_name"]
     assert anchors == ["record_id", "personalcode", "manager_name"]
+
+
+@pytest.mark.parametrize(
+    ("prose", "expected"),
+    [
+        # 关键词 + 数字：档案/Record 等标签方案
+        pytest.param("档案 21。\n战略单元 353。\n记录 418。", True, id="cjk-labels"),
+        pytest.param("Record 1, Record 2, Record 3.", True, id="english-labels"),
+        # 关键词作为长词内嵌子串不算（profile 含 file、briefcase 含 case）
+        pytest.param(
+            "profile 29 and profile 30 and profile 31 exist.", False, id="profile-not-file"
+        ),
+        pytest.param(
+            "briefcase 12, briefcase 13, briefcase 14 shipped.", False, id="briefcase-not-case"
+        ),
+        # Airtable 风格：rec 后首字符为大写/数字
+        pytest.param(
+            "rec0Si5cQ4rJRVzd6 then rec7SRmmw3oovHndK then recXq0Zz1Ab2Cd3Ef.",
+            True,
+            id="airtable-ids",
+        ),
+        # 驼峰英文词 rec 后是小写，不算
+        pytest.param(
+            "recordIdentifier, receivablesTurnover, reconciliationBalance ok; "
+            "recordIdentifier2, receivablesTurnoverX, reconciliationRatioY too.",
+            False,
+            id="camelcase-words",
+        ),
+        # code 风格：同一前缀 >=3 个编号
+        pytest.param("TR391 TR483 TR512 are specimens.", True, id="single-prefix-codes"),
+        # 混合前缀（交易所代码 + ISO 标准号）不算记录方案
+        pytest.param("SZ300707, SH600519 and ISO9001 are mentioned.", False, id="mixed-prefixes"),
+        pytest.param("SZ300707 and SZ300708 only.", False, id="two-codes-insufficient"),
+    ],
+)
+def test_has_local_record_ids_detection(prose: str, expected: bool) -> None:
+    assert _has_local_record_ids(prose) is expected
+
+
+def test_schema_skips_record_id_for_governance_prose_with_tickers() -> None:
+    """含 3 个交易所代码的治理 schema 不得被注入幽灵 record_id。"""
+    columns, anchors = _ensure_local_record_anchor(
+        "公司 SZ300707 的董事会与 SH600519、SZ000858 的治理结构对比。",
+        ["companycode", "board_size"],
+        ["companycode"],
+    )
+
+    assert columns == ["companycode", "board_size"]
+    assert anchors == ["companycode"]
 
 
 @pytest.mark.parametrize(
