@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from agents.etl._merge import merge_records
 from agents.etl._reconcile import fix_malformed_lines, reconcile_field_names
 from agents.etl._record import parse_kv_text, records_to_rows
 from agents.llm.types import ModelMessage, ModelResponse
@@ -107,6 +108,25 @@ def test_reconcile_field_names_fills_empty_existing_target(target_value: str) ->
     assert table.records[0].fields["known"] == "10"
     assert "Alias" not in table.records[0].fields
     assert records_to_rows(table) == (["id", "known"], [["1", "10"]])
+
+
+def test_reconcile_field_names_refreshes_primary_key_before_pre_merge() -> None:
+    table = parse_kv_text(
+        "id:  | alias_id: 1 | name: A\nid: 2 | name: B",
+        columns=["id", "name"],
+        primary_key="id",
+        anchor_keys=["id"],
+    )
+
+    applied = reconcile_field_names(
+        _ReplyAdapter("alias_id=id"),
+        table,
+        schema_field_defs=None,
+    )
+    merge_records(table, source_text="source records mention 1 and 2")
+
+    assert applied == {"alias_id": "id"}
+    assert records_to_rows(table) == (["id", "name"], [["1", "A"], ["2", "B"]])
 
 
 def test_reconcile_field_names_skips_existing_target() -> None:

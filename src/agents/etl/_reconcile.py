@@ -368,6 +368,8 @@ def reconcile_field_names(
                 record.approx.discard(dst)
             provenance = record.provenance.pop(actual_src, "reconcile")
             record.provenance[dst] = provenance if provenance != "parse" else "reconcile"
+            if table.primary_key and dst.lower() == table.primary_key.lower():
+                record.pk = record.fields.get(dst) or None
             applied[actual_src] = dst
 
     logger.info(
