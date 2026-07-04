@@ -38,7 +38,7 @@ from agents.etl._merge import (
     strip_key,
     strip_reasoning_leak,
 )
-from agents.etl._types import split_approx_tag
+from agents.etl._types import is_placeholder, split_approx_tag
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -190,9 +190,17 @@ def parse_kv_text(
             key = canonicalize_key(raw_key, key_map)
             bare, approx = split_approx_tag(val.strip())
             if key in record.fields:
-                if record.fields[key] != bare:
+                existing = record.fields[key]
+                if existing != bare:
                     line_conflicts += 1
-                continue  # 保留首值
+                if is_placeholder(existing) and not is_placeholder(bare):
+                    record.fields[key] = bare
+                    record.provenance[key] = "parse"
+                    if approx and bare:
+                        record.approx.add(key)
+                    else:
+                        record.approx.discard(key)
+                continue  # 保留首个有效值
             record.fields[key] = bare
             record.provenance[key] = "parse"
             if approx and bare:

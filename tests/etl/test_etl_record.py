@@ -61,9 +61,34 @@ def test_parse_duplicate_key_keeps_first_value_and_counts_conflict() -> None:
     )
 
     record = table.records[0]
-    assert record.fields["score"] == "10"  # first wins
+    assert record.fields["score"] == "10"  # first non-placeholder wins
     assert table.conflicts == 1  # 同值重复不计冲突
     assert table.stats()["conflicts"] == 1
+
+
+def test_parse_duplicate_key_fills_initial_empty_value() -> None:
+    table = parse_kv_text(
+        "record_id: 1 | score: | score: 10",
+        columns=_COLS,
+        primary_key="record_id",
+    )
+
+    record = table.records[0]
+    assert record.fields["score"] == "10"
+    assert table.conflicts == 1
+
+
+def test_parse_duplicate_key_fills_initial_placeholder_and_preserves_approx() -> None:
+    table = parse_kv_text(
+        "record_id: 1 | score: none | score: ~6970000",
+        columns=_COLS,
+        primary_key="record_id",
+    )
+
+    record = table.records[0]
+    assert record.fields["score"] == "6970000"
+    assert record.approx == {"score"}
+    assert table.conflicts == 1
 
 
 def test_parse_strips_approx_tag_into_record_approx() -> None:
