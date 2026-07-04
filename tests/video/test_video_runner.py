@@ -1,4 +1,4 @@
-"""Video runner：scripted 驱动；report 提取；failure_reason 陷阱忽略；空轮失败。"""
+"""Video runner: scripted report extraction and failure handling."""
 
 from __future__ import annotations
 
@@ -39,6 +39,29 @@ def _report_response(arguments: dict) -> ModelResponse:
     )
 
 
+def _empty_canonical_rules() -> dict:
+    return {
+        "filters": [],
+        "metrics": [],
+        "group_by": [],
+        "sort_by": [],
+        "periods": [],
+        "identifiers": {},
+        "tables": [],
+        "output_fields": [],
+        "snapshot_dates": [],
+    }
+
+
+def _empty_rules() -> dict:
+    return {
+        "canonical": _empty_canonical_rules(),
+        "rule_items": [],
+        "raw_observations": [],
+        "task_specific": {},
+    }
+
+
 def test_successful_report_extracted_despite_failure_reason_trap(tmp_path: Path) -> None:
     task, video = _make_task(tmp_path)
     adapter = ScriptedNativeModelAdapter(
@@ -47,7 +70,11 @@ def test_successful_report_extracted_despite_failure_reason_trap(tmp_path: Path)
                 {
                     "summary": "a chart video",
                     "extracted_data": {
-                        "rules": {"filters": [{"field": "quarter", "op": "=", "value": "Q3"}]},
+                        "rules": {
+                            "canonical": {
+                                "filters": [{"field": "quarter", "operator": "=", "value": "Q3"}]
+                            }
+                        },
                         "displayed_samples": {"kpi": 42},
                     },
                 }
@@ -55,14 +82,13 @@ def test_successful_report_extracted_despite_failure_reason_trap(tmp_path: Path)
         ]
     )
     result = run_video_agent(task, video, "transcribe the KPI", adapter)
-    # report 不产生 answer，AgentRunResult.failure_reason 会被误填——runner 必须从 steps 判定成功
     assert result.success is True
     findings = json.loads(result.findings)
     assert findings["summary"] == "a chart video"
-    assert findings["extracted_data"] == {
-        "rules": {"filters": [{"field": "quarter", "op": "=", "value": "Q3"}]},
-        "displayed_samples": {"kpi": 42},
-    }
+    assert findings["extracted_data"]["rules"]["canonical"]["filters"] == [
+        {"field": "quarter", "operator": "=", "value": "Q3"}
+    ]
+    assert findings["extracted_data"]["displayed_samples"] == {"kpi": 42}
 
 
 def test_report_without_extracted_data_gets_empty_contract(tmp_path: Path) -> None:
@@ -73,7 +99,7 @@ def test_report_without_extracted_data_gets_empty_contract(tmp_path: Path) -> No
 
     assert result.success is True
     findings = json.loads(result.findings)
-    assert findings["extracted_data"] == {"rules": {}, "displayed_samples": {}}
+    assert findings["extracted_data"] == {"rules": _empty_rules(), "displayed_samples": {}}
 
 
 def test_no_report_returns_failure(tmp_path: Path) -> None:
@@ -89,11 +115,11 @@ def test_task_text_delimits_brief_and_restates_contract() -> None:
     text = build_video_task_text("Q?", "look at the bar chart")
     assert "<analysis_brief>\nlook at the bar chart\n</analysis_brief>" in text
     assert "Q?" in text
-    assert "report" in text  # 简报之后重申提交契约
+    assert "report" in text
     assert "<analysis_brief>" in text and text.index("Q?") < text.index("<analysis_brief>")
 
 
 def test_system_prompt_is_static_and_declares_brief_as_data() -> None:
-    assert "{" not in VIDEO_AGENT_SYSTEM_PROMPT  # 零动态插值
+    assert "{" not in VIDEO_AGENT_SYSTEM_PROMPT
     assert "analysis_brief" in VIDEO_AGENT_SYSTEM_PROMPT
     assert "report" in VIDEO_AGENT_SYSTEM_PROMPT

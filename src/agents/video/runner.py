@@ -64,7 +64,7 @@ def _extract_report(steps: list[Any]) -> str | None:
         raw: Any = getattr(step, "action_input", None)
         if isinstance(raw, dict):
             report = VideoReportInput.model_validate(raw)
-            return json.dumps(report.model_dump(), ensure_ascii=False)
+            return json.dumps(report.model_dump(exclude_none=True), ensure_ascii=False)
     return None
 
 

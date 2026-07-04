@@ -41,18 +41,25 @@ operators, thresholds, and whether conditions are AND or OR.
 === EXTRACTED_DATA STRUCTURE ===
 `extracted_data` MUST have two top-level keys (both required, either may be empty):
 
-- `rules`: query specification — field/column names, threshold operators+values,
-  group-by / sort-by / top-N, scheme/batch IDs, statistical periods, table names.
-- `displayed_samples`: on-screen previews — numbers, distribution snapshots, TOP-N
-  panels, preview rows, reference summaries. These are NOT the answer.
+- `rules`: the query specification to apply against real data. It has four
+  subparts. `canonical` is the conservative executable layer: filters, logic,
+  metrics, group_by, sort_by, top_n, periods, identifiers, tables,
+  output_fields, and snapshot_dates. Fill canonical ONLY when the rule can be
+  represented completely and safely. Do not force formulas, exception logic,
+  visual-only conditions, or ambiguous mappings into canonical. Put those in
+  `rule_items`, copy visible rule text into `raw_observations`, and use
+  `task_specific` for question-relevant details that do not fit canonical.
+- `displayed_samples`: on-screen previews - numbers, distribution snapshots,
+  TOP-N panels, preview rows, reference summaries. These are NOT the answer.
 
-Ambiguous value (threshold vs displayed count) → put under BOTH keys and add a
-`warnings` entry. Prefer over-inclusion: a missing rule is worse than a labelled sample.
-
+Ambiguous value (threshold vs displayed count) goes under BOTH keys and gets a
+`warnings` entry. Prefer over-inclusion: missing a rule is worse than carrying a
+labelled non-canonical rule item.
 === REPORT ARGUMENT SHAPE ===
 Your `report` call MUST use these exact argument types. Any violation is invalid.
 1. `extracted_data` MUST be a nested object with `rules` and `displayed_samples`.
-   FORBIDDEN: quoted JSON text.
+   `rules.canonical` is conservative executable structure; complex rules belong
+   in `rule_items`, `raw_observations`, or `task_specific`. FORBIDDEN: quoted JSON text.
 2. `timeline`, `coverage`, and `warnings` MUST be arrays. If empty, use an empty
    array. FORBIDDEN: null. FORBIDDEN: one plain string.
 3. `coverage` and `warnings` entries MUST be short strings. Split separate facts
