@@ -17,6 +17,7 @@ from agents.etl._record import (
     EntityTable,
     Record,
     atomic_write_text,
+    normalize_records,
     parse_kv_text,
     records_to_rows,
     sanitize_llm_value,
@@ -238,6 +239,25 @@ def test_records_to_rows_drops_all_empty_rows() -> None:
     _header, rows = records_to_rows(table)
 
     assert rows == [["1", "", ""]]
+
+
+def test_normalize_records_blanks_null_placeholders_before_projection() -> None:
+    table = parse_kv_text(
+        "\n".join(
+            [
+                "record_id: 1 | name: null | score: 10",
+                "record_id: null | name: null | score: null",
+            ]
+        ),
+        columns=_COLS,
+        primary_key="record_id",
+        anchor_keys=["record_id"],
+    )
+
+    normalize_records(table)
+    _header, rows = records_to_rows(table)
+
+    assert rows == [["1", "", "10"]]
 
 
 def test_to_csv_text_quotes_embedded_delimiters() -> None:

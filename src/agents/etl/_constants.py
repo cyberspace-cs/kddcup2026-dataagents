@@ -88,10 +88,12 @@ PLACEHOLDER_VALS = frozenset(
     {
         "",
         "-",
+        "null",
         "none",
         "nan",
         "n/a",
         "placeholder",
+        "null (placeholder)",
         "none (placeholder)",
         "nan (placeholder)",
         "- (placeholder)",

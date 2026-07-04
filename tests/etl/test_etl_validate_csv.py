@@ -19,6 +19,12 @@ def test_rejects_ragged_truncated_tail(tmp_path: Path) -> None:
     assert validate_csv(path) is None
 
 
+def test_rejects_all_placeholder_data_rows(tmp_path: Path) -> None:
+    path = tmp_path / "placeholder_row.csv"
+    path.write_text("id,name,value\n1,a,10\nnull,,null\n", encoding="utf-8")
+    assert validate_csv(path) is None
+
+
 def test_rejects_undecodable_bytes(tmp_path: Path) -> None:
     path = tmp_path / "cut.csv"
     # 多字节 UTF-8 字符（“值” = e5 80 bc）在中间截断

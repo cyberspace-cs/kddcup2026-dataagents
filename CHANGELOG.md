@@ -74,6 +74,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `output_fields` / `aggregation_field` / Chinese-suffixed variants).
 
 ### Fixed
+- **ETL drops placeholder-only rows.** The placeholder vocabulary now treats
+  `null` as an empty generated value, and ETL CSV cache validation rejects rows
+  where no entity or measured value survived. This prevents all-null records
+  from being reused in generated task CSVs.
 - **Text-mode file IO defaults to UTF-8.** Multiple call sites used
   `Path.read_text()` / `path.open(...)` without an `encoding` argument, which
   falls back to the OS locale codec (cp936 on a zh_CN Windows install). Tasks

@@ -13,7 +13,7 @@ from agents.etl._constants import (
     NUMERIC_EQ_REL,
     NUMERIC_SCALAR,
 )
-from agents.etl._types import split_approx_tag
+from agents.etl._types import is_placeholder, split_approx_tag
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +357,7 @@ def validate_csv(csv_path: Path) -> tuple[list[str], int] | None:
     - undecodable bytes (e.g. a multi-byte char cut in half by truncation)
     - empty column names in the header
     - ragged data rows (width != header width, the truncated-tail signature)
+    - all-placeholder data rows (no entity or measured value survived)
     """
     if not csv_path.is_file():
         return None
@@ -371,6 +372,8 @@ def validate_csv(csv_path: Path) -> tuple[list[str], int] | None:
             row_count = 0
             for row in reader:
                 if len(row) != len(header):
+                    return None
+                if not any(cell.strip() and not is_placeholder(cell) for cell in row):
                     return None
                 row_count += 1
         return (header, row_count) if row_count > 0 else None
