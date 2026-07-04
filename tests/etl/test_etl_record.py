@@ -140,6 +140,20 @@ def test_parse_equals_separator_tolerance() -> None:
     assert table.records[0].fields == {"record_id": "3", "name": "Carol", "score": "7"}
 
 
+def test_parse_equals_separator_preserves_colon_in_value() -> None:
+    table = parse_kv_text(
+        "record_id=4 | name=https://example.com/a:b | score=8",
+        columns=_COLS,
+        primary_key="record_id",
+    )
+
+    assert table.records[0].fields == {
+        "record_id": "4",
+        "name": "https://example.com/a:b",
+        "score": "8",
+    }
+
+
 def test_parse_classifies_rejects_instead_of_dropping() -> None:
     table = parse_kv_text(
         "\n".join(

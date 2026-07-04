@@ -129,7 +129,9 @@ def _normalize_kv_separators(line: str) -> str:
     parts: list[str] = []
     for part in line.split("|"):
         stripped = part.strip()
-        if "=" in stripped and ":" not in stripped:
+        equals_at = stripped.find("=")
+        colon_at = stripped.find(":")
+        if equals_at >= 0 and (colon_at < 0 or equals_at < colon_at):
             key, _, val = stripped.partition("=")
             parts.append(f"{key.strip()}: {val.strip()}")
         else:
