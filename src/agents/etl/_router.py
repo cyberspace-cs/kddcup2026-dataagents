@@ -8,13 +8,24 @@ and excluded from the virtual context.
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import re
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from agents.etl._compress import sample_paragraphs_by_section
+from agents.etl._constants import (
+    ROUTER_MAX_DESC_CHARS,
+    ROUTER_MAX_FIELDS_PER_FILE,
+    ROUTER_MAX_SAMPLE_CHARS,
+    ROUTER_MAX_STRUCTURED_COLUMNS,
+    ROUTER_MAX_STRUCTURED_FILES,
+    ROUTER_MAX_STRUCTURED_TABLES_PER_DB,
+    ROUTER_SAMPLE_TOKEN_BUDGET,
+)
 from agents.etl._pdf import pdf_to_markdown
 from agents.etl.knowledge import km_table_fields
 
@@ -22,11 +33,6 @@ if TYPE_CHECKING:
     from agents.llm import ModelAdapter
 
 logger = logging.getLogger(__name__)
-
-_ROUTER_SAMPLE_TOKEN_BUDGET = 2000
-_MAX_FIELDS_PER_FILE = 15
-_MAX_SAMPLE_CHARS = 500
-_MAX_DESC_CHARS = 200
 
 
 class FileProfile(TypedDict):
@@ -37,6 +43,23 @@ class FileProfile(TypedDict):
     schema_descriptions: dict[str, str]
     schema_source: str
     char_count: int
+
+
+class StructuredTableProfile(TypedDict):
+    name: str
+    columns: list[str]
+    row_count: int | None
+
+
+class StructuredSourceProfile(TypedDict):
+    path: str
+    format: str
+    columns: list[str]
+    row_count: int | None
+    tables: list[StructuredTableProfile]
+
+
+STRUCTURED_SOURCE_EXTS = frozenset({".csv", ".db", ".sqlite", ".sqlite3"})
 
 
 def read_prose_text(path: Path) -> str:
@@ -91,7 +114,7 @@ def build_file_profile(
     path: Path, km_text: str, question: str, adapter: ModelAdapter | None = None
 ) -> FileProfile:
     text = read_prose_text(path)
-    sample = sample_paragraphs_by_section(text, token_limit=_ROUTER_SAMPLE_TOKEN_BUDGET)
+    sample = sample_paragraphs_by_section(text, token_limit=ROUTER_SAMPLE_TOKEN_BUDGET)
     km_fields = km_table_fields(km_text, path.stem) if km_text else {}
 
     schema_fields: list[str] = list(km_fields.keys())
@@ -115,35 +138,210 @@ def build_file_profile(
     }
 
 
+def _quote_sqlite_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _relative_path(path: Path, context_dir: Path) -> str:
+    try:
+        return path.relative_to(context_dir).as_posix()
+    except ValueError:
+        return path.name
+
+
+def _context_root_for_prose_files(prose_files: list[Path]) -> Path | None:
+    if not prose_files:
+        return None
+    parent = prose_files[0].parent
+    if parent.name == "doc":
+        return parent.parent
+    return parent
+
+
+def _csv_source_profile(path: Path, context_dir: Path) -> StructuredSourceProfile | None:
+    try:
+        with path.open(newline="", encoding="utf-8", errors="replace") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, None)
+    except (OSError, csv.Error):
+        return None
+
+    if header is None:
+        return None
+    columns = [col for col in header if col]
+    if not columns:
+        return None
+    return {
+        "path": _relative_path(path, context_dir),
+        "format": "csv",
+        "columns": columns[:ROUTER_MAX_STRUCTURED_COLUMNS],
+        "row_count": None,
+        "tables": [],
+    }
+
+
+def _sqlite_source_profile(path: Path, context_dir: Path) -> StructuredSourceProfile | None:
+    uri = f"file:{path.resolve().as_posix()}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.DatabaseError:
+        return None
+
+    try:
+        table_rows = cast(
+            list[tuple[object, ...]],
+            conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                ORDER BY name
+                """
+            ).fetchall(),
+        )
+        tables: list[StructuredTableProfile] = []
+        for row in table_rows[:ROUTER_MAX_STRUCTURED_TABLES_PER_DB]:
+            if not row or not isinstance(row[0], str):
+                continue
+            table_name = row[0]
+            quoted = _quote_sqlite_identifier(table_name)
+            try:
+                info_rows = cast(
+                    list[tuple[object, ...]],
+                    conn.execute(f"PRAGMA table_info({quoted})").fetchall(),
+                )
+            except sqlite3.DatabaseError:
+                continue
+
+            columns = [info[1] for info in info_rows if len(info) > 1 and isinstance(info[1], str)]
+            if not columns:
+                continue
+
+            row_count: int | None = None
+            try:
+                count_row = cast(
+                    tuple[object, ...] | None,
+                    conn.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone(),
+                )
+            except sqlite3.DatabaseError:
+                count_row = None
+            if count_row and isinstance(count_row[0], int):
+                row_count = count_row[0]
+
+            tables.append(
+                {
+                    "name": table_name,
+                    "columns": columns[:ROUTER_MAX_STRUCTURED_COLUMNS],
+                    "row_count": row_count,
+                }
+            )
+
+        if not tables:
+            return None
+        return {
+            "path": _relative_path(path, context_dir),
+            "format": "sqlite",
+            "columns": [],
+            "row_count": None,
+            "tables": tables,
+        }
+    finally:
+        conn.close()
+
+
+def build_structured_source_profiles(context_dir: Path | None) -> list[StructuredSourceProfile]:
+    """Return lightweight CSV/SQLite schemas available beside prose documents."""
+    if context_dir is None or not context_dir.is_dir():
+        return []
+
+    candidates: list[Path] = []
+    for child in context_dir.rglob("*"):
+        if not child.is_file():
+            continue
+        try:
+            rel_parts = child.relative_to(context_dir).parts
+        except ValueError:
+            continue
+        if any(part.startswith(".") for part in rel_parts):
+            continue
+        if child.suffix.lower() in STRUCTURED_SOURCE_EXTS:
+            candidates.append(child)
+
+    profiles: list[StructuredSourceProfile] = []
+    for path in sorted(candidates, key=lambda item: _relative_path(item, context_dir))[
+        :ROUTER_MAX_STRUCTURED_FILES
+    ]:
+        if path.suffix.lower() == ".csv":
+            profile = _csv_source_profile(path, context_dir)
+        else:
+            profile = _sqlite_source_profile(path, context_dir)
+        if profile is not None:
+            profiles.append(profile)
+    return profiles
+
+
+def format_structured_sources_for_prompt(sources: list[StructuredSourceProfile]) -> str:
+    if not sources:
+        return "(none)"
+
+    parts: list[str] = []
+    for source in sources:
+        if source["format"] == "csv":
+            columns = ", ".join(source["columns"])
+            parts.append(f"- {source['path']} (CSV): columns: {columns}")
+            continue
+
+        table_lines = [f"- {source['path']} (SQLite):"]
+        for table in source["tables"]:
+            columns = ", ".join(table["columns"])
+            row_suffix = f"; rows: {table['row_count']}" if table["row_count"] is not None else ""
+            table_lines.append(f"  - table {table['name']}: columns: {columns}{row_suffix}")
+        parts.append("\n".join(table_lines))
+    return "\n".join(parts)
+
+
 def format_profiles_for_prompt(profiles: list[FileProfile]) -> str:
     parts: list[str] = []
     for i, p in enumerate(profiles, 1):
-        fields = p["schema_fields"][:_MAX_FIELDS_PER_FILE]
+        fields = p["schema_fields"][:ROUTER_MAX_FIELDS_PER_FILE]
         fields_str = ", ".join(fields) if fields else "(unknown)"
         descs = p.get("schema_descriptions", {})
         desc_str = "; ".join(f"{k}={v}" for k, v in list(descs.items())[:8]) if descs else ""
         parts.append(
             f"[{i}] {p['filename']}\n"
             f"    Fields: {fields_str}\n"
-            f"    Descriptions: {desc_str[:_MAX_DESC_CHARS]}\n"
-            f"    Sample: {p['sample'][:_MAX_SAMPLE_CHARS]}\n"
+            f"    Descriptions: {desc_str[:ROUTER_MAX_DESC_CHARS]}\n"
+            f"    Sample: {p['sample'][:ROUTER_MAX_SAMPLE_CHARS]}\n"
         )
     return "\n".join(parts)
 
 
 def route_file_profiles(
-    adapter: ModelAdapter, question: str, profiles: list[FileProfile]
+    adapter: ModelAdapter,
+    question: str,
+    profiles: list[FileProfile],
+    structured_sources: list[StructuredSourceProfile] | None = None,
 ) -> list[str]:
     """Ask the LLM which file profiles are relevant. Returns selected stems."""
     from agents.llm.types import ModelMessage
 
     profiles_text = format_profiles_for_prompt(profiles)
+    structured_text = format_structured_sources_for_prompt(structured_sources or [])
     filenames = [p["filename"] for p in profiles]
 
     prompt = (
         f"Question: {question}\n\n"
-        f"Documents:\n{profiles_text}\n\n"
-        f"Select ONLY documents whose fields are DIRECTLY needed to answer the question.\n"
+        f"Prose document candidates for ETL:\n{profiles_text}\n\n"
+        f"Structured sources already available (not output candidates):\n{structured_text}\n\n"
+        f"Select prose documents whose fields are needed to answer the question when "
+        f"combined with the structured sources above.\n"
+        f"Rules:\n"
+        f"- Output ONLY prose filenames from Available.\n"
+        f"- Include master/archive/dimension prose documents that provide join keys, "
+        f"group-by labels, entity categories, or code-to-label mappings.\n"
+        f"- If filter or metric fields already exist in CSV/SQLite sources, select prose "
+        f"documents for the missing dimensions/labels instead of preferring a prose "
+        f"ranking or metric document solely because it contains similar field names.\n"
         f"Output a JSON array of filenames. Available: {json.dumps(filenames)}"
     )
     messages = [
@@ -222,7 +420,10 @@ def route_prose_files(
             profiles.append(empty_file_profile(pf))
 
     try:
-        selected_stems = route_file_profiles(adapter, question, profiles)
+        structured_sources = build_structured_source_profiles(
+            _context_root_for_prose_files(prose_files)
+        )
+        selected_stems = route_file_profiles(adapter, question, profiles, structured_sources)
     except Exception as exc:
         logger.warning("Router LLM call failed, selecting all: %s", exc)
         return list(prose_files)

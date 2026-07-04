@@ -135,13 +135,18 @@ def _extract_reasoning_content(message: Any) -> str:
 
     vLLM `--reasoning-parser qwen3` 与百炼 Qwen3 均会把思维链塞进这个字段。
     OpenAI 官方 SDK 的 pydantic 模型不一定声明该字段，兜底走 `model_extra`。
+    Some vLLM builds expose the same field as `reasoning`.
     """
     direct = getattr(message, "reasoning_content", None)
     if isinstance(direct, str) and direct:
         return direct
+    direct_reasoning = getattr(message, "reasoning", None)
+    if isinstance(direct_reasoning, str) and direct_reasoning:
+        return direct_reasoning
     extras = getattr(message, "model_extra", None)
     if isinstance(extras, dict):
-        value = cast(dict[str, Any], extras).get("reasoning_content")
+        extra_dict = cast(dict[str, Any], extras)
+        value = extra_dict.get("reasoning_content") or extra_dict.get("reasoning")
         if isinstance(value, str):
             return value
     return ""
@@ -209,7 +214,11 @@ class _BaseOpenAIAdapter(abc.ABC):
 
     @abc.abstractmethod
     def complete(
-        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+        self,
+        messages: list[ModelMessage],
+        *,
+        tools: ToolSchemaSource | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         raise NotImplementedError
 
@@ -394,14 +403,22 @@ class OpenAIModelAdapter(_BaseOpenAIAdapter):
     """
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+        self,
+        messages: list[ModelMessage],
+        *,
+        tools: ToolSchemaSource | None = None,
+        response_format: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         """发起一次 chat.completions 请求并把响应打包成 `ModelResponse`。
 
         非 native 工具协议：请求体没有 tools 字段，``tools`` 参数接受但忽略。
+        ``response_format`` 透传给 API（如 ``{"type": "json_object"}``）。
         """
-        del tools
+        del tools, kwargs
         request_kwargs = self._build_request_kwargs(messages)
+        if response_format is not None:
+            request_kwargs["response_format"] = response_format
         base_response, _ = self._call_and_parse_base(request_kwargs)
         return base_response
 
@@ -512,7 +529,11 @@ class NativeToolsOpenAIAdapter(_BaseOpenAIAdapter):
         return request_kwargs
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: ToolSchemaSource | None = None
+        self,
+        messages: list[ModelMessage],
+        *,
+        tools: ToolSchemaSource | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         """发起一次 chat.completions 请求，返回解析好的 `ModelResponse`。"""
         request_kwargs = self._build_request_kwargs(messages, tools=tools)

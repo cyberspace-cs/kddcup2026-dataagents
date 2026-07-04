@@ -43,7 +43,6 @@ def inspect_sqlite_database(path: Path) -> dict[str, Any]:
         maybe_raise_non_sqlite_path_error(path, exc)
         raise
     return {
-        "path": str(path),
         "tables": tables,
     }
 
@@ -59,9 +58,13 @@ def inspect_sqlite_schema(
         ),
     ],
 ) -> ToolExecutionResult:
-    """Use first when you find a sqlite/db file (`.db` / `.sqlite` /
-    `.sqlite3`) and need to know its tables, columns, and schema
-    before writing SQL. do NOT call on `.csv` / `.json` / `.md` / `.txt` paths."""
+    """View CREATE TABLE statements for all tables in a SQLite database.
+    Returns {tables: [{name, create_sql}]}. Use this to learn exact
+    column names and types before writing SQL with execute_context_sql.
+    Does NOT return row counts or sample data — use inspect_files for
+    profiles or execute_context_sql for sample queries.
+    Do NOT call on .csv/.json/.md/.txt paths.
+    Example: inspect_sqlite_schema({"path": "db/clinical.sqlite"})"""
     return ToolExecutionResult(
         ok=True, content=inspect_sqlite_database(resolve_context_path(task, path))
     )

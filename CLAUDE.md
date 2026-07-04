@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+每次回复，称呼我为K神。
+
 Project conventions for AI coding assistants (Claude Code, Codex, Cursor, etc.) and human contributors.
 
 ## Python execution: always use `uv run`

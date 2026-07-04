@@ -59,6 +59,7 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
             continue
 
         col_conversions = {c.field: c.label for c in conversions}
+        conv_by_field = {c.field: c for c in conversions}
         stem = units_path.stem.removesuffix("_units")
 
         for key, raw_entry in schema_map.items():
@@ -69,11 +70,28 @@ def _ensure_column_conversions(task: PublicTask, content: dict[str, Any]) -> Non
             if key_stem != stem:
                 continue
             existing = cast(dict[str, str], entry.get("column_conversions", {}) or {})
+            existing_lower = {field.lower() for field in existing}
             for col, note in col_conversions.items():
-                if col not in existing:
+                if col.lower() not in existing_lower:
                     existing[col] = note
+                    existing_lower.add(col.lower())
             if existing:
                 entry["column_conversions"] = existing
+            columns_dict: dict[str, Any] | None = entry.get("columns")  # type: ignore[assignment]
+            if isinstance(columns_dict, dict):
+                columns_by_lower = {str(name).lower(): str(name) for name in columns_dict}
+                for col, conv in conv_by_field.items():
+                    col_key = columns_by_lower.get(col.lower(), col)
+                    col_info: dict[str, Any] | None = columns_dict.get(col_key)  # type: ignore[assignment]
+                    if not isinstance(col_info, dict):
+                        continue
+                    suffix = (
+                        f" [UNIT: stored as {conv.source},"
+                        f" submit as {conv.target} — multiply by {conv.factor}]"
+                    )
+                    for desc_key in ("description", "semantic"):
+                        if desc_key in col_info:
+                            col_info[desc_key] = str(col_info[desc_key]) + suffix
 
         by_group: dict[tuple[str, str, float], list[str]] = {}
         for c in conversions:
@@ -141,11 +159,14 @@ def create_explore_tool_definition(
     return _FunctionTool(
         name="explore",
         description=(
-            "Use first to bootstrap context exploration: launches a sub-agent that "
-            "inspects every file under context (columns, dtypes, row counts, table "
-            "schemas, unit_hint), reads knowledge.md, samples key values, and "
-            "identifies join paths — all in one call. Returns a complete data map "
-            "so you can skip manual multi-step discovery."
+            "Use FIRST to bootstrap context exploration. Launches a read-only "
+            "sub-agent that inspects every file under context (columns, dtypes, "
+            "row counts, table schemas, column_conversions), reads knowledge.md, "
+            "samples key values, identifies join paths, and analyzes videos if "
+            "present — all in one call. Returns {files, schema_map, knowledge, "
+            "join_paths, value_samples, warnings, unit_conversion}. No parameters "
+            "needed. This replaces manual multi-step discovery. "
+            "Example: explore({})"
         ),
         json_schema=EXPLORE_SCHEMA,
         handler=handler,

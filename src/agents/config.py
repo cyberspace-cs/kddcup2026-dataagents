@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import warnings
 from dataclasses import field
 from pathlib import Path
@@ -38,7 +39,7 @@ from pydantic.dataclasses import dataclass
 # 注：src/agents/config.py → parents[2] = 项目根
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-ETL_SCRATCH_ROOT = Path("/tmp/dabench")
+ETL_SCRATCH_ROOT = Path(os.environ.get("DABENCH_SCRATCH_ROOT", "/tmp/dabench"))
 
 
 def _default_dataset_root() -> Path:
@@ -292,18 +293,34 @@ class AgentConfig:
     rate_limit: RateLimitConfig | None = None
     max_empty_tool_call_retries: StrictInt = 8
     enable_preact: StrictBool = False
+    enable_answer_verifier: StrictBool = True
     # Video sub-agent report tool_choice mode:
     # - "auto" (default): works with thinking enabled everywhere; DashScope compatible-mode
     #   rejects named tool_choice in thinking mode (400).
     # - "forced": opt-in optimization — request-level named-function tool_choice pins `report`
     #   in one turn; only for deployments verified via scripts/smoke_video_tool_choice.py.
     video_tool_choice: Literal["forced", "auto"] = "auto"
+    # Video sub-agent can need a larger reasoning+tool-call budget than the main ReAct loop.
+    # None = inherit max_tokens; 0 = do not send max_tokens for video requests.
+    video_max_tokens: StrictInt | None = None
+    # Video sub-agent thinking mode override.
+    # None = inherit enable_thinking from the main agent; True/False = explicit override.
+    video_enable_thinking: StrictBool | None = None
 
     @field_validator("model", "api_base", "api_key", mode="before")
     @classmethod
     def _coerce_str(cls, v: Any) -> str:
         # 旧实现 `str(...)`：保留 `123 → "123"` 与 `null → "None"`，避免对历史 YAML 静默破坏。
         return str(v)
+
+    @field_validator("max_tokens", "video_max_tokens")
+    @classmethod
+    def _check_max_tokens(cls, v: int | None, info: ValidationInfo) -> int | None:
+        if v is None:
+            return v
+        if v < 0:
+            raise ValueError(f"agent.{info.field_name} must be >= 0.")
+        return v
 
     @field_validator("temperature")
     @classmethod
@@ -557,7 +574,7 @@ def load_app_config(config_path: Path) -> AppConfig:
     调用方拿到的仍然是历史以来的 `AppConfig` 类型。
     """
     # safe_load 防止任意 Python 对象实例化；空文件返回 None 时退化为空 dict
-    payload: dict[str, Any] = yaml.safe_load(config_path.read_text()) or {}
+    payload: dict[str, Any] = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 
     try:
         return _check_loaded_config(_APP_CONFIG_ADAPTER.validate_python(payload))

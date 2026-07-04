@@ -22,16 +22,18 @@ from typing import Any, cast
 import pytest
 
 from agents.etl._compress import (
-    GROUPING_BATCH_SIZE,
-    _group_paragraphs_by_entity,
-    _group_paragraphs_by_llm,
-    _grouping_head,
-    _is_embedded_digit_run,
-    _make_grouping_batches,
-    _parse_grouping_response,
-    _verify_paragraph_groups,
     compress_prose,
 )
+from agents.etl._grouping import (
+    GROUPING_BATCH_SIZE,
+    group_paragraphs_by_entity,
+    group_paragraphs_by_llm,
+    grouping_head,
+    make_grouping_batches,
+    parse_grouping_response,
+    verify_paragraph_groups,
+)
+from agents.etl._types import is_embedded_digit_run as _is_embedded_digit_run
 from agents.llm.types import ModelResponse
 
 
@@ -74,7 +76,7 @@ from agents.llm.types import ModelResponse
     ],
 )
 def test_grouping_head_keeps_record_signal(para: str, expected: str) -> None:
-    assert _grouping_head(para) == expected
+    assert grouping_head(para) == expected
 
 
 @pytest.mark.parametrize("n", [1, 39, 40, 41, 46, 79, 80, 81, 606])
@@ -84,7 +86,7 @@ def test_grouping_batches_cover_all_paragraphs_without_weak_tail(n: int) -> None
     and the batch's paragraphs (the document's last five entities' Section XI
     data) all fell to the leftover path (task_53)."""
     paras = [f"Record {i} carries the figures for cycle {i}." for i in range(1, n + 1)]
-    batches = _make_grouping_batches(paras)
+    batches = make_grouping_batches(paras)
 
     flat = [i for indices, _ in batches for i in indices]
     assert flat == list(range(1, n + 1))
@@ -152,6 +154,14 @@ def test_embedded_digit_fragments_detected() -> None:
             0,
             id="strips-enumeration-prefix",
         ),
+        pytest.param(
+            "2162, 2166 : 12\n2162、2166 ： 13",
+            {"2162": [12, 13], "2166": [12, 13]},
+            [],
+            False,
+            0,
+            id="parses-multi-id-lines-with-spaces",
+        ),
         pytest.param("GROUPS: NONE", {}, [], True, 0, id="groups-none-bare"),
         pytest.param("groups: none", {}, [], True, 0, id="groups-none-lowercase"),
         pytest.param(
@@ -171,7 +181,7 @@ def test_parse_grouping_response(
     expected_groups_none: bool,
     expected_unparsed: int,
 ) -> None:
-    groups, none_indices, groups_none, unparsed = _parse_grouping_response(raw)
+    groups, none_indices, groups_none, unparsed = parse_grouping_response(raw)
 
     assert groups == expected_groups
     assert none_indices == expected_none_indices
@@ -203,8 +213,8 @@ def test_parse_grouping_response(
                 "Additional figures for Record 20 appear in this trailing paragraph.",
             ],
             {"16": [1, 4], "20": [2], "25": [3]},
-            {"16": [1], "20": [2], "25": [3]},
-            id="hijack-guard-rejects-cross-entity-member",
+            {"16": [1], "20": [2, 4], "25": [3]},
+            id="hijack-guard-reassigns-to-mentioned-entity",
         ),
         # Paragraph 2 states only Record 20's ID, so the contested claim is
         # resolved to 20 and dropped from 16.
@@ -281,7 +291,7 @@ def test_parse_grouping_response(
 def test_verify_paragraph_groups(
     paras: list[str], groups: dict[str, list[int]], expected: dict[str, list[int]] | None
 ) -> None:
-    assert _verify_paragraph_groups(groups, paras) == expected
+    assert verify_paragraph_groups(groups, paras) == expected
 
 
 class _PromptDispatchAdapter:
@@ -338,7 +348,7 @@ def test_llm_grouping_merges_same_id_across_batches() -> None:
             ("1) Record 16 opens", "16: 1\n20: 2\n25: 3"),
         ]
     )
-    verified, llm_responded = _group_paragraphs_by_llm(cast(Any, adapter), paras)
+    verified, llm_responded = group_paragraphs_by_llm(cast(Any, adapter), paras)
 
     assert llm_responded is True
     assert verified is not None
@@ -360,7 +370,7 @@ def test_llm_grouping_groups_none_batch_contributes_nothing() -> None:
             ("1) Record 16 opens", "16: 1\n20: 2\n25: 3"),
         ]
     )
-    verified, llm_responded = _group_paragraphs_by_llm(cast(Any, adapter), paras)
+    verified, llm_responded = group_paragraphs_by_llm(cast(Any, adapter), paras)
 
     assert llm_responded is True
     assert verified == {"16": [1], "20": [2], "25": [3]}
@@ -378,7 +388,7 @@ def test_llm_grouping_failed_batch_routes_paras_to_leftover() -> None:
             ("1) Record 16 opens", "16: 1\n20: 2\n25: 3"),
         ]
     )
-    result = _group_paragraphs_by_entity("\n\n".join(paras), adapter=cast(Any, adapter))
+    result = group_paragraphs_by_entity("\n\n".join(paras), adapter=cast(Any, adapter))
 
     assert result is not None
     groups, leftover = result
@@ -400,7 +410,7 @@ def test_grouping_multi_membership_routes_group_para_to_each_entity() -> None:
         [("numbered paragraph openings", "16: 1, 4\n20: 2, 4\n25: 3, 4")]
     )
 
-    result = _group_paragraphs_by_entity("\n\n".join(paras), adapter=cast(Any, adapter))
+    result = group_paragraphs_by_entity("\n\n".join(paras), adapter=cast(Any, adapter))
 
     assert result is not None
     groups, leftover = result
@@ -421,7 +431,7 @@ def test_grouping_ignores_number_fragments_and_returns_leftover() -> None:
         "Narrative filler paragraph with no numbers in it at all, only words.",
     ]
     # No adapter: the builtin record-ID regex fallback path.
-    result = _group_paragraphs_by_entity("\n\n".join(paras))
+    result = group_paragraphs_by_entity("\n\n".join(paras))
     assert result is not None
     groups, leftover = result
 
@@ -458,17 +468,19 @@ def test_compress_prose_recovers_missing_and_ignores_casing() -> None:
     ]
     adapter = _RecoveryAdapter()
 
-    result = compress_prose(
+    result, *_ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],
         primary_key="record_id",
     )
 
-    # Marker-style casing is normalized by the scan: entity 5 is not treated as
-    # missing, so the main chunk is followed by exactly one recovery chunk and
-    # that chunk re-requests entity 7 alone.
-    assert "record_id: 5 | metric: fifty" in result
+    # Marker-style casing is normalized by the parser-backed integrity scan:
+    # entity 5 is not treated as missing, so the main chunk is followed by
+    # exactly one recovery chunk and that chunk re-requests entity 7 alone.
+    # The raw compress output itself is no longer case-normalized here; the
+    # downstream parser canonicalizes schema spelling once.
+    assert "RECORD_ID: 5 | metric: fifty" in result
     assert len(adapter.chunk_prompts) == 2
     recovery = next(p for p in adapter.chunk_prompts if "[RECORD_ID: 5]" not in p)
     assert "[RECORD_ID: 7]" in recovery
@@ -508,7 +520,7 @@ def test_compress_prose_processes_unmatched_numeric_paragraphs() -> None:
     paras.append("The special asset registered under 9 reported a metric of ninety.")
     adapter = _LeftoverAdapter()
 
-    result = compress_prose(
+    result, *_ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],
@@ -549,7 +561,7 @@ def test_grouping_falls_back_to_regex_when_all_llm_calls_fail() -> None:
     ]
     adapter = _GroupingDownAdapter()
 
-    result = compress_prose(
+    result, *_ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],
@@ -584,7 +596,7 @@ def test_grouping_rejected_by_gate_uses_positional_path() -> None:
     ]
     adapter = _GateRejectAdapter()
 
-    result = compress_prose(
+    result, *_ = compress_prose(
         cast(Any, adapter),
         "\n\n".join(paras),
         schema_columns=["record_id", "metric"],

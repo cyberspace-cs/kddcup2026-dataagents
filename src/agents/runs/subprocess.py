@@ -51,12 +51,21 @@ def run_single_task_core(
     """
     _trace_ctx = None
     _processor = None
+    _trace_metadata: dict[str, Any] | None = None
+
+    def _record_trace_failure(failure_reason: str | None) -> None:
+        if _trace_metadata is None or not failure_reason:
+            return
+        _trace_metadata["status"] = "error"
+        _trace_metadata["failure_reason"] = failure_reason
+
     if config.tracing is not None and config.tracing.enabled:
         from agents.tracing.context import TraceCtxManager
         from agents.tracing.processors import SimpleProcessor, SQLiteExporter
         from agents.tracing.setup import get_trace_provider
         from agents.tracing.store import SQLiteTraceStore
 
+        _trace_metadata = {}
         _store = SQLiteTraceStore(config.tracing.db_path)
         _exporter = SQLiteExporter(_store)
         _processor = SimpleProcessor(_exporter)
@@ -66,6 +75,7 @@ def run_single_task_core(
             workflow_name="ReActAgent",
             run_id=config.run.run_id or "unknown",
             task_id=task_id,
+            metadata=_trace_metadata,
         )
         _trace_ctx.__enter__()
 
@@ -102,7 +112,23 @@ def run_single_task_core(
         task = app.dataset.get_task(task_id)
         from agents.etl.extractor import run_etl_for_task
 
-        run_etl_for_task(task, app.model_adapter)
+        # ETL 是可选优化：编排层任何异常都不许杀掉任务本身。
+        try:
+            if _trace_ctx is not None:
+                from agents.tracing.create import function_span
+
+                with function_span("etl"):
+                    run_etl_for_task(task, app.model_adapter)
+            else:
+                run_etl_for_task(task, app.model_adapter)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "ETL orchestration failed for %s; continuing without ETL output",
+                task_id,
+                exc_info=True,
+            )
 
         from agents.tools.context import build_virtual_context
 
@@ -129,6 +155,15 @@ def run_single_task_core(
         try:
             agent = app.new_agent()
             result = agent.run(task).to_dict()
+            if not result.get("succeeded"):
+                failure_reason = (
+                    result.get("failure_reason") or "Agent did not complete successfully."
+                )
+                _record_trace_failure(str(failure_reason))
+                if _agent_span is not None:
+                    from agents.tracing.spans import SpanError
+
+                    _agent_span.set_error(SpanError(message=str(failure_reason)))
         finally:
             if _agent_span is not None:
                 _agent_span.finish(reset_current=True)
@@ -137,6 +172,9 @@ def run_single_task_core(
             shutil.rmtree(ETL_SCRATCH_ROOT / task_id / "context", ignore_errors=True)
 
         return result
+    except BaseException as exc:
+        _record_trace_failure(f"{type(exc).__name__}: {exc}")
+        raise
     finally:
         if _trace_ctx is not None:
             _trace_ctx.__exit__(None, None, None)
@@ -147,7 +185,9 @@ def run_single_task_core(
             _processor.shutdown()
 
 
-def _mark_running_trace_error(task_id: str, config: AppConfig, failure_reason: str) -> None:
+def _mark_running_trace_error(
+    task_id: str, config: AppConfig, failure_reason: str, *, status: str = "error"
+) -> None:
     """Best-effort parent-process cleanup for traced children that cannot exit cleanly."""
     if config.tracing is None or not config.tracing.enabled:
         return
@@ -160,6 +200,7 @@ def _mark_running_trace_error(task_id: str, config: AppConfig, failure_reason: s
                 run_id=config.run.run_id or "unknown",
                 task_id=task_id,
                 failure_reason=failure_reason,
+                status=status,
             )
         finally:
             store.close()
@@ -255,10 +296,12 @@ def run_single_task_with_timeout(
         if result.get("ok"):
             # dict(...) 拷贝一次，脱离 Queue 的底层 pickle 壳
             return dict(result["run_result"])
-        return crash_payload(
+        payload = crash_payload(
             task_id,
             f"Task failed with uncaught error: {result['error']}",
         )
+        _mark_running_trace_error(task_id, config, payload["failure_reason"])
+        return payload
 
     # Case 1: 超时 —— 先 SIGTERM 给清理机会，1 秒仍不退就 SIGKILL
     if process.is_alive():
@@ -268,7 +311,7 @@ def run_single_task_with_timeout(
             process.kill()
             process.join()
         payload = timeout_payload(task_id, timeout_seconds)
-        _mark_running_trace_error(task_id, config, payload["failure_reason"])
+        _mark_running_trace_error(task_id, config, payload["failure_reason"], status="timeout")
         return payload
 
     # Case 2: 进程已退出但没 put 任何结果

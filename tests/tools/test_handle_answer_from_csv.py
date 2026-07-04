@@ -22,8 +22,7 @@ from agents.benchmark.schema import (
     TaskAssets,
     TaskRecord,
 )
-from agents.tools.answer import AnswerInput
-from agents.tools.answer import answer as _answer_tool
+from agents.tools.answer import AnswerInput, answer as _answer_tool
 
 _answer_mod = importlib.import_module("agents.tools.answer")
 
@@ -311,7 +310,7 @@ def test_inline_submission_with_existing_artifact_raises(task: PublicTask, tmp_p
     回归参照 run 20260501-010/task_8：execute_python 已经把 140 行写到
     `_answer/answer.csv`，但 `answer` tool_call 的 JSON 参数里只 inline 了 head(5)
     的 5 行（attention drift 把更早一轮 head() 预览当成了完整表）。inline
-    硬闸（10 行 / 50 cells）抓不住此类小体量截断；提交时间点检测到 artifact
+    硬闸（>10 行 / >50 cells）抓不住此类小体量截断；提交时间点检测到 artifact
     残留就直接拒绝，让 ReAct 循环把错误回灌给模型自行改用 from_csv。
 
     artifact 文件必须保留在原位——下一轮模型才能用同一路径走 from_csv 重交。
@@ -341,7 +340,7 @@ def test_artifact_exists_beats_inline_threshold_when_both_fire(
     而不是把模型导回去重写一遍它早已写好的 CSV。
 
     回归参照 run 20260614-009/task_31：execute_python 已经把表写到
-    `_answer/answer.csv`，模型却又发了 10 行 inline。旧顺序下 Pydantic 先按"阈值"
+    `_answer/answer.csv`，模型却又发了 12 行 inline。旧顺序下 Pydantic 先按"阈值"
     拒了 inline，错误信息是"write the table to ... answer.csv from execute_python and
     resubmit with from_csv"——模型读完只会再算一遍同一份表，从未反应过来应改 from_csv。
     新顺序让 handler 的 artifact-exists 错误胜出，里头直接给出可照搬的
@@ -351,7 +350,7 @@ def test_artifact_exists_beats_inline_threshold_when_both_fire(
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text("id\n" + "\n".join(str(n) for n in range(20)) + "\n", encoding="utf-8")
 
-    # 12 行 inline → 阈值条件 (n_rows >= 10) 也会成立。
+    # 12 行 inline → 阈值条件 (n_rows > 10) 也会成立。
     args = AnswerInput.model_validate({"columns": ["id"], "rows": [[n] for n in range(12)]})
 
     with pytest.raises(ValueError) as exc_info:
@@ -379,13 +378,14 @@ def test_inline_threshold_check_in_handler_when_no_artifact(
         for child in answer_dir.iterdir():
             child.unlink()
 
-    args = AnswerInput.model_validate({"columns": ["id"], "rows": [[n] for n in range(10)]})
+    args = AnswerInput.model_validate({"columns": ["id"], "rows": [[n] for n in range(11)]})
 
     with pytest.raises(
         ValueError,
         match=(
             r"^inline rows payload exceeds artifact-handoff threshold "
-            r"\(got 10 rows, 10 cells; threshold = 10 rows or 50 cells\)"
+            r"\(got 11 rows, 11 cells; inline is allowed only for <= 10 rows AND "
+            r"<= 50 cells; if either limit is exceeded, use from_csv\)"
         ),
     ):
         _answer_tool.handler(task, args)
@@ -400,32 +400,111 @@ def test_fallback_builder_rejects_inline_over_threshold(task: PublicTask) -> Non
     """
     from agents.tools.answer import build_answer_table_without_side_effects
 
-    arguments = {"columns": ["id"], "rows": [[n] for n in range(10)]}
+    arguments = {"columns": ["id"], "rows": [[n] for n in range(11)]}
     assert build_answer_table_without_side_effects(task, arguments) is None
 
 
-def test_from_csv_rejects_wide_rows_with_rewrite_hint(task: PublicTask, tmp_path: Path) -> None:
-    """数据行比 header 更宽时拒绝提交，并提示模型重写 CSV。
+def test_fallback_builder_accepts_inline_at_cell_threshold(task: PublicTask) -> None:
+    """fallback builder 与 handler 同源：正好 50 cells 仍是合法 inline。"""
+    from agents.tools.answer import build_answer_table_without_side_effects
 
-    这类 CSV 往往来自手写 header 漏列、忘记 `index=False` 附近的拼接错误，
-    或文本字段含逗号但没有 quote。`answer` 是 terminal tool，不能静默补
-    `col_<i>` 猜测修复，否则会把坏表直接提交成终局答案。
+    arguments = {
+        "columns": [f"c{i}" for i in range(10)],
+        "rows": [[row] * 10 for row in range(5)],
+    }
+
+    answer = build_answer_table_without_side_effects(task, arguments)
+
+    assert answer is not None
+    assert len(answer.columns) == 10
+    assert len(answer.rows) == 5
+
+
+def test_from_csv_normalizes_fullwidth_comma_in_header(task: PublicTask, tmp_path: Path) -> None:
+    """Header 含全角逗号 `，` → 归一化为半角后正常解析，列名保持原样。
+
+    回归参照 run 20260614-011/task_39：模型 header 行用全角逗号、数据行用半角。
     """
     csv_path = _write(
-        tmp_path / "_answer" / "wide_rows.csv",
-        "fund_name\n中融煤炭,48.706\n富国煤炭A,48.706\n平安新能源汽车ETF,42.881\n",
+        tmp_path / "_answer" / "fullwidth.csv",
+        "fund_name，value\n中融煤炭,48.706\n富国煤炭A,48.706\n平安新能源汽车ETF,42.881\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["fund_name", "value"]
+    assert result.answer.rows == [
+        ["中融煤炭", 48.706],
+        ["富国煤炭A", 48.706],
+        ["平安新能源汽车ETF", 42.881],
+    ]
+
+
+def test_from_csv_preserves_unquoted_fullwidth_comma_cells(
+    task: PublicTask, tmp_path: Path
+) -> None:
+    """未加 quote 的数据单元格可合法包含全角逗号，不能把它当分隔符改写。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "fullwidth_data.csv",
+        "text\n你好，世界\n再见，朋友\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["text"]
+    assert result.answer.rows == [["你好，世界"], ["再见，朋友"]]
+
+
+def test_from_csv_preserves_other_fullwidth_punctuation(task: PublicTask, tmp_path: Path) -> None:
+    """本救援只处理 header 全角逗号，不碰数据里的其他全角标点。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "fullwidth_punctuation.csv",
+        "text\n你好；世界\nA｜B\n",
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["text"]
+    assert result.answer.rows == [["你好；世界"], ["A｜B"]]
+
+
+def test_from_csv_preserves_fullwidth_inside_quoted_cells(task: PublicTask, tmp_path: Path) -> None:
+    """Quoted cell 内的全角逗号保持原样，不被归一化。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "quoted_fw.csv",
+        'name,desc\nAlice,"你好，世界"\nBob,"再见，朋友"\n',
+    )
+    args = AnswerInput.model_validate({"from_csv": str(csv_path)})
+
+    result = _answer_tool.handler(task, args)
+
+    assert result.ok is True
+    assert result.answer is not None
+    assert result.answer.columns == ["name", "desc"]
+    assert result.answer.rows == [["Alice", "你好，世界"], ["Bob", "再见，朋友"]]
+
+
+def test_from_csv_rejects_wide_rows_after_normalization(task: PublicTask, tmp_path: Path) -> None:
+    """归一化后数据行仍比 header 宽 → raise shape error。"""
+    csv_path = _write(
+        tmp_path / "_answer" / "still_wide.csv",
+        "label\nA,1,10\nB,2,20\n",
     )
     args = AnswerInput.model_validate({"from_csv": str(csv_path)})
 
     with pytest.raises(
-        ValueError,
-        match=r"from_csv rows must have the same number of cells as the header row",
-    ) as exc_info:
+        ValueError, match=r"from_csv rows must have the same number of cells as the header row"
+    ):
         _answer_tool.handler(task, args)
-
-    msg = str(exc_info.value)
-    assert "pandas.DataFrame.to_csv(..., index=False)" in msg
-    assert "quote text fields" in msg
 
 
 def test_from_csv_accepts_quoted_commas(task: PublicTask, tmp_path: Path) -> None:

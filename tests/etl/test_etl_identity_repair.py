@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import csv
-from pathlib import Path
+import io
 
 import pytest
 
-from agents.etl._merge import (
-    clean_cell_for_type,
-    mine_additive_identities,
-    repair_numeric_identities,
-)
-from agents.etl.extractor import _repair_csv_numeric_identities
+from agents.etl._identity import mine_additive_identities, repair_numeric_identities
+from agents.etl._merge import clean_cell_for_type
+from agents.etl._record import EntityTable, Record, records_to_rows, to_csv_text
 
 # Six exact rows satisfying before == after + transfer (task_15 shape), plus
 # auxiliary columns: a constant code, a date, and dusty percentage columns
@@ -188,39 +185,53 @@ def test_repair_strips_tags_even_without_any_identity() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _repair_csv_numeric_identities — file-level wrapper
+# records_to_rows → repair_numeric_identities → to_csv_text — pipeline tail
 # ---------------------------------------------------------------------------
 
 
-def _write(path: Path, rows: list[list[str]]) -> None:
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(HEADER)
-        writer.writerows(rows)
+def _table_from_rows(rows: list[list[str]]) -> EntityTable:
+    """Build an EntityTable whose ~ 值走 approx 出带存储（records_to_rows 时回注）。"""
+    records: list[Record] = []
+    for row in rows:
+        fields: dict[str, str] = {}
+        approx: set[str] = set()
+        for col, val in zip(HEADER, row, strict=True):
+            if val.startswith("~"):
+                fields[col] = val[1:]
+                approx.add(col)
+            else:
+                fields[col] = val
+        records.append(Record(fields=fields, pk=fields["record_id"], approx=approx))
+    return EntityTable(
+        columns=list(HEADER),
+        primary_key="record_id",
+        anchor_keys=["record_id"],
+        field_types={},
+        records=records,
+        rejects=[],
+    )
 
 
-def test_csv_repair_rewrites_file_and_reports(tmp_path: Path) -> None:
-    csv_path = tmp_path / "lc_sharetransfer.csv"
-    _write(csv_path, _rows(_fuzzy_row("~6970000")))
+def test_tail_repair_recomputes_approx_cell_and_reports() -> None:
+    table = _table_from_rows(_rows(_fuzzy_row("~6970000")))
 
-    repairs = _repair_csv_numeric_identities(csv_path)
+    header, rows = records_to_rows(table)
+    rows, repairs = repair_numeric_identities(header, rows)
 
     assert [(r[1], r[3]) for r in repairs] == [("sumbeforetran", "6973434")]
-    with csv_path.open(encoding="utf-8") as f:
-        rows = list(csv.reader(f))[1:]
-    assert rows[-1][HEADER.index("sumbeforetran")] == "6973434"
-    assert not any("~" in cell for row in rows for cell in row)
+    csv_rows = list(csv.reader(io.StringIO(to_csv_text(header, rows))))[1:]
+    assert csv_rows[-1][HEADER.index("sumbeforetran")] == "6973434"
+    assert not any("~" in cell for row in csv_rows for cell in row)
 
 
-def test_csv_repair_strips_orphan_tags_without_repairs(tmp_path: Path) -> None:
-    csv_path = tmp_path / "t.csv"
+def test_tail_repair_strips_orphan_tags_without_repairs() -> None:
     row = _fuzzy_row("~6970000")
     row[HEADER.index("sumaftertran")] = ""
-    _write(csv_path, _rows(row))
+    table = _table_from_rows(_rows(row))
 
-    repairs = _repair_csv_numeric_identities(csv_path)
+    header, rows = records_to_rows(table)
+    rows, repairs = repair_numeric_identities(header, rows)
 
     assert repairs == []
-    with csv_path.open(encoding="utf-8") as f:
-        rows = list(csv.reader(f))[1:]
-    assert rows[-1][HEADER.index("sumbeforetran")] == "6970000"
+    csv_rows = list(csv.reader(io.StringIO(to_csv_text(header, rows))))[1:]
+    assert csv_rows[-1][HEADER.index("sumbeforetran")] == "6970000"

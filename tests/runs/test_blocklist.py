@@ -27,6 +27,7 @@ from agents.runs import runner as runner_mod
 from agents.runs.artifacts import (
     BLOCKLIST_FAILURE_REASON,
     blocklist_payload,
+    write_summary_json,
     write_task_outputs,
 )
 from agents.runs.runner import TaskRunArtifacts, run_benchmark, run_single_task
@@ -38,6 +39,17 @@ def _write_minimal_config(path: Path, run_body: str) -> Path:
     """写一个最小可解析 YAML，把 run_body 插到 run: 下作为额外字段。"""
     path.write_text(f"agent:\n  model: m\n  api_base: http://x\n  api_key: k\nrun:\n{run_body}")
     return path
+
+
+def test_write_summary_json_uses_utf8(tmp_path: Path) -> None:
+    summary_path = tmp_path / "summary.json"
+
+    write_summary_json(summary_path, {"failure_reason": "中文失败原因"})
+
+    assert b"\xe4\xb8\xad\xe6\x96\x87" in summary_path.read_bytes()
+    assert json.loads(summary_path.read_text(encoding="utf-8")) == {
+        "failure_reason": "中文失败原因"
+    }
 
 
 @pytest.mark.parametrize(

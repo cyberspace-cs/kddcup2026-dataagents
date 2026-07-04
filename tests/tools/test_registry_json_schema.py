@@ -23,14 +23,9 @@ from agents.tools.registry import (
 
 EXPECTED_REQUIRED: dict[str, set[str]] = {
     "inspect_files": set(),
-    "read_csv": {"path"},
-    "read_json": {"path"},
-    "read_doc": {"path"},
-    "inspect_sqlite_schema": {"path"},
+    "preview_file": {"path"},
     "execute_context_sql": {"path", "sql"},
     "execute_python": {"code"},
-    # answer 现在三字段都可选：inline columns/rows 与 from_csv 通过 model_validator 形成 XOR。
-    # required=[] 在 schema 层把决策权交给 validator，模型仍能拿到结构化错误。
     "answer": set(),
 }
 
@@ -96,6 +91,17 @@ def test_to_openai_tools_is_byte_stable_across_calls(registry) -> None:
     first = json.dumps(registry.to_openai_tools(), sort_keys=True)
     second = json.dumps(registry.to_openai_tools(), sort_keys=True)
     assert first == second
+
+
+def test_execute_python_write_answer_example_is_self_contained(registry) -> None:
+    """写答案示例必须复制即能跑，不能引用未定义的 df。"""
+    description = registry.definitions["execute_python"].description
+
+    assert "Answer CSV artifact example:" in description
+    assert "answer_df = pd.DataFrame" in description
+    assert "answer_df.to_csv(out_path, index=False)" in description
+    assert "print(out_path)" in description
+    assert "df.to_csv(f'{out}/answer.csv', index=False)" not in description
 
 
 def _noop_handler(_task, _action_input):

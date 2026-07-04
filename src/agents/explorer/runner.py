@@ -13,7 +13,7 @@ from typing import Any, cast
 from agents.agent import ReActAgent, ReActAgentConfig
 from agents.benchmark.schema import PublicTask
 from agents.explorer.prompt import EXPLORER_SYSTEM_PROMPT
-from agents.explorer.registry import create_explorer_tool_registry
+from agents.explorer.registry import REPORT_KEYS, ReportInput, create_explorer_tool_registry
 from agents.llm import ModelAdapter
 from agents.runtime import StepCallback
 from agents.tools.registry import FunctionTool
@@ -172,30 +172,46 @@ def _synthesize_findings(steps: list[Any]) -> str:
                 files_summary.append(entry)
             sections["files"] = files_summary
 
-        elif action == "read_csv":
-            key: str = str(content.get("path", "csv"))
-            sections.setdefault("csv_previews", {})[key] = {
-                "columns": content.get("columns", []),
-                "dtypes": content.get("dtypes", []),
-                "row_count": content.get("row_count"),
-            }
-
-        elif action == "read_doc":
-            raw_matches: Any = content.get("keyword_match", {})
-            if isinstance(raw_matches, dict):
-                matches = cast(dict[str, Any], raw_matches)
-                if matches.get("found"):
-                    match_list: list[Any] = cast(list[Any], matches.get("matches", []))
-                    sections.setdefault("doc_matches", []).append(
-                        {
-                            "keyword": matches.get("keyword"),
-                            "match_count": matches.get("match_count"),
-                            "snippets": [
-                                cast(dict[str, Any], m).get("text", "")[:200]
-                                for m in match_list[:5]
-                            ],
-                        }
-                    )
+        elif action == "preview_file":
+            action_input = cast(dict[str, Any], getattr(step, "action_input", {}))
+            key = str(action_input.get("path", "file"))
+            if "columns" in content:
+                sections.setdefault("csv_previews", {})[key] = {
+                    "columns": content.get("columns", []),
+                    "dtypes": content.get("dtypes", []),
+                    "row_count": content.get("row_count"),
+                }
+            elif "tables" in content:
+                sections.setdefault("sqlite_schemas", {})[key] = content["tables"]
+            elif "kind" in content:
+                json_preview_keys = (
+                    "kind",
+                    "key_count",
+                    "keys",
+                    "keys_truncated",
+                    "value_preview",
+                    "length",
+                    "head",
+                    "head_truncation",
+                    "first_item_kind",
+                    "sample_value_kinds",
+                    "value",
+                    "value_kind",
+                    "value_truncated",
+                    "streamed",
+                    "truncated",
+                    "reason",
+                )
+                sections.setdefault("json_previews", {})[key] = {
+                    k: content[k] for k in json_preview_keys if k in content
+                }
+            elif content.get("format") == "text" or "total_lines" in content:
+                text_preview = {
+                    k: content[k]
+                    for k in ("total_lines", "head", "lines", "has_more")
+                    if k in content
+                }
+                sections.setdefault("text_previews", {})[key] = text_preview
 
         elif action == "grep_context":
             sections.setdefault("grep_results", []).append(
@@ -222,14 +238,16 @@ def _extract_findings(steps: list[Any]) -> str | None:
     """Walk steps backward to find the report tool's structured findings."""
     import json as _json
 
-    _KEYS = ("files", "schema_map", "knowledge", "join_paths", "value_samples", "warnings")
     for step in reversed(steps):
         if getattr(step, "action", None) == "report":
             raw_args: Any = getattr(step, "action_input", None)
             if not isinstance(raw_args, dict):
                 continue
-            d = cast(dict[str, Any], raw_args)
-            assembled = {k: d.get(k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS}
+            report = ReportInput.model_validate(raw_args)
+            assembled = {
+                k: getattr(report, k, {} if k in ("schema_map", "knowledge") else [])
+                for k in REPORT_KEYS
+            }
             return _json.dumps(assembled, ensure_ascii=False)
     return None
 

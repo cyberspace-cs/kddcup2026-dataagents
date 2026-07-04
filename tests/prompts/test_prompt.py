@@ -55,11 +55,57 @@ def test_system_prompts_use_runtime_clock_for_current_year() -> None:
     prompt = build_native_system_prompt()
     lower = prompt.lower()
 
-    assert "runtime date" in lower
     assert "current year" in lower
     assert "execute_python" in prompt
-    assert "date.today().year" in prompt
-    assert "do not infer the current year from the latest date in the dataset" in lower
+    assert "date.today()" in prompt
+    assert "not" in lower and "latest date in the dataset" in lower
+
+
+def test_system_prompt_distinguishes_video_rules_from_displayed_samples() -> None:
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "video_findings" in prompt
+    assert "findings.extracted_data.rules" in prompt
+    assert "findings.extracted_data.displayed_samples" in prompt
+    assert "never copy" in lower
+    assert "screen previews/examples only" in lower
+    assert "preview_file" in prompt
+    assert "df.columns" in prompt
+
+
+def test_system_prompt_empty_result_recovery_preserves_question_conditions() -> None:
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "never submit an empty result" in lower
+    assert "re-check column/value mapping" in lower
+    assert "formats, units, joins, and time grain" in lower
+    assert "do not drop or weaken explicit question conditions" in lower
+    assert "broaden filters or relax conditions" not in lower
+
+
+def test_system_prompt_observed_data_overrides_conflicting_knowledge() -> None:
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "authoritative starting point" in lower
+    assert "matches observed schema/data" in lower
+    assert "if sampling or computation proves a conflict" in lower
+    assert "observed data wins" in lower
+    assert "re-derive from evidence" in lower
+
+
+def test_system_prompt_classifies_data_listing_triggers() -> None:
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "data-listing trigger" in lower
+    assert "查/看/找/搜/显示/展示/列出" in prompt
+    assert "数据/记录/明细/情况/是多少" in prompt
+    assert "return source rows at original grain" in lower
+    assert "do not require every requested column to be non-null" in lower
+    assert "非空/不为空/有数据/non-null/not empty" in prompt
 
 
 def test_sqlite_index_prompt_matches_sqlite_plan_output() -> None:
@@ -79,8 +125,8 @@ def test_sqlite_index_prompt_matches_sqlite_plan_output() -> None:
     [
         pytest.param("no such column: foo", None, None, id="ok-none-no-hint"),
         pytest.param("no such column: foo", True, None, id="ok-true-no-hint"),
-        pytest.param("no such column: amount", False, "inspect_sqlite_schema", id="no-such-column"),
-        pytest.param("no such table: orders", False, "inspect_sqlite_schema", id="no-such-table"),
+        pytest.param("no such column: amount", False, "preview_file", id="no-such-column"),
+        pytest.param("no such table: orders", False, "preview_file", id="no-such-table"),
         pytest.param('near "SELEC": syntax error', False, "Fix the syntax", id="syntax-error"),
         pytest.param("execution timed out after 30s", False, "Simplify", id="timeout"),
         pytest.param(

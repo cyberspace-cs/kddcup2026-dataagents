@@ -14,7 +14,7 @@ from agents.tools.registry import FunctionTool, ToolExecutionResult
 
 
 class _Adapter:
-    def complete(self, messages, *, tools=None):  # pragma: no cover
+    def complete(self, messages, *, tools=None, **kwargs):  # pragma: no cover
         raise AssertionError("not called")
 
 

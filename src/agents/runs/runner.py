@@ -112,6 +112,27 @@ def run_single_task(
     return write_task_outputs(task_id, run_output_dir, run_result)
 
 
+def _mark_interrupted_traces(config: AppConfig, *, run_id: str, task_ids: list[str]) -> None:
+    if config.tracing is None or not config.tracing.enabled:
+        return
+    try:
+        from agents.tracing.store import SQLiteTraceStore
+
+        store = SQLiteTraceStore(config.tracing.db_path)
+        try:
+            for task_id in task_ids:
+                store.mark_running_trace_error(
+                    run_id=run_id,
+                    task_id=task_id,
+                    failure_reason="Run interrupted by KeyboardInterrupt.",
+                    include_completed=False,
+                )
+        finally:
+            store.close()
+    except Exception:
+        return
+
+
 def run_benchmark(
     *,
     config: AppConfig,
@@ -166,69 +187,81 @@ def run_benchmark(
     # PR-2：配了 api_keys 就走 "按 task_index 轮询 Key" 的路径；否则保持 PR-1 单 Key 行为
     use_key_pool = bool(config.agent.api_keys) and model is None
 
-    task_artifacts: list[TaskRunArtifacts]
-    if effective_workers == 1:
-        task_artifacts = []
-        if use_key_pool:
-            # Key 池路径：上游 config.rate_limit.state_dir 尚未解析，无法在主进程
-            # 构造 RateLimitedAdapter；因此每轮先 pin_key_on_config 把 state_dir / Key
-            # 落实，再交由 run_single_task 走子进程或 run_single_task_core 内的
-            # build_application 完整构造。
-            for index, task_id in enumerate(task_ids):
-                iter_config = pin_key_on_config(
-                    config, task_index=index, effective_run_id=effective_run_id
-                )
-                artifact = run_single_task(
-                    task_id=task_id,
-                    config=iter_config,
-                    run_output_dir=run_output_dir,
-                    model=model,
-                    tools=tools,
-                )
-                task_artifacts.append(artifact)
-                if progress_callback is not None:
-                    progress_callback(artifact)
-        else:
-            # 单 Key 路径：build_application 一次构造 registry + model，全程复用，
-            # 减少重复的 OpenAI 客户端 / 注册表初始化开销。
-            base_app = build_application(config, model=model, tools=tools)
-            for task_id in task_ids:
-                artifact = run_single_task(
-                    task_id=task_id,
-                    config=config,
-                    run_output_dir=run_output_dir,
-                    model=base_app.model_adapter,
-                    tools=base_app.registry,
-                    answer_verifier=base_app.answer_verifier,
-                )
-                task_artifacts.append(artifact)
-                if progress_callback is not None:
-                    progress_callback(artifact)
-    else:
-        # 并行路径：每个线程自己调 run_single_task，内部会 spawn 子进程做超时隔离
-        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-            future_to_index = {
-                executor.submit(
-                    run_single_task,
-                    task_id=task_id,
-                    # PR-2：按 task_index 固定 Key；池未启用时 pin_key_on_config 原样返回
-                    config=pin_key_on_config(
+    try:
+        task_artifacts: list[TaskRunArtifacts]
+        if effective_workers == 1:
+            task_artifacts = []
+            if use_key_pool:
+                # Key 池路径：上游 config.rate_limit.state_dir 尚未解析，无法在主进程
+                # 构造 RateLimitedAdapter；因此每轮先 pin_key_on_config 把 state_dir / Key
+                # 落实，再交由 run_single_task 走子进程或 run_single_task_core 内的
+                # build_application 完整构造。
+                for index, task_id in enumerate(task_ids):
+                    iter_config = pin_key_on_config(
                         config, task_index=index, effective_run_id=effective_run_id
-                    ),
-                    run_output_dir=run_output_dir,
-                ): index
-                for index, task_id in enumerate(task_ids)
-            }
-            # 按任务原始顺序占位，最后按顺序收集；保证 summary.json 的 tasks 数组稳定
-            indexed_artifacts: list[TaskRunArtifacts | None] = [None] * len(task_ids)
-            for future in as_completed(future_to_index):
-                artifact = future.result()
-                indexed_artifacts[future_to_index[future]] = artifact
-                # 回调在 as_completed 的主线程里串行调用，UI 侧不用自己加锁
-                if progress_callback is not None:
-                    progress_callback(artifact)
-            # 过滤 None（理论上所有格子都被填满；留一手防御 future.result() 意外）
-            task_artifacts = [artifact for artifact in indexed_artifacts if artifact is not None]
+                    )
+                    artifact = run_single_task(
+                        task_id=task_id,
+                        config=iter_config,
+                        run_output_dir=run_output_dir,
+                        model=model,
+                        tools=tools,
+                    )
+                    task_artifacts.append(artifact)
+                    if progress_callback is not None:
+                        progress_callback(artifact)
+            else:
+                # 单 Key 路径：build_application 一次构造 registry + model，全程复用，
+                # 减少重复的 OpenAI 客户端 / 注册表初始化开销。
+                base_app = build_application(config, model=model, tools=tools)
+                for task_id in task_ids:
+                    artifact = run_single_task(
+                        task_id=task_id,
+                        config=config,
+                        run_output_dir=run_output_dir,
+                        model=base_app.model_adapter,
+                        tools=base_app.registry,
+                        answer_verifier=base_app.answer_verifier,
+                    )
+                    task_artifacts.append(artifact)
+                    if progress_callback is not None:
+                        progress_callback(artifact)
+        else:
+            # 并行路径：每个线程自己调 run_single_task，内部会 spawn 子进程做超时隔离
+            executor = ThreadPoolExecutor(max_workers=effective_workers)
+            try:
+                future_to_index = {
+                    executor.submit(
+                        run_single_task,
+                        task_id=task_id,
+                        # PR-2：按 task_index 固定 Key；池未启用时 pin_key_on_config 原样返回
+                        config=pin_key_on_config(
+                            config, task_index=index, effective_run_id=effective_run_id
+                        ),
+                        run_output_dir=run_output_dir,
+                    ): index
+                    for index, task_id in enumerate(task_ids)
+                }
+                # 按任务原始顺序占位，最后按顺序收集；保证 summary.json 的 tasks 数组稳定
+                indexed_artifacts: list[TaskRunArtifacts | None] = [None] * len(task_ids)
+                for future in as_completed(future_to_index):
+                    artifact = future.result()
+                    indexed_artifacts[future_to_index[future]] = artifact
+                    # 回调在 as_completed 的主线程里串行调用，UI 侧不用自己加锁
+                    if progress_callback is not None:
+                        progress_callback(artifact)
+                # 过滤 None（理论上所有格子都被填满；留一手防御 future.result() 意外）
+                task_artifacts = [
+                    artifact for artifact in indexed_artifacts if artifact is not None
+                ]
+            except KeyboardInterrupt:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
+            finally:
+                executor.shutdown(wait=True)
+    except KeyboardInterrupt:
+        _mark_interrupted_traces(config, run_id=effective_run_id, task_ids=task_ids)
+        raise
 
     # 整次 run 的汇总文件：run_id、任务数、成功数、并发度、各任务摘要
     summary_path = run_output_dir / "summary.json"

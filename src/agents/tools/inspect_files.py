@@ -130,7 +130,7 @@ def _format_for_inspect(rel_path: str, abs_path: Path) -> dict[str, Any]:
         base["schema"] = summarize_doc(abs_path)
         if abs_path.name.lower() == "knowledge.md" and size <= constants.KNOWLEDGE_MD_PRELOAD_LIMIT:
             try:
-                base["schema"]["full_text"] = abs_path.read_text(errors="replace")
+                base["schema"]["full_text"] = abs_path.read_text(encoding="utf-8", errors="replace")
                 base["schema"]["knowledge_preloaded"] = True
             except OSError:
                 pass
@@ -196,8 +196,14 @@ def inspect_context_files(task: PublicTask) -> dict[str, Any]:
 
 @function_tool
 def inspect_files(task: PublicTask) -> ToolExecutionResult:
-    """Use first to bootstrap context exploration: returns a one-shot summary
-    of every file under context (columns, dtypes, row counts, table schemas).
-    This replaces the usual sequence of read_csv / read_json /
-    inspect_sqlite_schema calls for initial discovery."""
+    """Use FIRST to bootstrap context exploration. Returns a one-shot summary
+    of every file under context: {path, size, format, schema} where schema
+    contains columns, dtypes, row_count, profile (min/max/null_rate/distinct
+    values) for CSV/SQLite, keys/length for JSON, line_count/head for docs,
+    and page_count/head for PDF. Also includes column_conversions when unit
+    metadata is available. This replaces calling preview_file on each file
+    individually for initial discovery. Does NOT read full data — for
+    deeper inspection use preview_file, for filtering or aggregation use
+    execute_context_sql or execute_python.
+    Example: inspect_files({})"""
     return ToolExecutionResult(ok=True, content=inspect_context_files(task))

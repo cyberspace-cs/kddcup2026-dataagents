@@ -100,7 +100,6 @@ def test_empty_file_returns_empty_shape(tmp_path: Path) -> None:
     out = read_csv_preview(task, "empty.csv")
 
     assert out == {
-        "path": "empty.csv",
         "columns": [],
         "dtypes": [],
         "row_count": 0,

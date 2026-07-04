@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from agents.benchmark.schema import PublicTask, TaskAssets, TaskRecord
-from agents.explorer.runner import run_explorer
+from agents.explorer.runner import _synthesize_findings, run_explorer
 from agents.llm.types import ModelMessage, ModelResponse, ModelToolCall
 from agents.tools.registry import FunctionTool, ToolExecutionResult
 from tests.helpers.scripted_adapters import ScriptedNativeModelAdapter
@@ -58,11 +59,11 @@ class _RecordingAdapter:
         self.tools_seen: list[Any] = []
 
     def complete(
-        self, messages: list[ModelMessage], *, tools: object | None = None
+        self, messages: list[ModelMessage], *, tools: object | None = None, **kwargs: Any
     ) -> ModelResponse:
         self.seen.append(messages)
         self.tools_seen.append(tools)
-        return self.inner.complete(messages, tools=tools)
+        return self.inner.complete(messages, tools=tools, **kwargs)
 
 
 def _advertised_names_per_turn(adapter: _RecordingAdapter) -> list[set[str]]:
@@ -122,3 +123,67 @@ def test_each_turn_omits_video_tool_when_not_injected(tmp_path: Path) -> None:
     per_turn = _advertised_names_per_turn(adapter)
     assert per_turn
     assert all("explore_video" not in names for names in per_turn)
+
+
+def test_synthesize_findings_keeps_json_and_text_preview_file_observations() -> None:
+    synthesized = _synthesize_findings(
+        [
+            SimpleNamespace(
+                action="preview_file",
+                action_input={"path": "json/Patient.json"},
+                ok=True,
+                observation={
+                    "content": {
+                        "kind": "object",
+                        "key_count": 2,
+                        "keys": ["patients", "meta"],
+                        "value_preview": {"patients": {"kind": "array", "length": 3}},
+                        "truncated": False,
+                    }
+                },
+            ),
+            SimpleNamespace(
+                action="preview_file",
+                action_input={"path": "notes.md"},
+                ok=True,
+                observation={
+                    "content": {
+                        "format": "text",
+                        "total_lines": 12,
+                        "head": ["# Knowledge", "A = Alpha"],
+                        "has_more": False,
+                    }
+                },
+            ),
+            SimpleNamespace(
+                action="preview_file",
+                action_input={"path": "knowledge.md"},
+                ok=True,
+                observation={
+                    "content": {
+                        "format": "text",
+                        "total_lines": 3,
+                        "lines": ["# Knowledge", "A = Alpha", "B = Beta"],
+                    }
+                },
+            ),
+        ]
+    )
+
+    findings = json.loads(synthesized)
+    assert findings["json_previews"]["json/Patient.json"] == {
+        "kind": "object",
+        "key_count": 2,
+        "keys": ["patients", "meta"],
+        "value_preview": {"patients": {"kind": "array", "length": 3}},
+        "truncated": False,
+    }
+    assert findings["text_previews"]["notes.md"] == {
+        "total_lines": 12,
+        "head": ["# Knowledge", "A = Alpha"],
+        "has_more": False,
+    }
+    assert findings["text_previews"]["knowledge.md"] == {
+        "total_lines": 3,
+        "lines": ["# Knowledge", "A = Alpha", "B = Beta"],
+    }

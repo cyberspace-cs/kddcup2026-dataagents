@@ -1,53 +1,66 @@
-"""ID conflict resolution, pre-merge, normalization, and deterministic KV→CSV."""
+"""ID conflict resolution, pre-merge, and scalar cell normalization helpers."""
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
-import math
 import re
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from agents.etl._detect import ENTITY_LINE
-from agents.etl._types import (
+from agents.etl._constants import (
     APPROX_TAG,
     DATE_SCALAR,
     NUMERIC_SCALAR,
+    TEMP_ANCHOR_PREFIX,
+    UNIT_SUFFIX,
+)
+from agents.etl._types import (
     has_standalone_id,
     is_placeholder,
     normalize_boolean,
     split_approx_tag,
 )
 
+if TYPE_CHECKING:
+    from agents.etl._record import EntityTable, Record
+
 logger = logging.getLogger(__name__)
 
-KV_LINE = re.compile(r"^ID:\s*(\d+)\s*\|\s*entity_name:\s*(.+?)\s*\|", re.MULTILINE)
-TEMP_ANCHOR_PREFIX = "__anchor__:"
 
-UNIT_SUFFIX = re.compile(r"^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)\s+\S+\s*$")
-
-
-def _canonical_key_map(keys: list[str]) -> dict[str, str]:
-    """Map lower-cased field names to their canonical schema spelling."""
-    return {key.lower(): key for key in keys}
+def strip_key(s: str) -> str:
+    return s.strip().lower().replace("_", "").replace("-", "")
 
 
-def _canonicalize_key(key: str, key_map: dict[str, str]) -> str:
-    return key_map.get(key.strip().lower(), key.strip())
+def canonical_key_map(keys: list[str]) -> dict[str, str]:
+    """Map normalized field names to their canonical schema spelling."""
+    key_map: dict[str, str] = {}
+    for key in keys:
+        normalized = strip_key(key)
+        if normalized in key_map and key_map[normalized] != key:
+            logger.warning(
+                "ETL schema: columns %r and %r collide after key normalization (%r)",
+                key_map[normalized],
+                key,
+                normalized,
+            )
+        key_map[normalized] = key
+    return key_map
 
 
-def _line_has_kv_key(line: str, key: str) -> bool:
+def canonicalize_key(key: str, key_map: dict[str, str]) -> str:
+    return key_map.get(strip_key(key), key.strip())
+
+
+def line_has_kv_key(line: str, key: str) -> bool:
     """Return whether a pipe-separated KV line contains ``key`` as a full field."""
-    target = key.lower()
+    target = strip_key(key)
     for part in line.split("|"):
         raw_key, sep, _value = part.partition(":")
-        if sep and raw_key.strip().lower() == target:
+        if sep and strip_key(raw_key) == target:
             return True
     return False
 
 
-def resolve_id_conflicts(compressed: str) -> str:
+def resolve_id_conflicts(table: EntityTable) -> int:
     """Detect and fix systematic ID-shift errors in compressed prose.
 
     Pattern: the prose defines entity names in the first section (identity).
@@ -58,43 +71,48 @@ def resolve_id_conflicts(compressed: str) -> str:
     Strategy:
       1. Build the canonical name→ID mapping from the FIRST occurrence of each name.
       2. Scan all lines — if a line's (ID, name) pair disagrees with the canonical
-         mapping AND the canonical ID exists for that name, drop the line.
+         mapping AND the canonical ID exists for that name, rewrite the ID.
     """
+    if table.primary_key:
+        return 0
     _placeholder_set = {"-", "none", "nan", "placeholder", "- (placeholder)", ""}
 
     name_to_first_id: dict[str, int] = {}
     id_to_first_name: dict[int, str] = {}
-    for m in KV_LINE.finditer(compressed):
-        eid = int(m.group(1))
-        name = m.group(2).strip()
+    for record in table.records:
+        raw_id = record.fields.get("ID", "").strip()
+        name = record.fields.get("entity_name", "").strip()
+        if not raw_id.isdigit():
+            continue
+        eid = int(raw_id)
         if name.lower() in _placeholder_set:
             continue
         name_to_first_id.setdefault(name, eid)
         id_to_first_name.setdefault(eid, name)
 
-    fixed_lines: list[str] = []
     fixed_count = 0
-    for line in compressed.splitlines():
-        m = KV_LINE.match(line)
-        if m:
-            eid = int(m.group(1))
-            name = m.group(2).strip()
-            if name.lower() not in _placeholder_set:
-                canonical_id = name_to_first_id.get(name)
-                if canonical_id is not None and canonical_id != eid:
-                    line = line.replace(f"ID: {eid}", f"ID: {canonical_id}", 1)
-                    if fixed_count < 10:
-                        logger.info(
-                            "ETL ID-fix: '%s' ID %d → %d",
-                            name,
-                            eid,
-                            canonical_id,
-                        )
-                    fixed_count += 1
-        fixed_lines.append(line)
+    for record in table.records:
+        raw_id = record.fields.get("ID", "").strip()
+        name = record.fields.get("entity_name", "").strip()
+        if not raw_id.isdigit() or name.lower() in _placeholder_set:
+            continue
+        eid = int(raw_id)
+        canonical_id = name_to_first_id.get(name)
+        if canonical_id is not None and canonical_id != eid:
+            record.fields["ID"] = str(canonical_id)
+            record.pk = str(canonical_id)
+            record.provenance["ID"] = "id_conflict"
+            if fixed_count < 10:
+                logger.info(
+                    "ETL ID-fix: '%s' ID %d → %d",
+                    name,
+                    eid,
+                    canonical_id,
+                )
+            fixed_count += 1
     if fixed_count:
         logger.info("ETL ID-fix: corrected %d lines total", fixed_count)
-    return "\n".join(fixed_lines)
+    return fixed_count
 
 
 def _repair_fabricated_pks(
@@ -124,10 +142,11 @@ def _repair_fabricated_pks(
 
     # Candidate columns: declared anchors first, then remaining columns in
     # first-seen order — the alias column is not always a declared anchor.
-    candidates: list[str] = [a for a in (anchor_keys or []) if a != primary_key]
+    primary_lower = primary_key.lower()
+    candidates: list[str] = [a for a in (anchor_keys or []) if a.lower() != primary_lower]
     for _, pairs in parsed:
         for key, _val in pairs:
-            if key != primary_key and key not in candidates:
+            if key.lower() != primary_lower and key not in candidates:
                 candidates.append(key)
 
     for column in candidates:
@@ -213,109 +232,99 @@ def _drop_unanchored_pks(
     return kept
 
 
-def pre_merge_entity_lines(
-    text: str,
-    primary_key: str | None = None,
-    anchor_keys: list[str] | None = None,
+def _record_pairs_for_merge(record: Record) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for key, val in record.fields.items():
+        if val and key in record.approx:
+            val = f"{APPROX_TAG}{val}"
+        pairs.append((key, val))
+    return pairs
+
+
+def _group_key_from_pairs(
+    pk_val: str | None,
+    pairs: list[tuple[str, str]],
+    anchor_keys: list[str] | None,
+) -> str | None:
+    """Pick a stable grouping key for one parsed record."""
+    if pk_val is not None and not is_placeholder(pk_val):
+        return pk_val
+    if anchor_keys and len(anchor_keys) > 1:
+        pair_map = dict(pairs)
+        for anchor in anchor_keys[1:]:
+            anchor_val, _approx = split_approx_tag(pair_map.get(anchor, ""))
+            anchor_val = anchor_val.strip()
+            if anchor_val and not is_placeholder(anchor_val):
+                return f"{TEMP_ANCHOR_PREFIX}{anchor}:{anchor_val}"
+    return None
+
+
+def merge_records(
+    table: EntityTable,
     source_text: str | None = None,
-) -> str:
-    """Merge multi-line entity records into one line per unique entity.
+) -> None:
+    """Merge multi-line entity records into one row per unique entity.
 
-    Compression can produce several lines for the same entity (each carrying
-    a different attribute subset).  This collapses them so downstream
-    extraction sees one complete record per entity.
+    Record-oriented port of the old ``pre_merge_entity_lines`` logic:
 
-    Round 1: group by primary key (existing behavior), after repairing
-    fabricated sequential pks and dropping pks with no standalone anchor in
-    ``source_text``.
-    Round 2: merge groups that share a secondary anchor value (e.g. same
-    ``chinesename`` but different ``personalcode`` across sections).
-    Round 3: drop unplaced identity-echo fragments.
+    - repair fabricated sequential pks from an alias column;
+    - drop digit pks that never appear as standalone source anchors;
+    - group by primary key;
+    - attach blank-pk fragments via secondary anchors;
+    - drop identity-echo fragments that carry no data.
+
+    Mutates ``table.records`` in place.
     """
-    pk_token = f"{primary_key}:" if primary_key else None
-    key_map = _canonical_key_map([k for k in [primary_key, *(anchor_keys or [])] if k])
+    from agents.etl._record import Record, set_record_field
 
-    entity_lines: list[str] = []
-    header_lines: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        is_entity = (
-            _line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
-        )
-        if is_entity:
-            entity_lines.append(stripped)
-        elif not entity_lines:
-            header_lines.append(line)
+    primary_key = table.primary_key
+    anchor_keys = table.anchor_keys
+    if len(table.records) <= 1:
+        return
 
-    if len(entity_lines) <= 1:
-        return text
-
-    _is_placeholder = is_placeholder
-
-    def _parse_kv(line: str) -> tuple[str | None, list[tuple[str, str]]]:
-        parts = line.split("|")
-        pk_val: str | None = None
-        pairs: list[tuple[str, str]] = []
-        for part in parts:
-            if ":" not in part:
-                continue
-            key, _, val = part.partition(":")
-            key = _canonicalize_key(key, key_map)
-            val = val.strip()
-            if (primary_key and key == primary_key) or (not pk_token and key.upper() == "ID"):
-                pk_val = val
-            pairs.append((key, val))
-        return pk_val, pairs
-
-    def _group_key(pk_val: str | None, pairs: list[tuple[str, str]]) -> str | None:
-        """Pick a stable grouping key for one entity line.
-
-        LLM compression sometimes emits the primary key label with an empty
-        value while still providing a secondary identity anchor such as a
-        person's name.  Grouping all blank-PK lines together loses fields across
-        entities; use the first available secondary anchor as a temporary key
-        and let round-2 anchor merge attach it to the canonical primary-key row.
-        """
-        if pk_val is not None and not _is_placeholder(pk_val):
-            return pk_val
-        if anchor_keys and len(anchor_keys) > 1:
-            pair_map = dict(pairs)
-            for anchor in anchor_keys[1:]:
-                anchor_val = pair_map.get(anchor, "").strip()
-                if anchor_val and not _is_placeholder(anchor_val):
-                    return f"{TEMP_ANCHOR_PREFIX}{anchor}:{anchor_val}"
-        return None
-
-    parsed = [_parse_kv(line) for line in entity_lines]
+    parsed = [(record.pk, _record_pairs_for_merge(record)) for record in table.records]
     parsed = _repair_fabricated_pks(parsed, primary_key, anchor_keys)
     parsed = _drop_unanchored_pks(parsed, primary_key, source_text)
 
-    # Round 1: group by primary key
-    groups: dict[str, dict[str, str]] = {}
+    groups: dict[str, Record] = {}
     order: list[str] = []
+    dropped_unkeyed = 0
 
     for pk_val, pairs in parsed:
-        group_key = _group_key(pk_val, pairs)
+        group_key = _group_key_from_pairs(pk_val, pairs, anchor_keys)
         if group_key is None:
+            dropped_unkeyed += 1
             continue
         if group_key not in groups:
-            groups[group_key] = {}
+            groups[group_key] = Record()
             order.append(group_key)
-        rec = groups[group_key]
-        for k, v in pairs:
-            if k not in rec or (_is_placeholder(rec[k]) and not _is_placeholder(v)):
-                rec[k] = v
+        record = groups[group_key]
+        for key, raw_val in pairs:
+            val, _approx = split_approx_tag(raw_val)
+            val = val.strip()
+            existing = record.fields.get(key)
+            if existing is None or (is_placeholder(existing) and not is_placeholder(val)):
+                set_record_field(record, key, raw_val.strip(), "pre_merge")
+            elif (
+                val
+                and existing
+                and not is_placeholder(existing)
+                and not is_placeholder(val)
+                and existing != val
+            ):
+                table.conflicts += 1
+        if primary_key:
+            record.pk = record.fields.get(primary_key) or None
+        elif "ID" in record.fields:
+            record.pk = record.fields.get("ID") or None
 
-    # Round 2: merge groups that share secondary anchor values
     if anchor_keys and len(anchor_keys) > 1:
         groups_before_r2 = len(groups)
         for anchor in anchor_keys[1:]:
             anchor_to_pks: dict[str, list[str]] = {}
             for pk_val in list(groups.keys()):
-                a_val = groups[pk_val].get(anchor, "").strip()
-                if a_val and not _is_placeholder(a_val):
+                a_val = groups[pk_val].fields.get(anchor, "").strip()
+                if a_val and not is_placeholder(a_val):
                     anchor_to_pks.setdefault(a_val, []).append(pk_val)
 
             for _a_val, pk_list in anchor_to_pks.items():
@@ -329,25 +338,30 @@ def pre_merge_entity_lines(
                 canonical = real_pks[0]
                 for pk in temp_pks:
                     conflict = False
-                    for a in anchor_keys[1:]:
-                        t_val = groups[pk].get(a, "").strip()
-                        c_val = groups[canonical].get(a, "").strip()
+                    for anchor_name in anchor_keys[1:]:
+                        t_val = groups[pk].fields.get(anchor_name, "").strip()
+                        c_val = groups[canonical].fields.get(anchor_name, "").strip()
                         if (
                             t_val
                             and c_val
-                            and not _is_placeholder(t_val)
-                            and not _is_placeholder(c_val)
+                            and not is_placeholder(t_val)
+                            and not is_placeholder(c_val)
                             and t_val != c_val
                         ):
                             conflict = True
                             break
                     if conflict:
                         continue
-                    for k, v in groups[pk].items():
+                    for key, val in groups[pk].fields.items():
+                        current = groups[canonical].fields.get(key)
                         if (
-                            k not in groups[canonical] or _is_placeholder(groups[canonical][k])
-                        ) and not _is_placeholder(v):
-                            groups[canonical][k] = v
+                            (current is None or is_placeholder(current))
+                            and val
+                            and not is_placeholder(val)
+                        ):
+                            if key in groups[pk].approx:
+                                val = f"{APPROX_TAG}{val}"
+                            set_record_field(groups[canonical], key, val, "pre_merge")
                     del groups[pk]
 
         groups_after_r2 = len(groups)
@@ -359,33 +373,23 @@ def pre_merge_entity_lines(
                 anchor_keys,
             )
 
-    # Round 3: identity-echo fragments. A blank-PK group that round 2 could
-    # not attach (its anchor values are shared by several real records — e.g.
-    # secucode in a single-company table) and whose every populated field is
-    # an anchor or a value constant across all real records carries no
-    # record-distinguishing information: it is narrative echo, not a record.
-    # Compression emits such lines BY DESIGN as merge fodder for multi-entity
-    # documents; in single-entity documents they can never attach and would
-    # otherwise materialize as junk rows the gold table does not have.
-    # Fragments carrying actual data are kept as rows — a visible extra row
-    # beats silently destroying extracted values.
     real_keys = [key for key in order if key in groups and not key.startswith(TEMP_ANCHOR_PREFIX)]
     temp_keys = [key for key in order if key in groups and key.startswith(TEMP_ANCHOR_PREFIX)]
     if temp_keys and real_keys:
-        identity_fields = {key.lower() for key in [primary_key, *(anchor_keys or [])] if key}
+        identity_fields = {key.lower() for key in [primary_key, *anchor_keys] if key}
         real_field_values: dict[str, set[str]] = {}
         for key in real_keys:
-            for field, val in groups[key].items():
+            for field, val in groups[key].fields.items():
                 val = val.strip()
-                if val and not _is_placeholder(val):
+                if val and not is_placeholder(val):
                     real_field_values.setdefault(field, set()).add(val)
 
         echo_dropped = 0
         for key in temp_keys:
             informative: list[str] = []
-            for field, val in groups[key].items():
+            for field, val in groups[key].fields.items():
                 val = val.strip()
-                if not val or _is_placeholder(val):
+                if not val or is_placeholder(val):
                     continue
                 if field.lower() in identity_fields:
                     continue
@@ -410,61 +414,28 @@ def pre_merge_entity_lines(
                 echo_dropped,
             )
 
-    merged: list[str] = []
-    for pk_val in order:
-        if pk_val not in groups:
+    merged: list[Record] = []
+    for key in order:
+        record = groups.get(key)
+        if record is None:
             continue
-        parts = [f"{k}: {v}" for k, v in groups[pk_val].items()]
-        merged.append(" | ".join(parts))
+        if primary_key:
+            record.pk = record.fields.get(primary_key) or None
+        elif "ID" in record.fields:
+            record.pk = record.fields.get("ID") or None
+        merged.append(record)
 
-    before = len(entity_lines)
+    before = len(table.records)
     after = len(merged)
+    table.records = merged
     if before != after:
-        logger.info("ETL pre-merge: %d entity lines → %d unique entities", before, after)
-
-    header = "\n".join(header_lines).strip()
-    body = "\n".join(merged)
-    return f"{header}\n\n{body}" if header else body
-
-
-def normalize_entity_lines(
-    text: str,
-    schema_columns: list[str],
-    primary_key: str | None = None,
-) -> str:
-    """Reorder fields in every entity line to match schema_columns order.
-
-    Drops fields not in the schema and fills missing fields with empty
-    values, so downstream CSV extraction sees a uniform tabular layout.
-    """
-    field_map = _canonical_key_map(schema_columns)
-    col_set = set(schema_columns)
-
-    normalized: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        is_entity = (
-            _line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
+        logger.info(
+            "ETL pre-merge: %d entity records → %d unique entities",
+            before,
+            after,
         )
-        if not is_entity:
-            normalized.append(line)
-            continue
-
-        fields: dict[str, str] = {}
-        for part in stripped.split("|"):
-            if ":" not in part:
-                continue
-            key, _, val = part.partition(":")
-            key = _canonicalize_key(key, field_map)
-            if key in col_set:
-                fields[key] = val.strip()
-
-        parts = [f"{c}: {fields.get(c, '')}" for c in schema_columns]
-        normalized.append(" | ".join(parts))
-
-    return "\n".join(normalized)
+    if dropped_unkeyed:
+        logger.info("ETL pre-merge: dropped %d records without a grouping key", dropped_unkeyed)
 
 
 def clean_cell(val: str) -> str:
@@ -477,7 +448,63 @@ def clean_cell(val: str) -> str:
     return val
 
 
-def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
+_REASONING_LEAK = re.compile(
+    r"\s*\(?"
+    r"(?:"
+    # English patterns
+    r"Source text|However,|Wait,|Let me|Let's|Note:|The (?:text|context|extraction|source)"
+    r"|strictly following|implies the|this (?:is|means|suggests)"
+    # Chinese patterns
+    r"|或根据|原文指代|原文(?:是|写|说|提到)|通常指|然而，|但仔细|但是，"
+    r"|如果源文本|这看起来|根据文档|根据上下文|仔细阅读"
+    r")"
+    r".*",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+_FUND_TYPE_SUFFIX = re.compile(r"^(股票|混合|债券|货币|其他)型基金$")
+
+
+def _normalize_fund_type(val: str, field_name: str) -> str:
+    """Normalize '混合型基金' → '混合型' for fund classification fields."""
+    if field_name.lower() not in {"fundtype", "fund_type", "fundtypename"}:
+        return val
+    m = _FUND_TYPE_SUFFIX.match(val.strip())
+    if m:
+        return m.group(1) + "型"
+    return val
+
+
+def strip_reasoning_leak(val: str) -> str:
+    """Truncate LLM reasoning that leaked into a field value."""
+    m = _REASONING_LEAK.search(val)
+    if m and m.start() > 0:
+        return val[: m.start()].rstrip(" ,;|")
+    return val
+
+
+_NAME_ABBR_FIELDS = frozenset(
+    {
+        "secuabbr",
+        "chiname",
+        "chinameabbr",
+        "chinamabbr",
+        "fund_name",
+        "fund_name_short",
+        "name",
+        "abbr",
+        "companyname",
+        "abbrchiname",
+    }
+)
+
+
+def clean_cell_for_type(
+    val: str,
+    field_type: str | None = None,
+    field_name: str | None = None,
+) -> str:
     """Normalize a KV value and enforce lightweight schema field types.
 
     A leading approximate-value marker (``~6970000``, from the compression
@@ -488,8 +515,15 @@ def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
     cleaned = clean_cell(bare)
     if not cleaned:
         return ""
+    cleaned = strip_reasoning_leak(cleaned)
+    if field_name:
+        cleaned = _normalize_fund_type(cleaned, field_name)
+    if field_name and field_name.lower() in _NAME_ABBR_FIELDS:
+        stripped_digits = cleaned.replace(",", "").replace(".", "").lstrip("-")
+        if stripped_digits.isdigit():
+            return ""
     type_text = (field_type or "").lower()
-    if "number" in type_text or "integer" in type_text:
+    if ("number" in type_text or "integer" in type_text) and "rank" not in type_text:
         normalized = cleaned.replace(",", "")
         if normalized.endswith("%"):
             normalized = normalized[:-1].strip()
@@ -500,63 +534,12 @@ def clean_cell_for_type(val: str, field_type: str | None = None) -> str:
         return cleaned if DATE_SCALAR.match(cleaned) else ""
     if "boolean" in type_text:
         return normalize_boolean(cleaned) or ""
-    if approx:
-        normalized = cleaned.replace(",", "")
-        if NUMERIC_SCALAR.match(normalized):
-            return f"{APPROX_TAG}{normalized}"
+    normalized = cleaned.replace(",", "")
+    if approx and NUMERIC_SCALAR.match(normalized):
+        return f"{APPROX_TAG}{normalized}"
+    if normalized != cleaned and NUMERIC_SCALAR.match(normalized):
+        return normalized
     return clean_cell(val)
-
-
-def deterministic_kv_to_csv(
-    text: str,
-    schema_columns: list[str],
-    primary_key: str | None = None,
-    schema_field_types: dict[str, str] | None = None,
-) -> str | None:
-    """Parse normalized KV entity lines directly into CSV without LLM.
-
-    Each entity line is expected to be in the form:
-      col_a: val | col_b: val | ...
-    with columns in schema_columns order (produced by normalize_entity_lines).
-    """
-    field_map = _canonical_key_map(schema_columns)
-    col_set = set(schema_columns)
-
-    rows: list[list[str]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        is_entity = (
-            _line_has_kv_key(stripped, primary_key) if primary_key else ENTITY_LINE.match(stripped)
-        )
-        if not is_entity:
-            continue
-
-        fields: dict[str, str] = {}
-        for part in stripped.split("|"):
-            if ":" not in part:
-                continue
-            key, _, val = part.partition(":")
-            key = _canonicalize_key(key, field_map)
-            if key in col_set:
-                fields[key] = clean_cell_for_type(
-                    val.strip(),
-                    schema_field_types.get(key) if schema_field_types else None,
-                )
-
-        row = [fields.get(c, "") for c in schema_columns]
-        if any(row):
-            rows.append(row)
-
-    if not rows:
-        return None
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(schema_columns)
-    writer.writerows(rows)
-    return buf.getvalue()
 
 
 def cells_agree(a: str, b: str) -> bool:
@@ -594,7 +577,8 @@ def apply_synonym_merges(
     re-checks, per pair and against the CURRENT table state, that the data
     *agrees* with that claim:
 
-    - identity columns named in ``protected`` are never touched;
+    - identity columns named in ``protected`` are never touched, except for
+      folding two columns whose names differ only by case;
     - a pair with any row-level conflict (both cells non-empty and not equal
       as strings or numbers) is skipped — semantically-approved but
       data-contradicted merges must not corrupt either column;
@@ -613,7 +597,10 @@ def apply_synonym_merges(
 
     applied: list[tuple[str, str]] = []
     for src, dst in sorted(merges, key=lambda m: (-fill.get(m[0], 0), m[0])):
-        if src == dst or src.lower() in protected_lower or dst.lower() in protected_lower:
+        case_only = src.lower() == dst.lower()
+        if src == dst or (
+            not case_only and (src.lower() in protected_lower or dst.lower() in protected_lower)
+        ):
             continue
         if src not in header or dst not in header:
             continue
@@ -643,372 +630,3 @@ def apply_synonym_merges(
             row.pop(si)
         applied.append((src, dst))
     return header, rows, applied
-
-
-# An additive identity must hold exactly on at least this many fully-exact
-# rows — and on MORE rows than it is coarsely violated on — before it counts
-# as a table invariant. Below that, "a = b + c" on a handful of rows is
-# indistinguishable from coincidence.
-MIN_IDENTITY_SUPPORT = 5
-
-_NUMERIC_EQ_REL = 1e-9
-_NUMERIC_EQ_ABS = 1e-9
-
-
-def _numbers_close(a: float, b: float) -> bool:
-    return math.isclose(a, b, rel_tol=_NUMERIC_EQ_REL, abs_tol=_NUMERIC_EQ_ABS)
-
-
-def _parse_cell_number(raw: str) -> tuple[float | None, bool]:
-    """Parse a CSV cell into ``(value, is_approx)``; ``(None, False)`` if non-numeric."""
-    bare, approx = split_approx_tag(raw)
-    if not bare:
-        return None, False
-    try:
-        return float(bare.replace(",", "")), approx
-    except ValueError:
-        return None, False
-
-
-def _stated_granularity(raw: str) -> float:
-    """The precision a stated numeral carries, from its own digits.
-
-    ``6970000`` (六百九十七万) was stated at 万 granularity → 1e4; a value
-    with no trailing zeros, a decimal point, or an exponent carries full
-    precision and returns a granularity that disables coarse matching.
-    """
-    bare, _approx = split_approx_tag(raw)
-    bare = bare.replace(",", "")
-    if not bare or not NUMERIC_SCALAR.match(bare):
-        return 0.0
-    if "." in bare or "e" in bare.lower():
-        return 0.0
-    digits = bare.lstrip("+-")
-    stripped = digits.rstrip("0")
-    if not stripped:  # the value 0 itself
-        return 0.0
-    zeros = len(digits) - len(stripped)
-    return float(10**zeros) if zeros else 0.0
-
-
-def _coarse_consistent(stated: float, raw: str, solved: float) -> bool:
-    """Whether ``solved`` equals the stated value at the value's own granularity.
-
-    This is the acceptance rule for replacing a stated-approximate number with
-    an identity-derived exact one: the stated numeral's trailing zeros define
-    the band it claims ("约六百九十七万" claims 万-precision), and the solved
-    value must quantize back to the same numeral — no tunable tolerance.
-    """
-    granularity = _stated_granularity(raw)
-    if granularity <= 1.0:
-        return False
-    if _numbers_close(solved, stated):
-        return False
-    return round(solved / granularity) == round(stated / granularity)
-
-
-def _parse_numeric_table(
-    header: list[str],
-    rows: list[list[str]],
-) -> list[list[tuple[float | None, bool]] | None]:
-    """Parse cells per column as ``(value, is_approx)``; None for non-numeric columns.
-
-    A column qualifies as numeric when every non-empty cell parses as a number
-    (approx tags allowed) and at least one cell is non-empty.
-    """
-    parsed: list[list[tuple[float | None, bool]] | None] = []
-    for j in range(len(header)):
-        col: list[tuple[float | None, bool]] = []
-        numeric_ok = True
-        nonempty = 0
-        for row in rows:
-            raw = row[j].strip()
-            if not raw:
-                col.append((None, False))
-                continue
-            num, approx = _parse_cell_number(raw)
-            if num is None:
-                numeric_ok = False
-                break
-            nonempty += 1
-            col.append((num, approx))
-        parsed.append(col if numeric_ok and nonempty else None)
-    return parsed
-
-
-def _blamable_term(stated: float, raw: str, solved: float, support_grains: list[float]) -> bool:
-    """Whether an untagged violating term may absorb the row's discrepancy.
-
-    Two independent conditions, both data-derived:
-
-    1. coarse consistency — the identity-solved value quantizes back to the
-       stated numeral at the numeral's own granularity;
-    2. granularity anomaly — the numeral is strictly coarser than EVERY
-       numeral this column shows on identity-supporting rows. In a column
-       where round numbers are the norm (share lots trade in 万-multiples),
-       roundness carries no approximation signal and never implicates a cell;
-       in a full-precision column, a uniquely round numeral is exactly the
-       fuzzy-numeral signature ("约六百九十七万" → 6970000).
-    """
-    if not _coarse_consistent(stated, raw, solved):
-        return False
-    if len(support_grains) < 2:
-        return False
-    return _stated_granularity(raw) > max(support_grains)
-
-
-def _scan_identity(
-    parsed: list[list[tuple[float | None, bool]] | None],
-    rows: list[list[str]],
-    triple: tuple[int, int, int],
-) -> tuple[int, int, bool, dict[int, list[float]]]:
-    """Evaluate one candidate triple ``a == b + c`` over all rows.
-
-    Pass 1 splits fully-exact (untagged, all-three-present) rows into
-    supporters and violators and collects the supporters' stated
-    granularities per column. Pass 2 classifies each violator: repairable
-    (some term is blamable per `_blamable_term`) or a hard violation.
-
-    Returns ``(support, suspects, hard_violation, support_grains)``.
-    """
-    a, b, c = triple
-    col_a, col_b, col_c = parsed[a], parsed[b], parsed[c]
-    assert col_a is not None and col_b is not None and col_c is not None
-
-    supporters: list[int] = []
-    violators: list[int] = []
-    for i in range(len(rows)):
-        va, ta = col_a[i]
-        vb, tb = col_b[i]
-        vc, tc = col_c[i]
-        if va is None or vb is None or vc is None or ta or tb or tc:
-            continue
-        if _numbers_close(va, vb + vc):
-            supporters.append(i)
-        else:
-            violators.append(i)
-
-    grains = {j: [_stated_granularity(rows[i][j].strip()) for i in supporters] for j in triple}
-
-    suspects = 0
-    for i in violators:
-        va = col_a[i][0]
-        vb = col_b[i][0]
-        vc = col_c[i][0]
-        assert va is not None and vb is not None and vc is not None
-        blamable = [
-            j
-            for j, stated, solved in ((a, va, vb + vc), (b, vb, va - vc), (c, vc, va - vb))
-            if _blamable_term(stated, rows[i][j].strip(), solved, grains[j])
-        ]
-        if not blamable:
-            return len(supporters), suspects, True, grains
-        suspects += 1
-    return len(supporters), suspects, False, grains
-
-
-def mine_additive_identities(
-    header: list[str],
-    rows: list[list[str]],
-) -> list[tuple[int, int, int]]:
-    """Mine column triples satisfying ``col_a == col_b + col_c`` row-wise.
-
-    Deterministic invariant mining over numeric columns. A triple is accepted
-    when its fully-exact rows support the identity (within float-dust
-    tolerance) on at least MIN_IDENTITY_SUPPORT rows, exact support strictly
-    dominates the repair candidates, and NO exact row violates it beyond
-    repair — a violating row is forgiven only when some term is blamable
-    under `_blamable_term` (coarse-consistent solved value AND column-level
-    granularity anomaly).
-
-    Returns ``(a, b, c)`` column-index triples with ``b < c``.
-    """
-    parsed = _parse_numeric_table(header, rows)
-    numeric_cols = [j for j in range(len(header)) if parsed[j] is not None]
-    identities: list[tuple[int, int, int]] = []
-    for a in numeric_cols:
-        for bi, b in enumerate(numeric_cols):
-            if b == a:
-                continue
-            for c in numeric_cols[bi + 1 :]:
-                if c in (a, b):
-                    continue
-                support, suspects, hard_violation, _grains = _scan_identity(parsed, rows, (a, b, c))
-                if not hard_violation and support >= MIN_IDENTITY_SUPPORT and support > suspects:
-                    identities.append((a, b, c))
-    return identities
-
-
-def _format_repaired_number(value: float) -> str:
-    if math.isclose(value, round(value), rel_tol=0, abs_tol=_NUMERIC_EQ_ABS):
-        return str(round(value))
-    return format(value, ".12g")
-
-
-def repair_numeric_identities(
-    header: list[str],
-    rows: list[list[str]],
-) -> tuple[list[list[str]], list[tuple[int, str, str, str]]]:
-    """Recompute approximate numerals from mined additive identities.
-
-    Two repair triggers, both solved from the other two terms of a validated
-    identity and both accepted only under granularity consistency
-    (`_coarse_consistent` — the solved value must quantize back to the stated
-    numeral at the numeral's own precision):
-
-    - cells tagged approximate by compression (``~6970000``) — the tag is
-      explicit evidence, so plain granularity consistency suffices;
-    - untagged cells whose row violates a validated identity and which are
-      the UNIQUE blamable term of that row per `_blamable_term`
-      (coarse-consistent AND anomalously round for the column — compression
-      missed the tag);
-    - empty cells that are the ONLY missing term of a validated identity in
-      their row (compression dropped a stated value entirely). A validated
-      identity implies definitional coupling, so the missing term is
-      mathematically determined. Rows missing 2+ terms — the genuine
-      source-null pattern ("转让方信息缺失") — can never be solved and are
-      left untouched; null patterns are data.
-
-    A cell repairs only when all candidate identities agree on a single
-    solved value. All approx tags are stripped from the returned rows
-    regardless of repair outcome. Returns ``(rows, repairs)`` with repairs
-    as ``(row_index, column, old, new)``; inputs are not mutated.
-    """
-    rows = [list(row) for row in rows]
-    identities = mine_additive_identities(header, rows)
-
-    # Support granularities are computed once, from the pre-repair snapshot:
-    # repairs only touch violator rows, so supporter-derived baselines stay
-    # valid throughout the pass.
-    parsed_snapshot = _parse_numeric_table(header, rows)
-    identity_grains = {
-        identity: _scan_identity(parsed_snapshot, rows, identity)[3] for identity in identities
-    }
-
-    by_col: dict[int, list[tuple[int, int, int]]] = {}
-    for a, b, c in identities:
-        by_col.setdefault(a, []).append((a, b, c))
-        by_col.setdefault(b, []).append((a, b, c))
-        by_col.setdefault(c, []).append((a, b, c))
-
-    def _solve(identity: tuple[int, int, int], target: int, row: list[str]) -> float | None:
-        """Solve ``a = b + c`` for ``target`` from the row's other two terms."""
-        a, b, c = identity
-        nums: dict[int, float] = {}
-        for j in (a, b, c):
-            if j == target:
-                continue
-            num, approx = _parse_cell_number(row[j].strip())
-            if num is None or approx:
-                return None
-            nums[j] = num
-        if target == a:
-            return nums[b] + nums[c]
-        if target == b:
-            return nums[a] - nums[c]
-        return nums[a] - nums[b]
-
-    repairs: list[tuple[int, str, str, str]] = []
-    for i, row in enumerate(rows):
-        proposals: dict[int, list[float]] = {}
-
-        for j in range(len(header)):
-            raw = row[j].strip()
-            num, approx = _parse_cell_number(raw)
-            if num is None or not approx:
-                continue
-            for identity in by_col.get(j, []):
-                solved = _solve(identity, j, row)
-                if solved is None:
-                    continue
-                if _coarse_consistent(num, raw, solved) or _numbers_close(solved, num):
-                    proposals.setdefault(j, []).append(solved)
-
-        for identity in identities:
-            a, b, c = identity
-            empty_cols: list[int] = []
-            cells: list[tuple[int, float | None, bool]] = []
-            unusable = False
-            for j in (a, b, c):
-                raw = row[j].strip()
-                if not raw:
-                    empty_cols.append(j)
-                    continue
-                num, approx = _parse_cell_number(raw)
-                if num is None or approx:
-                    unusable = True
-                    break
-                cells.append((j, num, approx))
-            if unusable:
-                continue
-
-            if len(empty_cols) == 1:
-                # Exactly one term missing and the other two exact: a validated
-                # identity means the three fields are definitionally coupled, so
-                # the missing term is mathematically determined (extraction
-                # dropped a stated value). Rows with 2+ missing terms — the
-                # genuine source-null pattern — can never be solved and stay
-                # untouched.
-                solved_missing = _solve(identity, empty_cols[0], row)
-                if solved_missing is not None:
-                    proposals.setdefault(empty_cols[0], []).append(solved_missing)
-                continue
-            if empty_cols:
-                continue
-
-            va, vb, vc = cells[0][1], cells[1][1], cells[2][1]
-            assert va is not None and vb is not None and vc is not None
-            if _numbers_close(va, vb + vc):
-                continue
-            grains = identity_grains[identity]
-            blamable = [
-                (j, solved)
-                for j, stated, solved in ((a, va, vb + vc), (b, vb, va - vc), (c, vc, va - vb))
-                if _blamable_term(stated, row[j].strip(), solved, grains[j])
-            ]
-            if len(blamable) == 1:
-                j, solved = blamable[0]
-                proposals.setdefault(j, []).append(solved)
-
-        for j, solved_values in proposals.items():
-            distinct: list[float] = []
-            for value in solved_values:
-                if not any(_numbers_close(value, seen) for seen in distinct):
-                    distinct.append(value)
-            if len(distinct) != 1:
-                continue
-            old = row[j].strip()
-            stated, _approx = _parse_cell_number(old)
-            if stated is not None and _numbers_close(distinct[0], stated):
-                continue  # confirmation only; the tag-strip pass below normalizes
-            new = _format_repaired_number(distinct[0])
-            row[j] = new
-            repairs.append((i, header[j], old, new))
-
-    # Tags must never survive into the materialized CSV: strip the marker from
-    # any remaining numeric cell, repaired or not.
-    for row in rows:
-        for j in range(len(header)):
-            raw = row[j].strip()
-            num, approx = _parse_cell_number(raw)
-            if num is not None and approx:
-                bare, _ = split_approx_tag(raw)
-                row[j] = bare
-
-    return rows, repairs
-
-
-def validate_csv(csv_path: Path) -> tuple[list[str], int] | None:
-    """Read a CSV and return (header, row_count), or None if invalid."""
-    if not csv_path.is_file():
-        return None
-    try:
-        with csv_path.open(encoding="utf-8") as f:
-            reader = csv.reader(f)
-            header = next(reader, None)
-            if not header:
-                return None
-            row_count = sum(1 for _ in reader)
-        return (header, row_count) if row_count > 0 else None
-    except csv.Error:
-        return None

@@ -4,7 +4,6 @@ from agents.prompts.recovery import build_observation_prompt
 from agents.prompts.rules import (
     DATA_OUTPUT_RULES,
     DISAMBIGUATION_RULES,
-    GRADER_NOTE,
     TASK_PROFILE,
 )
 from agents.prompts.system import (
@@ -16,7 +15,6 @@ from agents.prompts.task import build_task_prompt
 __all__ = [
     "DATA_OUTPUT_RULES",
     "DISAMBIGUATION_RULES",
-    "GRADER_NOTE",
     "REACT_NATIVE_SYSTEM_PROMPT",
     "TASK_PROFILE",
     "build_native_system_prompt",

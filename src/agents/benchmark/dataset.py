@@ -37,7 +37,7 @@ def _load_task_record(task_json_path: Path) -> TaskRecord:
 
     必填：{task_id, question}。difficulty 缺失时默认 "unknown"。
     """
-    payload = json.loads(task_json_path.read_text())
+    payload = json.loads(task_json_path.read_text(encoding="utf-8"))
     required_keys = {"task_id", "question"}
     missing_keys = required_keys - set(payload)
     if missing_keys:

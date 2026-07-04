@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -53,3 +54,33 @@ def test_report_files_and_schema_map_default_empty(tmp_path: Path) -> None:
     registry = create_explorer_tool_registry()
     result = registry.execute(_make_task(tmp_path), "report", {"knowledge": {"answer_hint": "x"}})
     assert result.ok is True and result.is_terminal is True
+
+
+@pytest.mark.parametrize("field", ["schema_map", "knowledge", "value_samples"])
+def test_report_rejects_scalar_dict_fields(tmp_path: Path, field: str) -> None:
+    registry = create_explorer_tool_registry()
+    with pytest.raises(ValueError, match=rf"report: field '{field}'"):
+        registry.execute(_make_task(tmp_path), "report", {field: "not a dict"})
+
+
+def test_report_value_samples_preserve_scalar_types(tmp_path: Path) -> None:
+    registry = create_explorer_tool_registry()
+    result = registry.execute(
+        _make_task(tmp_path),
+        "report",
+        {
+            "value_samples": {
+                "db/sub_db.sqlite.mf_fmretscaleanalysis.TotalAUM": [0.171053, 405.178231],
+                "csv/foo.category": ["本科", "硕士"],
+                "csv/foo.count": [1, 2],
+            }
+        },
+    )
+
+    assert result.ok is True and result.is_terminal is True
+    findings = json.loads(result.content["findings"])
+    assert findings["value_samples"] == {
+        "db/sub_db.sqlite.mf_fmretscaleanalysis.TotalAUM": [0.171053, 405.178231],
+        "csv/foo.category": ["本科", "硕士"],
+        "csv/foo.count": [1, 2],
+    }

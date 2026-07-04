@@ -2,20 +2,38 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agents.benchmark.schema import PublicTask
 from agents.tools.execute_sql import execute_context_sql
 from agents.tools.grep_context import grep_context
 from agents.tools.inspect_files import inspect_files
-from agents.tools.inspect_sqlite import inspect_sqlite_schema
-from agents.tools.read_csv import read_csv
-from agents.tools.read_doc import read_doc
-from agents.tools.read_json import read_json
+from agents.tools.preview import preview_file
 from agents.tools.registry import FunctionTool, ToolExecutionResult, ToolRegistry
 from agents.tools.schema_normalize import normalize_for_vllm
+
+
+def coerce_dict_field(val: Any) -> Any:
+    """Convert a list-of-objects to a keyed dict if the model sent the wrong shape."""
+    if isinstance(val, dict):
+        return cast(dict[str, Any], val)
+    if not isinstance(val, list):
+        return val
+    raw_items = cast(list[Any], val)
+    if any(not isinstance(item, dict) for item in raw_items):
+        return raw_items
+    items = cast(list[dict[str, Any]], raw_items)
+    out: dict[str, Any] = {}
+    for item in items:
+        key: str | None = item.get("name") or item.get("table") or item.get("file")
+        if key:
+            out[str(key)] = {k: v for k, v in item.items() if k not in ("name", "table", "file")}
+            continue
+        out[f"_item_{len(out)}"] = item
+    return out
 
 
 class ReportInput(BaseModel):
@@ -42,7 +60,7 @@ class ReportInput(BaseModel):
         default_factory=list,
         description='Discovered relationships, e.g. [{"left": "a.col", "right": "b.col"}].',
     )
-    value_samples: dict[str, list[str]] = Field(
+    value_samples: dict[str, list[Any]] = Field(
         default_factory=dict,
         description="Sampled distinct values for filter-relevant columns.",
     )
@@ -51,20 +69,28 @@ class ReportInput(BaseModel):
         description="Objective data-quality observations (one atomic fact each).",
     )
 
+    @field_validator("schema_map", "knowledge", "value_samples", mode="before")
+    @classmethod
+    def _coerce_list_to_dict(cls, v: Any) -> Any:
+        return coerce_dict_field(v)
+
 
 REPORT_SCHEMA = normalize_for_vllm(ReportInput.model_json_schema())
 
+REPORT_KEYS = ("files", "schema_map", "knowledge", "join_paths", "value_samples", "warnings")
+
 
 def handle_report(_task: PublicTask, args: Any) -> ToolExecutionResult:
-    import json as _json
-
-    _KEYS = ("files", "schema_map", "knowledge", "join_paths", "value_samples", "warnings")
     d: dict[str, Any] = cast(
         dict[str, Any],
-        args if isinstance(args, dict) else {k: getattr(args, k, None) for k in _KEYS},
+        args if isinstance(args, dict) else {k: getattr(args, k, None) for k in REPORT_KEYS},
     )
-    findings = _json.dumps(
-        {k: d.get(k, {} if k in ("schema_map", "knowledge") else []) for k in _KEYS},
+    report = ReportInput.model_validate(d)
+    findings = json.dumps(
+        {
+            k: getattr(report, k, {} if k in ("schema_map", "knowledge") else [])
+            for k in REPORT_KEYS
+        },
         ensure_ascii=False,
     )
     return ToolExecutionResult(
@@ -85,33 +111,43 @@ def create_explorer_tool_registry(
     """
     definitions: list[FunctionTool] = [
         inspect_files.with_description(
-            "One-shot summary of every file under context "
-            "(columns, dtypes, row counts, table schemas, column_conversions).",
+            "Use FIRST to bootstrap discovery. Returns a one-shot summary of "
+            "every file under context: {path, size, format, schema} where schema "
+            "contains columns, dtypes, row_count, profile (min/max/null_rate/ "
+            "distinct values) for CSV/SQLite, keys/length for JSON, line_count/ "
+            "head for docs. Includes column_conversions when unit metadata is "
+            "available. Does NOT read full data — use preview_file or "
+            "execute_context_sql for deeper inspection.",
         ),
-        read_csv.with_description(
-            "Preview a CSV file: columns, dtypes, row_count, "
-            "head (20 rows), tail (5 rows). Sample only.",
-        ),
-        read_doc.with_description(
-            "Preview a text document (md/txt). Without keyword: paging. "
-            "With keyword: returns ALL matching paragraphs across the file.",
-        ),
-        read_json.with_description(
-            "Preview a JSON file: kind (array/object/scalar), length/keys, "
-            "sample values. Sample only.",
-        ),
-        inspect_sqlite_schema.with_description(
-            "View SQLite database table structures (columns, row counts). "
-            "Do NOT call on .csv/.json/.md/.txt paths.",
+        preview_file.with_description(
+            "Preview a single context file. Auto-detects format by extension. "
+            "CSV → {columns, dtypes, row_count, head (20 rows), tail (5 rows)}. "
+            "JSON → {kind, keys/length, head/value_preview}. "
+            "SQLite → {tables: [{name, create_sql}]}. "
+            "Text → {total_lines, head (first 100 lines), has_more}. "
+            "Sample only, not full data access. Do NOT use for aggregation — "
+            "use execute_context_sql for SQL or note in report that full-file "
+            "processing is needed. "
+            'Example: preview_file({"path": "csv/member.csv"})',
         ),
         execute_context_sql.with_description(
-            "Run read-only SQL on a SQLite database. Use for SELECT DISTINCT, "
-            "MIN/MAX, sample queries. Do NOT call on .csv/.json/.md/.txt paths.",
+            "Run a read-only SQL query (SELECT/WITH/PRAGMA) on a SQLite database. "
+            "Returns {columns, rows, row_count, truncated}; default limit 200. "
+            "Use for SELECT DISTINCT, MIN/MAX, sample queries, and aggregations "
+            "to discover value distributions or verify join keys. Do NOT call on "
+            ".csv/.json/.md/.txt paths. "
+            'Example: execute_context_sql({"path": "db/sales.db", '
+            '"sql": "SELECT DISTINCT category FROM products"})',
         ),
         grep_context.with_description(
-            "Search for a regex pattern across ALL context files at once: "
-            "CSV values, JSON fields, Markdown text, and SQLite text columns. "
-            "Use this to check whether a value exists in any file.",
+            "Search for a regex pattern across ALL context files at once: CSV "
+            "values, JSON fields, Markdown text, and SQLite text columns. Use "
+            "to check whether a specific value exists in any file without "
+            "reading each one. Do NOT use for counting or aggregation — use "
+            "execute_context_sql for that. Returns up to 30 matches with file "
+            "path and location; for SQLite reports {table, column, "
+            "total_matches, samples}. "
+            'Example: grep_context({"pattern": "全国"})',
         ),
     ]
     if video_tool is not None:
@@ -122,8 +158,12 @@ def create_explorer_tool_registry(
             description=(
                 "Submit your exploration findings. This is the ONLY way to complete "
                 "the exploration — call it when you have mapped the data landscape. "
-                "Pass each field (files, schema_map, knowledge, join_paths, "
-                "value_samples, warnings) as a separate parameter."
+                "Pass each field as a separate parameter: files (flat list of file "
+                "entries), schema_map (per-table/file columns with dtypes and "
+                "semantics), knowledge (extracted mappings/formulas/units from docs), "
+                "join_paths (discovered relationships), value_samples (sampled "
+                "distinct values for filter-relevant columns), warnings (data-quality "
+                "observations)."
             ),
             json_schema=REPORT_SCHEMA,
             handler=handle_report,

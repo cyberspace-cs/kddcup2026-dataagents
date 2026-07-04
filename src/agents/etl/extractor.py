@@ -3,1335 +3,90 @@
 Pipeline (when knowledge.md schema is available):
   1. **Compress** — LLM strips narrative filler from prose chunks, producing
      pipe-separated key-value entity lines.
-  2. **Pre-merge** — Python collapses multi-line entity records into one line
-     per unique primary key.
-  3. **Normalize** — reorder fields to match schema, drop unknowns.
-  4. **Deterministic CSV** — Python parses normalized KV lines into CSV
-     (no LLM needed).
+  2. **Parse** — Python parses compressed output once into ``EntityTable``.
+  3. **Repair/reconcile/pre-merge** — malformed rejects, variant field names,
+     ID conflicts, and multi-line entity fragments are handled in memory.
+  4. **Normalize/verify/CSV** — clean typed cells, run value-level repair passes,
+     then materialize one final CSV atomically.
 """
 
 from __future__ import annotations
 
 import contextlib
-import csv
 import dataclasses
 import json
 import logging
-import math
-import re
-import sqlite3
-import textwrap
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    TimeoutError as FuturesTimeout,
+    as_completed,
+)
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agents.config import ETL_SCRATCH_ROOT
-from agents.etl._compress import (
-    compress_prose,
-    sample_paragraphs_by_section,
+from agents.etl._compress import compress_prose, sample_paragraphs_by_section
+from agents.etl._constants import (
+    ETL_HTTP_TIMEOUT,
+    ETL_MAX_OUTPUT_TOKENS,
+    ETL_ORCHESTRATOR_LLM_CALL_TIMEOUT,
+    ETL_ORCHESTRATOR_MAX_WORKERS,
+    ETL_RESERVE_OUTPUT_TOKENS,
 )
-from agents.etl._detect import (
-    ETLResult,
-    detect_prose_files,
-)
+from agents.etl._detect import ETLResult, detect_prose_files
+from agents.etl._identity import repair_numeric_identities, validate_csv
 from agents.etl._merge import (
-    apply_synonym_merges,
-    cells_agree,
-    column_fill_counts,
-    deterministic_kv_to_csv,
-    normalize_entity_lines,
-    pre_merge_entity_lines,
-    repair_numeric_identities,
+    merge_records,
     resolve_id_conflicts,
-    validate_csv,
 )
 from agents.etl._pdf import pdf_to_markdown
-from agents.etl._types import RECORD_ID_FIELDS, RECORD_ID_KEYWORDS
+from agents.etl._reconcile import (
+    fix_malformed_lines,
+    reconcile_field_names,
+    unify_table_synonyms,
+)
+from agents.etl._record import (
+    EntityTable,
+    atomic_write_text,
+    normalize_local_record_ids,
+    normalize_records,
+    parse_kv_text,
+    records_to_rows,
+    table_to_kv_text,
+    to_csv_text,
+)
+from agents.etl._schema import (
+    infer_field_units_from_prose,
+    infer_schema_from_sample,
+    merge_prose_schema_into_governance,
+    parse_knowledge_schema,
+)
+from agents.etl._threading import submit_in_context
+from agents.etl._trace import (
+    ETLFileTrace,
+    etl_phase,
+    reset_etl_trace,
+    serialize_trace,
+    set_etl_trace,
+)
+from agents.etl._units import (
+    apply_proportion_convention,
+    infer_proportion_conventions,
+    vote_target_units,
+    write_units_sidecar,
+)
+from agents.etl._verify import (
+    dedup_cross_field_copies,
+    retry_missing_values,
+    verify_field_values,
+)
 from agents.etl.knowledge import km_table_fields
-from agents.llm import ModelAdapter, ModelMessage, ModelResponse, OpenAIModelAdapter
+from agents.llm import ModelAdapter, OpenAIModelAdapter
 
 if TYPE_CHECKING:
     from agents.benchmark.schema import PublicTask
 
 logger = logging.getLogger(__name__)
-
-_MAX_WORKERS = 4
-_LLM_CALL_TIMEOUT = 180
-_ETL_HTTP_TIMEOUT = 300.0
-# ETL 输出都是结构化结果（压缩实体行 / schema），远小于 ReAct 主循环的输出预算：
-# 用 ETL 专属上限收紧生成，并让限流预扣按此量级（而非全局 reserve_output_tokens）
-# 计费，降低并发时的 TPM 虚占。reserve 偏小时由 complete() 的实际 usage 对账补扣，
-# 不会丢配额。
-_ETL_MAX_OUTPUT_TOKENS = 4096
-_ETL_RESERVE_OUTPUT_TOKENS = 2048
-_LOCAL_RECORD_ID_RE = re.compile(
-    rf"(?:{RECORD_ID_KEYWORDS})\s*[：:#-]?\s*(\d{{1,8}})",
-    re.IGNORECASE,
-)
-
-
-def _has_local_record_ids(prose_text: str) -> bool:
-    """Return whether prose uses a repeated document-local record identifier."""
-    matches = _LOCAL_RECORD_ID_RE.findall(prose_text)
-    return len(set(matches)) >= 3
-
-
-def _ensure_local_record_anchor(
-    prose_text: str,
-    columns: list[str],
-    anchor_keys: list[str],
-    explicit_types: dict[str, str] | None = None,
-) -> tuple[list[str], list[str]]:
-    """Add a document-local record ID anchor when prose is sectioned by one.
-
-    Some generated prose files describe the same row across multiple sections
-    using labels like "档案 353" or "战略单元 353".  Those labels are not domain
-    keys such as ``personalcode``; they are a local row key needed to merge the
-    partial facts before downstream analysis.
-    """
-    known_fields = {c.lower() for c in columns} | {a.lower() for a in anchor_keys}
-
-    def _promote_record_id(cols: list[str], ancs: list[str]) -> tuple[list[str], list[str]]:
-        """Ensure record_id is first in both columns and anchor_keys."""
-        rid = next((c for c in cols if c.lower() in RECORD_ID_FIELDS), "record_id")
-        if cols[0].lower() not in RECORD_ID_FIELDS:
-            cols = [rid] + [c for c in cols if c != rid]
-        if not ancs or ancs[0].lower() not in RECORD_ID_FIELDS:
-            ancs = [rid] + [a for a in ancs if a != rid]
-        return cols, ancs
-
-    if known_fields & RECORD_ID_FIELDS:
-        return _promote_record_id(columns, anchor_keys)
-    if explicit_types:
-        for field, ftype in explicit_types.items():
-            if field.lower() in known_fields and "local_record_id" in ftype.lower():
-                return _promote_record_id(columns, anchor_keys)
-    if not _has_local_record_ids(prose_text):
-        return columns, anchor_keys
-
-    columns = ["record_id", *columns]
-    anchor_keys = ["record_id", *anchor_keys]
-    logger.info("ETL schema: added local record_id anchor from prose record labels")
-    return columns, anchor_keys
-
-
-def _parse_schema_types_line(line: str) -> dict[str, str]:
-    """Parse TYPES: field=type, field=type output from schema extraction."""
-    if not line.upper().startswith("TYPES"):
-        return {}
-    raw = line.split(":", 1)[-1]
-    parsed: dict[str, str] = {}
-    for item in re.split(r"[,;]", raw):
-        item = item.strip()
-        if not item:
-            continue
-        field, sep, field_type = item.partition("=")
-        if not sep:
-            field, sep, field_type = item.partition(":")
-        if sep and field.strip() and field_type.strip():
-            parsed[field.strip()] = field_type.strip()
-    return parsed
-
-
-def _parse_kv_line(line: str) -> dict[str, str]:
-    """Parse ``field=value, field=value`` from any prefixed line."""
-    raw = line.split(":", 1)[-1]
-    parsed: dict[str, str] = {}
-    for item in re.split(r"[,;]", raw):
-        item = item.strip()
-        if not item:
-            continue
-        field, sep, val = item.partition("=")
-        if not sep:
-            field, sep, val = item.partition(":")
-        if sep and field.strip() and val.strip():
-            parsed[field.strip()] = val.strip()
-    return parsed
-
-
-def _parse_defs_line(line: str) -> dict[str, str]:
-    """Parse ``DEFS: field=definition; field=definition`` output.
-
-    Splits on semicolons only (definitions may contain commas).
-    """
-    if not line.upper().startswith("DEF"):
-        return {}
-    raw = line.split(":", 1)[-1]
-    parsed: dict[str, str] = {}
-    for item in raw.split(";"):
-        item = item.strip()
-        if not item:
-            continue
-        field, sep, defn = item.partition("=")
-        if sep and field.strip() and defn.strip():
-            parsed[field.strip()] = defn.strip()
-    return parsed
-
-
-def _parse_schema_response(
-    text: str,
-) -> tuple[str, list[str], dict[str, str], list[str], dict[str, str], dict[str, str]] | None:
-    """Parse LLM schema output by line prefix, not position.
-
-    Looks for PK:, ANCHORS:, TYPES:, UNITS:, DEFS: prefixes in any order.
-    The first non-prefixed line with commas is treated as the column list.
-
-    Returns (pk, anchor_keys, explicit_types, columns, field_units, field_defs)
-    or None.
-    """
-    lines = [line.strip() for line in text.strip().strip("`").splitlines() if line.strip()]
-    if len(lines) < 2:
-        return None
-
-    pk: str | None = None
-    anchor_keys: list[str] = []
-    explicit_types: dict[str, str] = {}
-    field_units: dict[str, str] = {}
-    field_defs: dict[str, str] = {}
-    columns: list[str] = []
-
-    for line in lines:
-        upper = line.upper()
-        if upper.startswith("PK"):
-            pk = line.split(":", 1)[-1].strip()
-        elif upper.startswith("ANCHOR"):
-            raw = [a.strip() for a in line.split(":", 1)[-1].split(",") if a.strip()]
-            if raw:
-                anchor_keys = raw
-        elif upper.startswith("TYPE"):
-            explicit_types = _parse_schema_types_line(line)
-        elif upper.startswith("UNIT"):
-            field_units = _parse_kv_line(line)
-        elif upper.startswith("DEF"):
-            field_defs = _parse_defs_line(line)
-        elif "," in line and not columns and "=" not in line:
-            tokens = [c.strip() for c in line.split(",") if c.strip()]
-            if all(len(t.split()) <= 3 for t in tokens):
-                columns = tokens
-
-    if not pk or len(columns) < 2:
-        return None
-
-    if not anchor_keys:
-        anchor_keys = [pk]
-    elif pk not in anchor_keys:
-        anchor_keys.insert(0, pk)
-
-    for ak in anchor_keys:
-        if ak not in columns:
-            columns.append(ak)
-
-    return pk, anchor_keys, explicit_types, columns, field_units, field_defs
-
-
-def _complete_schema_field_defs(
-    columns: list[str],
-    field_defs: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Canonicalize LLM-provided field definitions to match schema column spelling."""
-    if not field_defs:
-        return {}
-    canonical = {column.lower(): column for column in columns}
-    result: dict[str, str] = {}
-    for field, defn in field_defs.items():
-        column = canonical.get(field.lower())
-        if column:
-            result[column] = defn
-    return result
-
-
-def _complete_schema_field_types(
-    columns: list[str],
-    explicit_types: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Canonicalize LLM-provided field types to match schema column spelling."""
-    if not explicit_types:
-        return {}
-    canonical = {column.lower(): column for column in columns}
-    result: dict[str, str] = {}
-    for field, field_type in explicit_types.items():
-        column = canonical.get(field.lower())
-        if column:
-            result[column] = field_type
-    return result
-
-
-# Magnitude scales for unit families whose conversion factors are exactly
-# computable. Within a family, factor(source→target) = scale[source] / scale[target].
-# Families must never be mixed (a 元→% "conversion" is meaningless).
-_UNIT_SCALE_FAMILIES: tuple[dict[str, float], ...] = (
-    {  # CNY monetary magnitudes
-        "元": 1.0,
-        "千元": 1e3,
-        "万元": 1e4,
-        "十万元": 1e5,
-        "百万元": 1e6,
-        "千万元": 1e7,
-        "亿元": 1e8,
-        "十亿元": 1e9,
-        "百亿元": 1e10,
-        "千亿元": 1e11,
-        "万亿元": 1e12,
-    },
-    {  # bare count magnitudes (人/吨/股 suffixes share these prefixes)
-        "万": 1e4,
-        "亿": 1e8,
-        "万亿": 1e12,
-    },
-    {  # percentage ↔ decimal ratio
-        "%": 0.01,
-        "ratio": 1.0,
-    },
-)
-
-
-def _deterministic_factor(source_unit: str, target_unit: str) -> float | None:
-    """Compute the exact source→target multiplier when both units share a scale family.
-
-    Returns None when the pair is not exactly computable (unknown unit, or the
-    units belong to different families).
-    """
-    src = source_unit.strip()
-    tgt = target_unit.strip()
-    for family in _UNIT_SCALE_FAMILIES:
-        if src in family and tgt in family:
-            return family[src] / family[tgt]
-    return None
-
-
-def _vote_target_units(
-    adapter: ModelAdapter,
-    km_text: str,
-    field_units: dict[str, str],
-    question: str = "",
-) -> dict[str, tuple[str, float]]:
-    """Ask the LLM for each field's target unit and conversion factor.
-
-    Returns {field: (target_unit, factor)} where factor is the multiplier
-    to convert source values to target values (e.g. 亿元→万元 = 10000).
-    Fields whose source unit already matches the target are excluded.
-    """
-    source_fields = {
-        f: u
-        for f, u in field_units.items()
-        if not f.startswith("_") and u and not u.startswith("_")
-    }
-    if not source_fields:
-        return {}
-
-    field_list = ", ".join(f"{f}={u}" for f, u in source_fields.items())
-    prompt = (
-        "Below is knowledge.md and a list of fields with their "
-        "current units as found in the source data.\n\n"
-        f"Fields: {field_list}\n\n"
-        "For each field, determine the TARGET unit that knowledge.md "
-        "says answers should use. If the document declares a default unit "
-        "(e.g. '万元'), apply it to all monetary fields. If a field's source "
-        "unit already matches the target, repeat it unchanged. "
-        "Dimensionless fields (price indices, ranks) must keep their "
-        "source unit as-is — do NOT replace with '_default' or any placeholder.\n\n"
-        "PERCENTAGE RULE:\n"
-        "1. If the QUESTION asks for a '比例' (proportion/ratio) and the "
-        "field's source unit is '%', convert to 'ratio' (factor 0.01). "
-        "In Chinese financial data, '比例' means a decimal fraction "
-        "(e.g. 0.0155 = 1.55%), matching the canonical database storage.\n"
-        "2. Otherwise, only convert to 'ratio' when knowledge.md "
-        "EXPLICITLY uses the word 'ratio' or 'decimal ratio' "
-        "in that field's definition. If knowledge.md merely says '%', "
-        "'percentage', '百分比', or the field is just a return/rate expressed "
-        "in percent, keep the source unit as '%' — do NOT convert.\n\n"
-        "For each field where source ≠ target, also output the numeric "
-        "multiplication factor: target_value = source_value × factor. "
-        "Mind the direction — converting to a LARGER unit needs a factor "
-        "BELOW 1.\n\n"
-        "Output format — one field per entry, comma-separated:\n"
-        "  field=target_unit*factor\n"
-        "If source == target (no conversion needed), omit the *factor part:\n"
-        "  field=target_unit\n\n"
-        "Examples:\n"
-        "  gdp=万元*10000, deposits=万元*0.0001, rate=%\n"
-        "  (gdp source was 亿元, target is 万元, so factor=10000)\n"
-        "  (deposits source was 元, target is 万元 — larger unit, "
-        "so factor=0.0001)\n"
-        "  (rate source was %, target is %, so no factor)\n\n"
-        f"knowledge.md:\n{km_text}"
-    )
-    if question:
-        prompt += f"\n\nQUESTION (for context): {question}"
-    messages = [
-        ModelMessage(
-            role="system",
-            content=(
-                "Map each field to its target unit per knowledge.md and the question. "
-                "Output field=unit*factor pairs. Omit *factor when source==target."
-            ),
-        ),
-        ModelMessage(role="user", content=prompt),
-    ]
-
-    try:
-        response: ModelResponse = adapter.complete(messages)
-    except Exception:
-        return {}
-
-    return _parse_unit_factor_response(response.content.strip(), source_fields)
-
-
-def _parse_unit_factor_response(
-    text: str,
-    source_fields: dict[str, str],
-) -> dict[str, tuple[str, float]]:
-    """Parse ``field=unit*factor`` response into {field: (unit, factor)}.
-
-    Only returns entries where source_unit != target_unit and factor is valid.
-    For unit pairs within a known scale family the factor is computed
-    deterministically, overriding whatever the LLM produced — the LLM is
-    trusted only for choosing the target unit, not the arithmetic.
-    """
-    result: dict[str, tuple[str, float]] = {}
-    raw = text.split(":", 1)[-1] if ":" in text else text
-    for item in re.split(r"[,;\n]", raw):
-        item = item.strip()
-        if not item:
-            continue
-        field, sep, rest = item.partition("=")
-        if not sep:
-            continue
-        field = field.strip()
-        if field not in source_fields:
-            continue
-        rest = rest.strip()
-        unit_part, star, factor_part = rest.partition("*")
-        unit_part = unit_part.strip()
-        if not unit_part or unit_part.startswith("_"):
-            continue
-        if unit_part == source_fields[field]:
-            continue
-        exact = _deterministic_factor(source_fields[field], unit_part)
-        if exact is not None:
-            if exact == 1:
-                continue
-            if star:
-                with contextlib.suppress(ValueError, TypeError):
-                    if float(factor_part.strip()) != exact:
-                        logger.warning(
-                            "Unit factor for %s (%s→%s) corrected: LLM gave %s, exact is %s",
-                            field,
-                            source_fields[field],
-                            unit_part,
-                            factor_part.strip(),
-                            exact,
-                        )
-            result[field] = (unit_part, exact)
-            continue
-        if not star:
-            continue
-        try:
-            factor = float(factor_part.strip())
-        except (ValueError, TypeError):
-            continue
-        if factor == 0 or factor == 1:
-            continue
-        result[field] = (unit_part, factor)
-    return result
-
-
-def _write_units_sidecar(
-    task: PublicTask,
-    prose_stem: str,
-    field_units: dict[str, str],
-) -> None:
-    """Write per-field unit metadata to a sidecar JSON in _cache/."""
-    if not field_units:
-        return
-    cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    units_path = cache_dir / f"{prose_stem}_units.json"
-    units_path.write_text(json.dumps(field_units, ensure_ascii=False), encoding="utf-8")
-
-
-_PROPORTION_SAMPLE_LIMIT = 500
-
-# Naming subfamilies carry distinct storage semantics within one database
-# family (observed across benchmark contexts): pct/percentage-named columns
-# store fractions of a whole (AccuPCTOfPled=0.88, HoldingPCT=0.81), while
-# ratio-named columns mix per-10-share counts (TransferPlaRatio=10) and
-# percent-form rates (RatioFloor=21.5). Convention evidence therefore never
-# crosses subfamily lines; a field is matched to evidence from columns of
-# its OWN subfamily only. Order matters: check 'pct/percent' before 'ratio'
-# so combined names resolve to the more specific class.
-_PROPORTION_SUBFAMILIES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("pct", re.compile(r"pct|percent", re.IGNORECASE)),
-    ("proportion", re.compile(r"proportion", re.IGNORECASE)),
-    ("ratio", re.compile(r"ratio", re.IGNORECASE)),
-    ("比例", re.compile(r"比例")),
-)
-
-
-def _proportion_subfamily(name: str) -> str | None:
-    """The proportion naming subfamily a column belongs to, or None."""
-    for subfamily, pattern in _PROPORTION_SUBFAMILIES:
-        if pattern.search(name):
-            return subfamily
-    return None
-
-
-def _classify_proportion_values(values: list[float]) -> str | None:
-    """'ratio' when every |v| <= 1, 'percent' when any |v| > 1, None when empty.
-
-    The boundary is semantic, not tuned: a fraction of a whole cannot exceed
-    1, so any magnitude above it proves percent-form storage.
-    """
-    finite = [abs(v) for v in values if math.isfinite(v)]
-    if not finite:
-        return None
-    return "ratio" if max(finite) <= 1.0 else "percent"
-
-
-def _infer_proportion_conventions(context_dir: Path) -> dict[str, str]:
-    """Observe per-subfamily how sibling structured sources store proportions.
-
-    The gold reference shares the storage convention of the task's database
-    family, which is directly observable: scan SQLite tables and CSV headers
-    for proportion-semantic columns, classify each by value magnitude, and
-    aggregate verdicts per naming subfamily. A subfamily enters the result
-    only when EVERY one of its columns agrees; mixed subfamilies are omitted
-    so the heuristic (question-wording) decision stays in charge for them.
-    """
-    verdicts: dict[str, set[str]] = {}
-
-    def _record(column_name: str, values: list[float]) -> None:
-        subfamily = _proportion_subfamily(column_name)
-        verdict = _classify_proportion_values(values)
-        if subfamily and verdict:
-            verdicts.setdefault(subfamily, set()).add(verdict)
-
-    for db_path in sorted(context_dir.glob("db/*.sqlite")) + sorted(context_dir.glob("db/*.db")):
-        with contextlib.suppress(sqlite3.Error, OSError, ValueError):
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-            try:
-                tables = [
-                    row[0]
-                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                ]
-                for table in tables:
-                    columns = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
-                    for column in columns:
-                        if not _proportion_subfamily(column):
-                            continue
-                        with contextlib.suppress(sqlite3.Error, TypeError, ValueError):
-                            rows = conn.execute(
-                                f'SELECT "{column}" FROM "{table}" '
-                                f'WHERE "{column}" IS NOT NULL '
-                                f"LIMIT {_PROPORTION_SAMPLE_LIMIT}"
-                            ).fetchall()
-                            values: list[float] = []
-                            for (raw,) in rows:
-                                with contextlib.suppress(TypeError, ValueError):
-                                    values.append(float(raw))
-                            _record(column, values)
-            finally:
-                conn.close()
-
-    for csv_file in sorted(context_dir.glob("csv/*.csv")):
-        with (
-            contextlib.suppress(OSError, csv.Error, UnicodeDecodeError),
-            csv_file.open(encoding="utf-8", errors="ignore") as f,
-        ):
-            reader = csv.reader(f)
-            header = next(reader, None)
-            if not header:
-                continue
-            targets = [i for i, name in enumerate(header) if _proportion_subfamily(name)]
-            if not targets:
-                continue
-            samples: dict[int, list[float]] = {i: [] for i in targets}
-            for row_num, row in enumerate(reader):
-                if row_num >= _PROPORTION_SAMPLE_LIMIT:
-                    break
-                for i in targets:
-                    if i < len(row) and row[i].strip():
-                        with contextlib.suppress(ValueError):
-                            samples[i].append(float(row[i].strip().replace(",", "")))
-            for i in targets:
-                _record(header[i], samples[i])
-
-    return {
-        subfamily: next(iter(votes)) for subfamily, votes in verdicts.items() if len(votes) == 1
-    }
-
-
-def _apply_proportion_convention(
-    field_units: dict[str, str],
-    conventions: dict[str, str] | None,
-) -> None:
-    """Align %-sourced fields with their subfamily's storage convention, in place.
-
-    Each field with source unit '%' is matched to the convention observed for
-    its OWN naming subfamily: 'ratio' installs (or overrides to) a
-    deterministic ×0.01 conversion, 'percent' cancels any heuristic
-    conversion. Fields whose subfamily has no unanimous verdict — or no
-    proportion token in their name — keep the heuristic targets.
-    """
-    if not conventions:
-        return
-    for field, source_unit in list(field_units.items()):
-        if field.startswith("_") or str(source_unit) != "%":
-            continue
-        subfamily = _proportion_subfamily(field)
-        convention = conventions.get(subfamily) if subfamily else None
-        if convention == "ratio":
-            field_units[f"_target_{field}"] = "ratio"
-            field_units[f"_factor_{field}"] = "0.01"
-        elif convention == "percent":
-            field_units.pop(f"_target_{field}", None)
-            field_units.pop(f"_factor_{field}", None)
-
-
-def _parse_alias_response(
-    text: str,
-    discovered: list[str],
-    canonicals: list[str],
-) -> dict[str, str]:
-    """Parse ``discovered=canonical`` / ``discovered=DISTINCT`` adjudication lines.
-
-    Only entries naming a known discovered column on the left and a known
-    canonical column (or DISTINCT) on the right are kept; everything else is
-    ignored, so an unlisted discovered column defaults to DISTINCT.
-    """
-    canon_by_lower = {c.lower(): c for c in canonicals}
-    disc_by_lower = {d.lower(): d for d in discovered}
-    mapping: dict[str, str] = {}
-    raw = text.strip().strip("`")
-    for item in re.split(r"[,;\n]", raw):
-        item = item.strip()
-        if not item or "=" not in item:
-            continue
-        left, _, right = item.partition("=")
-        left = left.split(":")[-1].strip()  # tolerate an echoed "ALIASES:" prefix
-        disc = disc_by_lower.get(left.lower())
-        if not disc:
-            continue
-        target = right.strip().strip(".").lower()
-        if target == "distinct":
-            continue
-        canon = canon_by_lower.get(target)
-        if canon:
-            mapping[disc] = canon
-    return mapping
-
-
-def _adjudicate_synonym_columns(
-    adapter: ModelAdapter,
-    prose_stem: str,
-    canonicals: list[tuple[str, str, str]],
-    discovered: list[tuple[str, str, str, list[str]]],
-    question: str,
-) -> dict[str, str]:
-    """Ask the LLM which populated discovered columns are exact synonyms of
-    incompletely-filled canonical columns.
-
-    Both lists carry ``(name, definition, fill_note)`` — fill notes like
-    "7/50 rows filled" let the adjudicator see the split signature. The LLM
-    is trusted only for the semantic judgment; whether a merge actually
-    happens is re-gated deterministically against the data
-    (`apply_synonym_merges`).  Returns {discovered: canonical}.
-    """
-    canon_block = "\n".join(
-        f"- {name} [{fill_note}]: {defn or '(no definition available)'}"
-        for name, defn, fill_note in canonicals
-    )
-    disc_block = "\n".join(
-        f"- {name} [{fill_note}]: {defn or '(no definition available)'} | samples: "
-        f"{', '.join(samples) if samples else '(none)'}"
-        for name, defn, fill_note, samples in discovered
-    )
-    prompt = textwrap.dedent(f"""\
-        A table extracted from the prose file "{prose_stem}" shows a value-split
-        signature: the CANONICAL columns below (defined by the data governance
-        document) are missing values on rows where the DISCOVERED columns below
-        (added during extraction) hold them — typically because extraction
-        routed one concept's values under two names.
-
-        For each DISCOVERED column, decide whether it denotes EXACTLY the same
-        quantity as ONE of the canonical columns — same concept AND every
-        binding qualifier: entity scope (whose quantity it is), before/after
-        state, time window, numerator/denominator, unit family, aggregation
-        level.
-        - Full match → the values belong under the canonical name (the
-          extraction accidentally split one concept into two columns).
-        - Any qualifier differs, no canonical fits, or you are unsure →
-          DISTINCT.
-        Each canonical column can absorb at most ONE discovered column; when
-        several discovered columns seem close, pick the single best match and
-        mark the rest DISTINCT.
-
-        CANONICAL COLUMNS WITH MISSING VALUES:
-        {canon_block}
-
-        POPULATED DISCOVERED COLUMNS (with sample values):
-        {disc_block}
-
-        Task question (context for how the table is used):
-        {question}
-
-        Output one line per discovered column, nothing else:
-          <discovered_column>=<canonical_column>
-          <discovered_column>=DISTINCT""")
-    messages = [
-        ModelMessage(
-            role="system",
-            content=(
-                "You adjudicate whether extracted table columns are exact "
-                "synonyms of governance schema columns. Output only the "
-                "mapping lines."
-            ),
-        ),
-        ModelMessage(role="user", content=prompt),
-    ]
-    try:
-        response: ModelResponse = adapter.complete(messages)
-    except Exception as exc:
-        logger.warning("ETL synonym adjudication failed for '%s': %s", prose_stem, exc)
-        return {}
-    return _parse_alias_response(
-        response.content,
-        [name for name, _defn, _note, _samples in discovered],
-        [name for name, _defn, _note in canonicals],
-    )
-
-
-def _unify_csv_synonyms(
-    adapter: ModelAdapter,
-    csv_path: Path,
-    prose_stem: str,
-    governance_columns: list[str],
-    anchor_keys: list[str],
-    field_defs: dict[str, str],
-    question: str,
-    units_path: Path | None,
-) -> list[tuple[str, str]]:
-    """Detect and repair value-split columns in a freshly materialized CSV.
-
-    Value split: the schema keeps a governance-canonical column AND an
-    extraction-discovered column for the same concept; values land partly or
-    wholly under the discovered name, leaving the canonical column gapped
-    (and any unit conversion bound to the canonical name pointing at dead
-    cells).
-
-    Trigger: a canonical column with missing cells PLUS at least one
-    structurally mergeable discovered column — zero row-level disagreements
-    AND either new cells to contribute or full overlap-agreement (a
-    redundant duplicate). Only then is one adjudication LLM call spent; the
-    merge itself is deterministic (`apply_synonym_merges`): identity columns
-    are protected and any row-level disagreement vetoes the pair. On merge,
-    unit-sidecar metadata follows the values to the canonical name.
-
-    Returns the applied (source, canonical) pairs; [] when nothing changed.
-    """
-    try:
-        with csv_path.open(encoding="utf-8") as f:
-            reader = csv.reader(f)
-            header = next(reader, None)
-            rows = list(reader)
-    except (OSError, csv.Error):
-        return []
-    if not header or not rows:
-        return []
-    width = len(header)
-    rows = [row + [""] * (width - len(row)) if len(row) < width else row[:width] for row in rows]
-
-    fill = column_fill_counts(header, rows)
-    n_rows = len(rows)
-    gov_lower = {g.lower() for g in governance_columns}
-    anchor_lower = {a.lower() for a in anchor_keys}
-    gapped_canonicals = [
-        col
-        for col in header
-        if col.lower() in gov_lower and col.lower() not in anchor_lower and fill[col] < n_rows
-    ]
-    discovered_cols = [
-        col
-        for col in header
-        if col.lower() not in gov_lower and col.lower() not in anchor_lower and fill[col] > 0
-    ]
-    if not gapped_canonicals or not discovered_cols:
-        return []
-
-    col_idx = {col: header.index(col) for col in header}
-
-    def _pair_viable(canon: str, disc: str) -> bool:
-        """Zero conflicts AND (contributes new cells OR fully redundant duplicate)."""
-        ci, di = col_idx[canon], col_idx[disc]
-        contributes = 0
-        overlap = 0
-        disc_nonempty = 0
-        for row in rows:
-            src, dst = row[di].strip(), row[ci].strip()
-            if not src:
-                continue
-            disc_nonempty += 1
-            if not dst:
-                contributes += 1
-            elif cells_agree(src, dst):
-                overlap += 1
-            else:
-                return False
-        return disc_nonempty > 0 and (contributes > 0 or overlap == disc_nonempty)
-
-    viable_canonicals = [
-        canon
-        for canon in gapped_canonicals
-        if any(_pair_viable(canon, disc) for disc in discovered_cols)
-    ]
-    if not viable_canonicals:
-        return []
-
-    samples: dict[str, list[str]] = {col: [] for col in discovered_cols}
-    for row in rows:
-        for col in discovered_cols:
-            val = row[col_idx[col]].strip()
-            if val and val not in samples[col] and len(samples[col]) < 3:
-                samples[col].append(val)
-
-    mapping = _adjudicate_synonym_columns(
-        adapter,
-        prose_stem,
-        [
-            (col, field_defs.get(col, ""), f"{fill[col]}/{n_rows} rows filled")
-            for col in viable_canonicals
-        ],
-        [
-            (col, field_defs.get(col, ""), f"{fill[col]}/{n_rows} rows filled", samples[col])
-            for col in discovered_cols
-        ],
-        question,
-    )
-    if not mapping:
-        return []
-
-    # Collision guard: two discovered columns claiming one canonical column is
-    # either a misjudgment or naming drift — trust neither, corrupt nothing.
-    by_canon: dict[str, list[str]] = {}
-    for disc, canon in mapping.items():
-        by_canon.setdefault(canon, []).append(disc)
-    merges: list[tuple[str, str]] = []
-    for canon, discs in sorted(by_canon.items()):
-        if len(discs) > 1:
-            logger.warning(
-                "ETL synonym-unify: columns %s all claim canonical '%s' — skipped as ambiguous",
-                sorted(discs),
-                canon,
-            )
-            continue
-        merges.append((discs[0], canon))
-
-    # Unit-family guard: never merge values recorded under a different source
-    # unit than the canonical column's — that would mix magnitudes in one column.
-    units_meta: dict[str, Any] = {}
-    if units_path is not None and units_path.is_file():
-        with contextlib.suppress(OSError, json.JSONDecodeError):
-            units_meta = json.loads(units_path.read_text(encoding="utf-8"))
-    guarded: list[tuple[str, str]] = []
-    for src, dst in merges:
-        src_unit, dst_unit = units_meta.get(src), units_meta.get(dst)
-        if src_unit and dst_unit and str(src_unit) != str(dst_unit):
-            logger.warning(
-                "ETL synonym-unify: unit mismatch '%s'(%s) vs '%s'(%s) — not merged",
-                src,
-                src_unit,
-                dst,
-                dst_unit,
-            )
-            continue
-        guarded.append((src, dst))
-    if not guarded:
-        return []
-
-    new_header, new_rows, applied = apply_synonym_merges(
-        header,
-        rows,
-        guarded,
-        protected=set(anchor_keys),
-    )
-    if not applied:
-        return []
-
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(new_header)
-        writer.writerows(new_rows)
-
-    if units_meta:
-        changed = False
-        for src, dst in applied:
-            for prefix in ("", "_target_", "_factor_"):
-                src_key, dst_key = f"{prefix}{src}", f"{prefix}{dst}"
-                if src_key in units_meta:
-                    units_meta.setdefault(dst_key, units_meta[src_key])
-                    del units_meta[src_key]
-                    changed = True
-        if changed and units_path is not None:
-            with contextlib.suppress(OSError):
-                units_path.write_text(
-                    json.dumps(units_meta, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-
-    for src, dst in applied:
-        logger.info(
-            "ETL synonym-unify: merged column '%s' → '%s' in %s",
-            src,
-            dst,
-            csv_path.name,
-        )
-    return applied
-
-
-def _repair_csv_numeric_identities(csv_path: Path) -> list[tuple[int, str, str, str]]:
-    """Run additive-identity repair over a materialized CSV, in place.
-
-    Recomputes approximate numerals (tagged ``~`` by compression, or untagged
-    coarse values) from table invariants mined deterministically from the
-    exact rows, and strips all approx tags. Rewrites the file only when a
-    cell changed. Returns the applied repairs.
-    """
-    try:
-        with csv_path.open(encoding="utf-8") as f:
-            reader = csv.reader(f)
-            header = next(reader, None)
-            rows = list(reader)
-    except (OSError, csv.Error):
-        return []
-    if not header or not rows:
-        return []
-    width = len(header)
-    rows = [row + [""] * (width - len(row)) if len(row) < width else row[:width] for row in rows]
-
-    repaired_rows, repairs = repair_numeric_identities(header, rows)
-    if repaired_rows == rows:
-        return repairs
-
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        writer.writerows(repaired_rows)
-    for row_idx, column, old, new in repairs:
-        logger.info(
-            "ETL identity-repair: %s row %d '%s': %s → %s",
-            csv_path.name,
-            row_idx,
-            column,
-            old,
-            new,
-        )
-    return repairs
-
-
-def _apply_km_schema_floor(
-    columns: list[str],
-    raw_defs: dict[str, str],
-    km_fields: dict[str, str],
-) -> list[str]:
-    """Re-add governance-listed columns the LLM omitted from the schema.
-
-    The governance document's field table is authoritative: a column listed
-    there must survive into the schema even when the prose sample happens to
-    show no values for it (task_53 lost ``totalliabilities`` exactly this
-    way).  Mutates ``columns``/``raw_defs`` in place; returns the re-added
-    column names.
-    """
-    existing = {c.lower() for c in columns}
-    readded = [c for c in km_fields if c.lower() not in existing]
-    for c in readded:
-        columns.append(c)
-        raw_defs.setdefault(c, km_fields[c])
-    return readded
-
-
-def _extract_relevant_entity(
-    adapter: ModelAdapter,
-    km_text: str,
-    prose_stem: str,
-    prose_sample: str,
-) -> str | None:
-    """Pre-filter knowledge.md to only the entity section matching the prose file.
-
-    Sends a lightweight LLM call to identify which entity in the governance
-    document corresponds to the prose file, and returns only that section.
-    This prevents cross-table column contamination in downstream schema inference.
-    """
-    prompt = textwrap.dedent(f"""\
-        Below is a data governance document that describes MULTIPLE database \
-        tables / entities. I also provide a prose data file name and a short \
-        sample from it.
-
-        Prose file: "{prose_stem}"
-        Prose sample (first few lines):
-        ---
-        {prose_sample[:1500]}
-        ---
-
-        Task: find the ONE entity / table section in the governance document \
-        that best matches this prose file. Copy that section VERBATIM — \
-        include the heading, all column definitions, all footnotes and units \
-        that belong to it. Do NOT include sections for other entities.
-
-        If no entity matches, output exactly: NONE
-
-        Governance document:
-        {km_text}""")
-    messages = [
-        ModelMessage(
-            role="system",
-            content="You extract the relevant section from a governance document. Output only the matched section verbatim, nothing else.",
-        ),
-        ModelMessage(role="user", content=prompt),
-    ]
-    try:
-        response: ModelResponse = adapter.complete(messages)
-    except Exception as exc:
-        logger.warning("LLM entity pre-filter failed: %s", exc)
-        return None
-
-    raw = response.content.strip()
-    if not raw or raw.strip().strip("`").upper() == "NONE":
-        return None
-    if len(raw) < 20:
-        return None
-    logger.info(
-        "Knowledge pre-filter for '%s': %d → %d chars",
-        prose_stem,
-        len(km_text),
-        len(raw),
-    )
-    return raw
-
-
-def _parse_knowledge_schema(
-    task: PublicTask, prose_path: Path, adapter: ModelAdapter, prose_text: str
-) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
-    """Use LLM to extract column names, anchor keys, units, and definitions from knowledge.md.
-
-    Samples the prose file so the LLM can discover fields present in the data
-    but missing from the governance document (e.g. record IDs).
-
-    Returns (columns, anchor_keys, field_types, field_units, field_defs) or None.
-    ``anchor_keys[0]`` is the canonical primary key; subsequent entries are
-    secondary identity fields (name, label, secondary ID) that can uniquely
-    identify an entity when the PK takes different forms across sections.
-    """
-    km_path = task.context_dir / "knowledge.md"
-    if not km_path.is_file():
-        return None
-    try:
-        km_text = km_path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-
-    prose_stem = prose_path.stem
-
-    # Deterministic gate: a governance document that never mentions this
-    # table cannot define its schema.  Skipping the knowledge path outright
-    # keeps the LLM entity matcher from force-matching a DIFFERENT table's
-    # section (task_59 ed_consumerpriceindex inherited retailvalueofscgoods
-    # columns that way) and saves two LLM calls.
-    if prose_stem.lower() not in km_text.lower():
-        logger.info(
-            "ETL schema: '%s' not mentioned in knowledge.md — skipping knowledge path",
-            prose_stem,
-        )
-        return None
-
-    prose_sample = sample_paragraphs_by_section(prose_text) if prose_text else ""
-
-    # Deterministic field floor, parsed from the ORIGINAL governance text —
-    # before the LLM pre-filter gets a chance to drop table rows.
-    km_fields = km_table_fields(km_text, prose_stem)
-
-    filtered_km = _extract_relevant_entity(adapter, km_text, prose_stem, prose_sample or "")
-    if filtered_km and prose_stem.lower() in filtered_km.lower():
-        km_text = filtered_km
-    elif filtered_km:
-        # The filter returned a section that never mentions this table — it
-        # matched some other entity.  A real section would carry the table
-        # name in its heading; treat as no-match instead of letting the
-        # schema call inherit a wrong table's columns.
-        logger.warning(
-            "ETL schema: knowledge pre-filter for '%s' returned a section "
-            "not mentioning it — treating as no-match",
-            prose_stem,
-        )
-        return None
-
-    prose_section = ""
-    if prose_sample:
-        prose_section = (
-            f"\n\nSample paragraphs from EVERY SECTION of the prose file "
-            f'"{prose_stem}.md" (use these to discover ALL numeric/categorical '
-            f"data fields present in the prose, even if the governance document "
-            f"does not list them):\n"
-            f"---\n{prose_sample}\n---"
-        )
-
-    prompt = textwrap.dedent(f"""\
-        Below is a data governance document AND a sample from a prose data file.
-        Find the entity in the governance document that best matches \
-        the prose file "{prose_stem}".
-
-        If NO entity in the governance document matches, output exactly: NONE
-
-        Otherwise output exactly SIX lines:
-        Line 1: PK: <primary_key_field_name>
-        Line 2: ANCHORS: <comma-separated identity fields that can uniquely \
-        identify an entity — includes PK plus name/label/secondary ID fields>
-        Line 3: TYPES: <field=type, field=type, ... for every field>
-        Line 4: UNITS: <field=unit for each numeric field whose values carry \
-        a unit in the prose sample or governance document. Use _default=<unit> \
-        for the governance document's declared default monetary unit.>
-        Line 5: DEFS: <field=one-sentence semantic definition; field=definition; \
-        ... for every field. Use semicolons between entries. Copy the exact \
-        semantic definition from the governance document when available; for \
-        fields discovered only in the prose sample, write a concise definition \
-        that distinguishes this field from similarly-named fields.>
-        Line 6: all field names as a comma-separated list (must include all ANCHORS)
-
-        IMPORTANT:
-        - CRITICAL: columns listed in the governance document already have \
-        canonical database names (e.g. "sumbeforetran", "pctbeforetran", \
-        "companycode"). You MUST use these EXACT names verbatim in PK, \
-        ANCHORS, TYPES, UNITS, DEFS, and the column list. NEVER rename, \
-        translate, expand, or paraphrase them — "sumbeforetran" stays \
-        "sumbeforetran", NOT "shares_held_before" or "sum_before_tran".
-        - Only invent new field names for fields discovered in the prose sample \
-        that are not fully covered by any governance column's definition. \
-        New names must be SHORT GENERIC FIELD NAMES (like "event_id", \
-        "tran_date"), NEVER a specific data value.
-        - ANCHORS should include the PK and any name/label/secondary identifier \
-        field that could be used to recognize the same entity across different \
-        sections of the document (e.g. a person's name, a record label).
-        - MANDATORY: include EVERY column listed in the governance document's \
-        table for the matched entity — even when the prose sample shows no \
-        values for it (the sample covers a fraction of the document; absence \
-        from the sample is NOT absence from the data). Omitting a governance \
-        column is an error.
-        - Use simple type labels such as integer_scalar_id, scalar_id, date, time, \
-        number, integer_count, integer_rank, string, category, boolean, url.
-        - For document-local record_id fields use type "integer_scalar local_record_id"; \
-        record_id values must be a single scalar number, not a range or list.
-        - MANDATORY: scan the prose sample for numeric, date, and \
-        categorical data fields that have NO matching governance column. \
-        For each prose field, check every governance column's \
-        definition / description. A governance column covers a prose field \
-        ONLY when it matches the same concept AND all binding qualifiers: \
-        time window, before/after state, numerator/denominator, entity scope, \
-        category, unit, and aggregation level. Opaque database names are \
-        canonical when their definitions match exactly; do NOT add translated \
-        aliases for them. If a prose field is only related to a governance \
-        column but differs in any binding qualifier, treat it as a distinct \
-        discovered field and add a short descriptive name. \
-        Example — WRONG: governance has "rrintenyear" defined as \
-        "近十年累计回报率", prose shows "近十年累计回报率: 166.09" → adding \
-        "ten_year_return" creates a duplicate column and splits values. \
-        CORRECT: recognise "近十年累计回报率" matches "rrintenyear" → use \
-        "rrintenyear", do NOT add "ten_year_return". \
-        Example — CORRECT addition: governance has "sumbeforetran" \
-        ("转让前持股") but prose ALSO has "转让数量" which no governance \
-        column covers → add "transfer_shares" as a new discovered field. \
-        Two columns for the same concept causes value split (some rows \
-        fill column A, others fill column B) and is a critical schema error.
-        - If paragraphs are keyed by repeated document-local labels such as \
-        "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353", \
-        "File 353", or "Case 353", include a field named "record_id" and \
-        put it FIRST in PK and ANCHORS. This local record ID is the row key \
-        for merging sections; it is NOT the same as domain IDs such as \
-        personalcode, innercode, fundcode, or secucode.
-        - Do NOT add narrative/filler fields — only structured data fields.
-        - For the UNITS line: scan the prose sample for unit suffixes attached \
-        to numeric values (e.g. "2478.76亿元" → gdp=亿元, "15.3%" → rate=%). \
-        Output a field=unit pair when you find a CONCRETE unit suffix \
-        (e.g. 元, 万元, 亿元, %, 万吨, 万人, 公斤) in the actual data values \
-        or governance document. Fields whose values appear with "%" in the \
-        prose or are described as "percentage" / "比例" in the governance \
-        document MUST be tagged with unit=%. \
-        A currency denomination statement (e.g. "denominated in Chinese \
-        Yuan", "currency: CNY", "以人民币计价") declares the CURRENCY, not \
-        the magnitude — it is NOT a unit. NEVER emit field=元 from such a \
-        statement; only tag a field 元 when its numeric values carry an \
-        explicit 元 suffix. Monetary fields with no visible magnitude suffix \
-        are already in the governance document's default unit and must be \
-        OMITTED. \
-        Dimensionless fields (price indices, ranks, counts without unit) and \
-        fields with no visible unit suffix \
-        must be OMITTED entirely — do NOT write them with "_default", \
-        "currency", "units", "amount", "count", or any placeholder.
-
-        Governance document:
-        {km_text}{prose_section}""")
-    messages = [
-        ModelMessage(
-            role="system",
-            content=(
-                "You extract database schema. "
-                "Output PK, ANCHORS, TYPES, UNITS, DEFS, then comma-separated columns."
-            ),
-        ),
-        ModelMessage(role="user", content=prompt),
-    ]
-    try:
-        response: ModelResponse = adapter.complete(messages)
-    except Exception as exc:
-        logger.warning("LLM schema extraction failed: %s", exc)
-        return None
-
-    raw = response.content.strip()
-    if not raw or raw.strip().strip("`").upper() == "NONE":
-        return None
-
-    parsed = _parse_schema_response(raw)
-    if not parsed:
-        return None
-    _, anchor_keys, explicit_types, columns, field_units, raw_defs = parsed
-
-    if km_fields:
-        readded = _apply_km_schema_floor(columns, raw_defs, km_fields)
-        if readded:
-            logger.warning(
-                "ETL schema: LLM omitted %d columns listed in knowledge.md for '%s': %s — re-added",
-                len(readded),
-                prose_stem,
-                readded,
-            )
-
-    columns, anchor_keys = _ensure_local_record_anchor(
-        prose_text,
-        columns,
-        anchor_keys,
-        explicit_types,
-    )
-    field_types = _complete_schema_field_types(columns, explicit_types)
-    field_defs = _complete_schema_field_defs(columns, raw_defs)
-
-    logger.info(
-        "Schema from knowledge.md (LLM) for '%s': pk=%s, anchors=%s, types=%s, units=%s, defs=%s, cols=%s",
-        prose_stem,
-        anchor_keys[0],
-        anchor_keys,
-        field_types,
-        field_units,
-        field_defs,
-        columns,
-    )
-    return columns, anchor_keys, field_types, field_units, field_defs
-
-
-def _infer_schema_from_sample(
-    adapter: ModelAdapter,
-    prose_text: str,
-    question: str,
-) -> tuple[list[str], list[str], dict[str, str], dict[str, str], dict[str, str]] | None:
-    """Infer a unified schema by sampling the raw prose text before compression.
-
-    Sends a representative sample to the LLM to discover structured data fields
-    and produce a canonical column list + anchor keys.
-
-    Returns (columns, anchor_keys, field_types, field_units, field_defs) or None.
-    """
-    sample = sample_paragraphs_by_section(prose_text)
-    if not sample or len(sample) < 50:
-        return None
-
-    prompt = textwrap.dedent(f"""\
-        Below is a sample from a prose data document. Each paragraph describes
-        one entity and mixes structured data with narrative filler.
-
-        Task question for context:
-        {question}
-
-        Sample (from multiple sections):
-        ---
-        {sample}
-        ---
-
-        Your job:
-        1. Identify ALL structured data fields present in the sample
-           (numeric values, dates, categories, IDs, codes, statuses).
-        2. Ignore narrative filler (descriptions, opinions, context sentences
-           that don't carry a reusable data value).
-        3. Assign each field a SHORT canonical name (snake_case, e.g.
-           "effective_date", "reserve_ratio", "target_entity").
-        4. Identify the primary key field (the field that uniquely identifies
-           each entity — usually an ID number).
-        5. Identify ANCHOR fields — identity fields (including PK) that can
-           uniquely identify an entity even when the PK is missing or takes
-           a different form (e.g. a name, label, or secondary ID).
-
-        Output exactly SIX lines:
-        Line 1: PK: <primary_key_field_name>
-        Line 2: ANCHORS: <comma-separated identity fields including PK>
-        Line 3: TYPES: <field=type, field=type, ... for every field>
-        Line 4: UNITS: <field=unit for each numeric field whose values carry \
-        a CONCRETE unit suffix in the prose sample (e.g. gdp=亿元, rate=%). \
-        Only use real unit suffixes visible in the data values. Dimensionless \
-        fields (price indices, ratios, ranks, counts without unit) and fields \
-        with no visible unit suffix must be OMITTED — do NOT write them with \
-        "_default", "currency", "units", "amount", or any placeholder.>
-        Line 5: DEFS: <field=one-sentence semantic definition; field=definition; \
-        ... for every field. Semicolons between entries. Write a concise \
-        definition that distinguishes this field from similarly-named fields.>
-        Line 6: all field names as a comma-separated list (must include all ANCHORS)
-
-        Rules:
-        - Column names must be SHORT GENERIC FIELD NAMES, NEVER specific data values.
-        - Only include fields that carry actual structured data values.
-        - Use simple type labels such as integer_scalar_id, scalar_id, date, time,
-          number, integer_count, integer_rank, string, category, boolean, url.
-        - If paragraphs are keyed by repeated document-local labels such as
-          "档案 353", "记录 353", "条目 353", "战略单元 353", "Record 353",
-          "File 353", or "Case 353", include a field named "record_id" and
-          put it FIRST in PK and ANCHORS. This local record ID is the row key
-          for merging sections; it is NOT the same as domain IDs such as
-          personalcode, innercode, fundcode, or secucode.
-          Give record_id type "integer_scalar local_record_id"; record_id values
-          must be a single scalar number, not a range or list.
-        - Do NOT include narrative/context/filler fields.""")
-
-    messages = [
-        ModelMessage(
-            role="system",
-            content="You extract database schema from prose samples. Output PK, ANCHORS, TYPES, UNITS, DEFS, then columns.",
-        ),
-        ModelMessage(role="user", content=prompt),
-    ]
-    try:
-        response: ModelResponse = adapter.complete(messages)
-    except Exception as exc:
-        logger.warning("LLM schema inference from sample failed: %s", exc)
-        return None
-
-    parsed = _parse_schema_response(response.content)
-    if not parsed:
-        return None
-    _, anchor_keys, explicit_types, columns, field_units, raw_defs = parsed
-
-    columns, anchor_keys = _ensure_local_record_anchor(
-        prose_text,
-        columns,
-        anchor_keys,
-        explicit_types,
-    )
-    field_types = _complete_schema_field_types(columns, explicit_types)
-    field_defs = _complete_schema_field_defs(columns, raw_defs)
-
-    logger.info(
-        "Schema inferred from sample: pk=%s, anchors=%s, types=%s, defs=%s, cols=%s",
-        anchor_keys[0],
-        anchor_keys,
-        field_types,
-        field_defs,
-        columns,
-    )
-    return columns, anchor_keys, field_types, field_units, field_defs
 
 
 def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
@@ -1379,7 +134,7 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
         api_base=api_base,
         api_key=api_key,
         temperature=0.1,
-        max_tokens=_ETL_MAX_OUTPUT_TOKENS,
+        max_tokens=ETL_MAX_OUTPUT_TOKENS,
         enable_thinking=None if is_deepseek else False,
         thinking_mode="disabled" if is_deepseek else None,
         backend_kind=backend_kind,
@@ -1387,7 +142,7 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
         top_p=top_p,
         top_k=top_k,
         max_retries=0 if has_rate_limiter else 2,
-        timeout=_ETL_HTTP_TIMEOUT,
+        timeout=ETL_HTTP_TIMEOUT,
     )
 
     if rate_limit_cfg is not None and rate_limit_key:
@@ -1396,7 +151,7 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
             api_key=rate_limit_key,
             # ETL 用更小的 reserve 预扣；少数超出的输出靠 complete() 的 usage 对账补扣。
             rate_limit=dataclasses.replace(
-                rate_limit_cfg, reserve_output_tokens=_ETL_RESERVE_OUTPUT_TOKENS
+                rate_limit_cfg, reserve_output_tokens=ETL_RESERVE_OUTPUT_TOKENS
             ),
         )
 
@@ -1404,6 +159,25 @@ def _make_text_adapter(model_adapter: Any) -> ModelAdapter:
         inner = TracedModelAdapter(inner)
 
     return inner
+
+
+def _record_conservation(
+    phase: Any,
+    name: str,
+    before: dict[str, int],
+    after: dict[str, int],
+) -> None:
+    """记录阶段前后的表统计；记录数净减少即守恒告警（dedup 清格是预期，丢记录不是）。"""
+    phase.metrics["records"] = after["records"]
+    phase.metrics["nonempty_cells"] = after["nonempty_cells"]
+    phase.metrics["cells_delta"] = after["nonempty_cells"] - before["nonempty_cells"]
+    if after["records"] < before["records"]:
+        logger.warning(
+            "ETL %s: record count dropped %d → %d (conservation violation)",
+            name,
+            before["records"],
+            after["records"],
+        )
 
 
 def extract_prose_file(
@@ -1421,7 +195,7 @@ def extract_prose_file(
 ) -> ETLResult | None:
     """Extract structured data from a prose file.
 
-    Pipeline: compress → pre-merge → normalize → deterministic CSV.
+    Pipeline: compress → parse → fix/reconcile/pre-merge → normalize → CSV.
     """
     primary_key = anchor_keys[0] if anchor_keys else None
 
@@ -1431,45 +205,6 @@ def extract_prose_file(
     cache_dir.mkdir(parents=True, exist_ok=True)
     csv_path = etl_dir / f"{path.stem}.csv"
     full_text = prose_text
-
-    def _finalize(phase: str) -> ETLResult | None:
-        """Validate the materialized CSV, unify value-split synonym columns,
-        repair approximate numerals from mined identities, build result."""
-        result = validate_csv(csv_path)
-        if not result:
-            return None
-        changed = False
-        if governance_columns:
-            applied = _unify_csv_synonyms(
-                adapter,
-                csv_path,
-                path.stem,
-                governance_columns,
-                anchor_keys or [],
-                schema_field_defs or {},
-                task.question,
-                cache_dir / f"{path.stem}_units.json",
-            )
-            changed = bool(applied)
-        if _repair_csv_numeric_identities(csv_path):
-            changed = True
-        if changed:
-            result = validate_csv(csv_path) or result
-        header, row_count = result
-        logger.info(
-            "ETL %s: %s → %s (%d cols, %d rows)",
-            phase,
-            path.name,
-            csv_path,
-            len(header),
-            row_count,
-        )
-        return ETLResult(
-            source_file=path.name,
-            csv_path=str(csv_path),
-            columns=header,
-            row_count=row_count,
-        )
 
     if path.suffix.lower() == ".pdf":
         md_path = cache_dir / f"{path.stem}.md"
@@ -1493,24 +228,37 @@ def extract_prose_file(
 
     # ---- Phase 0: infer schema from prose sample (when no schema from knowledge.md) ----
     if not schema_columns:
-        inferred = _infer_schema_from_sample(adapter, full_text, task.question)
-        if inferred:
-            schema_columns, anchor_keys, schema_field_types, field_units, schema_field_defs = (
-                inferred
+        with etl_phase("schema_infer", input_size=len(full_text)) as p:
+            inferred = infer_schema_from_sample(
+                adapter, full_text, task.question, table_name=path.stem
             )
-            primary_key = anchor_keys[0] if anchor_keys else None
+            if inferred:
+                schema_columns, anchor_keys, schema_field_types, field_units, schema_field_defs = (
+                    inferred
+                )
+                primary_key = anchor_keys[0] if anchor_keys else None
+                p.metrics["column_count"] = len(schema_columns)
+                p.metrics["anchor_count"] = len(anchor_keys)
+            else:
+                p.skipped = True
 
     # ---- Phase 1: compress ----
     logger.info("ETL compress: %s (%d chars)", path.name, len(full_text))
-    compressed = compress_prose(
-        adapter,
-        full_text,
-        schema_columns=schema_columns,
-        primary_key=primary_key,
-        anchor_keys=anchor_keys,
-        schema_field_types=schema_field_types,
-        schema_field_defs=schema_field_defs,
-    )
+    with etl_phase("compress", input_size=len(full_text)) as p:
+        compressed, entity_groups, compress_guide = compress_prose(
+            adapter,
+            full_text,
+            schema_columns=schema_columns,
+            primary_key=primary_key,
+            anchor_keys=anchor_keys,
+            schema_field_types=schema_field_types,
+            schema_field_defs=schema_field_defs,
+        )
+        p.metrics["output_chars"] = len(compressed)
+        p.metrics["compression_ratio"] = (
+            round(len(compressed) / len(full_text), 3) if full_text else 0
+        )
+        p.metrics["entity_count"] = len(entity_groups) if entity_groups else 0
     compressed_path = cache_dir / f"{path.stem}_clean.md"
     compressed_path.write_text(compressed, encoding="utf-8")
     logger.info(
@@ -1520,51 +268,159 @@ def extract_prose_file(
         len(compressed) / len(full_text) * 100,
     )
 
-    if not primary_key:
-        compressed = resolve_id_conflicts(compressed)
-
-    compressed = pre_merge_entity_lines(
-        compressed,
-        primary_key=primary_key,
-        anchor_keys=anchor_keys,
-        source_text=full_text,
-    )
+    table: EntityTable | None = None
     if schema_columns:
-        compressed = normalize_entity_lines(compressed, schema_columns, primary_key)
-    compressed_path.write_text(compressed, encoding="utf-8")
+        # ---- 解析边界：compress 输出只解析这一次，之后全程内存表 ----
+        with etl_phase("parse", input_size=len(compressed)) as p:
+            table = parse_kv_text(
+                compressed,
+                columns=schema_columns,
+                primary_key=primary_key,
+                anchor_keys=anchor_keys,
+                field_types=schema_field_types,
+            )
+            dropped, normalized = normalize_local_record_ids(table)
+            p.metrics.update(table.stats())
+            p.metrics["local_id_dropped"] = dropped
+            p.metrics["local_id_normalized"] = normalized
+            if table.rejects:
+                from collections import Counter
+
+                logger.info(
+                    "ETL parse: %s → %d records, %d rejected lines (%s)",
+                    path.name,
+                    len(table.records),
+                    len(table.rejects),
+                    dict(Counter(r.reason for r in table.rejects)),
+                )
+            if dropped:
+                logger.info("ETL parse: dropped %d grouped/range record-id rows", dropped)
+        with etl_phase("fix_format") as p:
+            before = table.stats()
+            recovered = fix_malformed_lines(adapter, table, schema_field_defs)
+            p.metrics["recovered"] = recovered
+            _record_conservation(p, "fix_format", before, table.stats())
+        with etl_phase("reconcile") as p:
+            before = table.stats()
+            applied = reconcile_field_names(adapter, table, schema_field_defs)
+            p.metrics["applied"] = len(applied)
+            _record_conservation(p, "reconcile", before, table.stats())
+        if not primary_key:
+            with etl_phase("resolve_id_conflicts") as p:
+                before = table.stats()
+                fixed = resolve_id_conflicts(table)
+                p.metrics["fixed"] = fixed
+                _record_conservation(p, "resolve_id_conflicts", before, table.stats())
+        with etl_phase("pre_merge") as p:
+            before = table.stats()
+            merge_records(table, source_text=full_text)
+            _record_conservation(p, "pre_merge", before, table.stats())
+        with etl_phase("normalize") as p:
+            before = table.stats()
+            normalize_records(table)
+            _record_conservation(p, "normalize", before, table.stats())
+        with etl_phase("dedup") as p:
+            before = table.stats()
+            dedup_cleared = dedup_cross_field_copies(adapter, table, full_text)
+            p.metrics["cleared_count"] = len(dedup_cleared) if dedup_cleared else 0
+            _record_conservation(p, "dedup", before, table.stats())
+        with etl_phase("retry") as p:
+            before = table.stats()
+            retry_missing_values(
+                adapter,
+                table,
+                entity_groups,
+                schema_field_defs,
+                forced_gaps=dedup_cleared,
+            )
+            _record_conservation(p, "retry", before, table.stats())
+        with etl_phase("verify") as p:
+            before = table.stats()
+            verify_field_values(
+                adapter,
+                table,
+                entity_groups,
+                schema_field_defs,
+                compress_guide=compress_guide,
+            )
+            _record_conservation(p, "verify", before, table.stats())
+        # trace 快照：仅供人读，永不回读进管道
+        compressed_path.write_text(table_to_kv_text(table), encoding="utf-8")
 
     if field_units:
-        _apply_proportion_convention(field_units, proportion_conventions)
-        _write_units_sidecar(task, path.stem, field_units)
+        apply_proportion_convention(field_units, proportion_conventions)
+        write_units_sidecar(task, path.stem, field_units)
 
-    # ---- Phase 2a: deterministic KV→CSV (when normalized) ----
-    if schema_columns:
-        csv_text = deterministic_kv_to_csv(
-            compressed,
-            schema_columns,
-            primary_key,
-            schema_field_types,
-        )
-        if csv_text:
-            csv_path.write_text(csv_text, encoding="utf-8")
-            result = _finalize("deterministic")
-            if result:
-                return result
-            logger.warning("ETL deterministic extraction produced invalid CSV")
-    return None
+    # ---- Phase 2a: deterministic serialization (when schema known) ----
+    if not schema_columns or table is None:
+        return None
+
+    header, rows = records_to_rows(table)
+    if not rows:
+        logger.warning("ETL deterministic extraction produced no rows for %s", path.name)
+        return None
+    with etl_phase("identity_repair") as p:
+        rows, repairs = repair_numeric_identities(header, rows)
+        p.metrics["repaired"] = bool(repairs)
+        for row_idx, column, old, new in repairs:
+            logger.info(
+                "ETL identity-repair: %s row %d '%s': %s → %s",
+                path.name,
+                row_idx,
+                column,
+                old,
+                new,
+            )
+    if governance_columns:
+        with etl_phase("synonym_unify") as p:
+            header, rows, applied = unify_table_synonyms(
+                adapter,
+                header,
+                rows,
+                path.stem,
+                governance_columns,
+                anchor_keys or [],
+                schema_field_defs or {},
+                task.question,
+                cache_dir / f"{path.stem}_units.json",
+            )
+            p.metrics["applied"] = bool(applied)
+
+    # 全管道唯一一次 CSV 写：原子落盘，读者永远看不到半写状态。
+    with etl_phase("csv") as p:
+        atomic_write_text(csv_path, to_csv_text(header, rows))
+        p.metrics["rows"] = len(rows)
+    result = validate_csv(csv_path)
+    if not result:
+        logger.warning("ETL deterministic extraction produced invalid CSV for %s", path.name)
+        return None
+    header, row_count = result
+    logger.info(
+        "ETL deterministic: %s → %s (%d cols, %d rows)",
+        path.name,
+        csv_path,
+        len(header),
+        row_count,
+    )
+    return ETLResult(
+        source_file=path.name,
+        csv_path=str(csv_path),
+        columns=header,
+        row_count=row_count,
+    )
 
 
 def run_etl_for_task(
     task: PublicTask,
     model_adapter: Any,
 ) -> list[ETLResult] | None:
-    """Orchestrator: detect large prose files, extract each, return metadata list.
+    """Orchestrator: detect prose files, extract each, return metadata list.
 
-    Returns None if no large prose files found. If a selected prose file cannot
-    be materialized as CSV, raise so the task fails explicitly.
+    Returns None if no prose files were converted. Individual file failures are
+    logged and skipped so one bad document does not block usable ETL output from
+    sibling documents.
     """
-    force_etl = task.difficulty.lower() in {"hard", "extreme"}
-    prose_files = detect_prose_files(task, force=force_etl)
+    prose_files = detect_prose_files(task)
     if not prose_files:
         return None
 
@@ -1578,17 +434,18 @@ def run_etl_for_task(
             km_text = km_path.read_text(encoding="utf-8")
 
     # Route: select only relevant prose files for ETL.
-    if len(prose_files) >= 2:
-        from agents.etl._router import route_prose_files
-
-        prose_files = route_prose_files(adapter, task.question, prose_files, km_text)
-    if not prose_files:
-        return None
+    # if len(prose_files) >= 2:
+    #     from agents.etl._router import route_prose_files
+    #
+    #     prose_files = route_prose_files(adapter, task.question, prose_files, km_text)
+    # if not prose_files:
+    #     return None
+    logger.info("ETL: processing all %d prose files (routing disabled)", len(prose_files))
 
     # Observe once how sibling structured sources store proportions; the
     # per-subfamily verdicts deterministically override the heuristic
     # %→ratio decision for fields of the same naming subfamily.
-    proportion_conventions = _infer_proportion_conventions(task.context_dir)
+    proportion_conventions = infer_proportion_conventions(task.context_dir)
     if proportion_conventions:
         logger.info("ETL: sibling proportion conventions: %s", proportion_conventions)
 
@@ -1609,17 +466,70 @@ def run_etl_for_task(
                 row_count=row_count,
             )
 
+        from agents.tracing.create import function_span
+
+        file_trace = ETLFileTrace(task.task_id, pf.stem)
+        tokens = set_etl_trace(file_trace)
+        cache_dir = ETL_SCRATCH_ROOT / task.task_id / "_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with function_span(f"etl/file/{pf.stem}"):
+                return _process_inner(pf)
+        finally:
+            try:
+                trace_json = serialize_trace(file_trace)
+                trace_path = cache_dir / f"{pf.stem}_trace.json"
+                trace_path.write_text(
+                    json.dumps(trace_json, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception:
+                logger.debug("Failed to write ETL trace for %s", pf.stem, exc_info=True)
+            reset_etl_trace(tokens)
+
+    def _process_inner(pf: Path) -> ETLResult | None:
         if pf.suffix.lower() == ".pdf":
             logger.info("ETL PDF→markdown: %s", pf.name)
             text: str = pdf_to_markdown(pf)  # pyright: ignore[reportUnknownVariableType]
         else:
             text = pf.read_text(encoding="utf-8")
-        parsed = _parse_knowledge_schema(task, pf, adapter, text)
+
+        with etl_phase("schema_parse", input_size=len(text)) as p:
+            parsed = parse_knowledge_schema(task, pf, adapter, text)
+            p.metrics["found"] = parsed is not None
         if parsed:
             schema, anchors, field_types, units, defs = parsed
+            with etl_phase("schema_merge") as p:
+                extra_cols, extra_types, extra_defs = merge_prose_schema_into_governance(
+                    adapter,
+                    text,
+                    schema,
+                    defs,
+                    field_types,
+                    task.question,
+                    table_name=pf.stem,
+                )
+                p.metrics["extra_columns"] = len(extra_cols) if extra_cols else 0
+            if extra_cols:
+                schema.extend(extra_cols)
+                field_types.update(extra_types)
+                defs.update(extra_defs)
+                logger.info(
+                    "ETL schema union: added %d prose-discovered fields: %s",
+                    len(extra_cols),
+                    extra_cols,
+                )
             units.pop("_default", None)
+            prose_units = infer_field_units_from_prose(
+                adapter,
+                sample_paragraphs_by_section(text) if text else "",
+                schema,
+                defs,
+                units,
+            )
+            units.update(prose_units)
             if km_text and units:
-                targets = _vote_target_units(adapter, km_text, units, question=task.question)
+                targets = vote_target_units(adapter, km_text, units, question=task.question)
                 if targets:
                     for field, (target_unit, factor) in targets.items():
                         units[f"_target_{field}"] = target_unit
@@ -1644,31 +554,44 @@ def run_etl_for_task(
             adapter, pf, task, text, proportion_conventions=proportion_conventions
         )
 
-    if len(prose_files) == 1:
-        result = _process(prose_files[0])
+    def _run_one(pf: Path) -> ETLResult | None:
+        try:
+            result = _process(pf)
+        except Exception as exc:
+            logger.warning("ETL failed for %s; skipping file: %s", pf.name, exc)
+            return None
         if result is None:
-            raise RuntimeError(f"ETL produced no CSV for {prose_files[0].name}")
-        return [result]
+            logger.warning("ETL produced no CSV for %s; skipping file", pf.name)
+            return None
+        return result
+
+    if len(prose_files) == 1:
+        result = _run_one(prose_files[0])
+        return [result] if result is not None else None
 
     results: list[ETLResult] = []
-    orch_timeout = _LLM_CALL_TIMEOUT * max(4, len(prose_files))
-    with ThreadPoolExecutor(max_workers=min(len(prose_files), _MAX_WORKERS)) as pool:
-        futs = {pool.submit(_process, pf): pf for pf in prose_files}
+    orch_timeout = ETL_ORCHESTRATOR_LLM_CALL_TIMEOUT * max(4, len(prose_files))
+    pool = ThreadPoolExecutor(max_workers=min(len(prose_files), ETL_ORCHESTRATOR_MAX_WORKERS))
+    try:
+        futs = {submit_in_context(pool, _run_one, pf): pf for pf in prose_files}
         try:
             for fut in as_completed(futs, timeout=orch_timeout):
                 try:
-                    result = fut.result(timeout=orch_timeout)
-                    if result is None:
-                        raise RuntimeError(f"ETL produced no CSV for {futs[fut].name}")
-                    results.append(result)
-                except TimeoutError:
-                    raise TimeoutError(f"ETL timed out for {futs[fut].name}") from None
+                    result = fut.result()
                 except Exception as exc:
-                    raise RuntimeError(f"ETL failed for {futs[fut].name}: {exc}") from exc
-        except TimeoutError:
+                    logger.warning(
+                        "ETL worker failed for %s; skipping file: %s", futs[fut].name, exc
+                    )
+                    continue
+                if result is not None:
+                    results.append(result)
+        except FuturesTimeout:
             unfinished = [pf.name for fut, pf in futs.items() if not fut.done()]
-            raise TimeoutError(
-                f"ETL orchestrator timed out; unfinished files: {unfinished}"
-            ) from None
+            logger.warning("ETL orchestrator timed out; skipping unfinished files: %s", unfinished)
+            for fut in futs:
+                if not fut.done():
+                    fut.cancel()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
-    return results
+    return results or None

@@ -7,7 +7,7 @@ import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agents.tracing.util import time_iso
 
@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS spans (
 CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
 CREATE INDEX IF NOT EXISTS idx_spans_kind ON spans(kind);
 CREATE INDEX IF NOT EXISTS idx_spans_started ON spans(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_spans_run ON spans(run_id);
+CREATE INDEX IF NOT EXISTS idx_spans_trace_kind ON spans(trace_id, kind);
+CREATE INDEX IF NOT EXISTS idx_spans_ended ON spans(ended_at DESC);
+CREATE INDEX IF NOT EXISTS idx_spans_run_started ON spans(run_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_spans_run_ended ON spans(run_id, ended_at DESC);
+CREATE INDEX IF NOT EXISTS idx_traces_run_task_status ON traces(run_id, task_id, status);
 """
 
 
@@ -64,6 +70,22 @@ def _compute_duration_ms(started: str | None, ended: str | None) -> int | None:
     return None
 
 
+def _trace_status(data: dict[str, Any], metadata: dict[str, Any]) -> str:
+    status = data.get("status") or metadata.get("status")
+    if status == "timeout":
+        return "timeout"
+    if (
+        status == "error"
+        or data.get("error")
+        or metadata.get("failure_reason")
+        or metadata.get("error")
+    ):
+        return "error"
+    if status in {"running", "completed"}:
+        return status
+    return "completed" if data.get("ended_at") else "running"
+
+
 class SQLiteTraceStore:
     def __init__(self, db_path: Path | str) -> None:
         self._db_path = Path(db_path)
@@ -80,9 +102,11 @@ class SQLiteTraceStore:
             self._conn.close()
 
     def upsert_trace(self, data: dict[str, Any]) -> None:
-        status = "completed" if data.get("ended_at") else "running"
+        metadata_value = data.get("metadata", {})
+        metadata = cast(dict[str, Any], metadata_value) if isinstance(metadata_value, dict) else {}
+        status = _trace_status(data, metadata)
         duration = _compute_duration_ms(data.get("started_at"), data.get("ended_at"))
-        metadata_json = json.dumps(data.get("metadata", {}), ensure_ascii=False, default=str)
+        metadata_json = json.dumps(metadata, ensure_ascii=False, default=str)
         with self._lock:
             self._conn.execute(
                 """INSERT INTO traces (trace_id, run_id, task_id, name, started_at, ended_at,
@@ -185,17 +209,31 @@ class SQLiteTraceStore:
                 )
                 self._conn.commit()
 
-    def mark_running_trace_error(self, *, run_id: str, task_id: str, failure_reason: str) -> int:
-        """Mark in-flight traces for a failed task as errored.
+    def mark_running_trace_error(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        failure_reason: str,
+        status: str = "error",
+        include_completed: bool = True,
+    ) -> int:
+        """Mark traces for a failed task as errored.
 
         The parent process uses this when a traced child is terminated before
-        its TraceCtxManager can run ``__exit__``.
+        its TraceCtxManager can run ``__exit__``. It also handles the edge case
+        where the child closed the trace before the parent learned the task
+        failed.
         """
+        failure_status = "timeout" if status == "timeout" else "error"
+        status_filter = (
+            "status NOT IN ('error', 'timeout')" if include_completed else "status = 'running'"
+        )
         ended_at = time_iso()
         with self._lock:
             rows = self._conn.execute(
-                """SELECT trace_id, started_at, metadata_json FROM traces
-                   WHERE run_id = ? AND task_id = ? AND status = 'running'""",
+                f"""SELECT trace_id, started_at, metadata_json FROM traces
+                   WHERE run_id = ? AND task_id = ? AND {status_filter}""",
                 (run_id, task_id),
             ).fetchall()
             trace_ids: list[str] = []
@@ -206,15 +244,17 @@ class SQLiteTraceStore:
                 except json.JSONDecodeError:
                     metadata = {}
                 metadata["failure_reason"] = failure_reason
+                metadata["status"] = failure_status
                 self._conn.execute(
                     """UPDATE traces
                        SET ended_at = ?,
-                           status = 'error',
+                           status = ?,
                            duration_ms = ?,
                            metadata_json = ?
                        WHERE trace_id = ?""",
                     (
                         ended_at,
+                        failure_status,
                         _compute_duration_ms(row["started_at"], ended_at),
                         json.dumps(metadata, ensure_ascii=False, default=str),
                         row["trace_id"],
@@ -313,6 +353,12 @@ class SQLiteTraceStore:
 
     def rate_limit_stats(self, run_id: str | None = None) -> dict[str, Any]:
         with self._lock:
+            if not run_id:
+                latest = self._conn.execute(
+                    "SELECT run_id FROM traces ORDER BY started_at DESC LIMIT 1"
+                ).fetchone()
+                if latest:
+                    run_id = latest["run_id"]
             params: list[Any] = []
             where_clause = "WHERE kind = 'generation'"
             if run_id:
@@ -348,15 +394,17 @@ class SQLiteTraceStore:
         with self._lock:
             if run_id:
                 rows = self._conn.execute(
-                    """SELECT * FROM spans
-                       WHERE (started_at > ? OR ended_at > ?) AND run_id = ?
+                    """SELECT * FROM spans WHERE started_at > ? AND run_id = ?
+                       UNION
+                       SELECT * FROM spans WHERE ended_at > ? AND run_id = ?
                        ORDER BY started_at ASC""",
-                    (iso_timestamp, iso_timestamp, run_id),
+                    (iso_timestamp, run_id, iso_timestamp, run_id),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    """SELECT * FROM spans
-                       WHERE started_at > ? OR ended_at > ?
+                    """SELECT * FROM spans WHERE started_at > ?
+                       UNION
+                       SELECT * FROM spans WHERE ended_at > ?
                        ORDER BY started_at ASC""",
                     (iso_timestamp, iso_timestamp),
                 ).fetchall()

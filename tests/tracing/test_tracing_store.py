@@ -63,6 +63,41 @@ def test_upsert_trace_updates_on_conflict(tmp_path: Path) -> None:
     store.close()
 
 
+def test_upsert_trace_with_failure_metadata_sets_error_status(tmp_path: Path) -> None:
+    store = SQLiteTraceStore(tmp_path / "test.db")
+    trace = _make_trace("tr1")
+    trace["ended_at"] = "2026-01-01T00:01:00+00:00"
+    trace["metadata"] = {"failure_reason": "Agent did not submit an answer within max_steps."}
+
+    store.upsert_trace(trace)
+
+    result = store.get_trace_with_spans("tr1")
+    assert result is not None
+    assert result["trace"]["status"] == "error"
+    assert result["trace"]["metadata"]["failure_reason"] == (
+        "Agent did not submit an answer within max_steps."
+    )
+    store.close()
+
+
+def test_upsert_trace_with_timeout_status_stays_timeout(tmp_path: Path) -> None:
+    store = SQLiteTraceStore(tmp_path / "test.db")
+    trace = _make_trace("tr-timeout")
+    trace["ended_at"] = "2026-01-01T00:01:00+00:00"
+    trace["metadata"] = {
+        "status": "timeout",
+        "failure_reason": "Task timed out after 1 seconds.",
+    }
+
+    store.upsert_trace(trace)
+
+    result = store.get_trace_with_spans("tr-timeout")
+    assert result is not None
+    assert result["trace"]["status"] == "timeout"
+    assert result["trace"]["metadata"]["failure_reason"] == "Task timed out after 1 seconds."
+    store.close()
+
+
 def test_upsert_span_and_get(tmp_path: Path) -> None:
     store = SQLiteTraceStore(tmp_path / "test.db")
     store.upsert_trace(_make_trace("tr1"))
@@ -114,6 +149,50 @@ def test_mark_running_trace_error_sets_error_and_finalizes(tmp_path: Path) -> No
     assert trace["duration_ms"] is not None
     assert trace["span_count"] == 1
     assert trace["total_tokens"] == 150
+    assert trace["metadata"]["failure_reason"] == "Task timed out after 1 seconds."
+    store.close()
+
+
+def test_mark_trace_error_overwrites_completed_failure_trace(tmp_path: Path) -> None:
+    store = SQLiteTraceStore(tmp_path / "test.db")
+    completed = _make_trace("tr1", run_id="run-1", task_id="task_1")
+    completed["ended_at"] = "2026-01-01T00:01:00+00:00"
+    store.upsert_trace(completed)
+
+    updated = store.mark_running_trace_error(
+        run_id="run-1",
+        task_id="task_1",
+        failure_reason="Task failed after trace shutdown.",
+    )
+
+    assert updated == 1
+    result = store.get_trace_with_spans("tr1")
+    assert result is not None
+    trace = result["trace"]
+    assert trace["status"] == "error"
+    assert trace["metadata"]["failure_reason"] == "Task failed after trace shutdown."
+    store.close()
+
+
+def test_mark_trace_timeout_overwrites_completed_failure_trace(tmp_path: Path) -> None:
+    store = SQLiteTraceStore(tmp_path / "test.db")
+    completed = _make_trace("tr1", run_id="run-1", task_id="task_1")
+    completed["ended_at"] = "2026-01-01T00:01:00+00:00"
+    store.upsert_trace(completed)
+
+    updated = store.mark_running_trace_error(
+        run_id="run-1",
+        task_id="task_1",
+        failure_reason="Task timed out after 1 seconds.",
+        status="timeout",
+    )
+
+    assert updated == 1
+    result = store.get_trace_with_spans("tr1")
+    assert result is not None
+    trace = result["trace"]
+    assert trace["status"] == "timeout"
+    assert trace["metadata"]["status"] == "timeout"
     assert trace["metadata"]["failure_reason"] == "Task timed out after 1 seconds."
     store.close()
 

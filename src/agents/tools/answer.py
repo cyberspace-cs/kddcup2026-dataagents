@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import pathlib
 import shutil
 import warnings
@@ -27,6 +29,8 @@ from agents.tools.registry import ToolExecutionResult
 _ANSWER_SCRATCH_ROOT = pathlib.Path("/tmp/dabench")
 _FROM_CSV_SIZE_LIMIT_BYTES = 5 * 1024 * 1024
 
+_FULLWIDTH_COMMA = "，"
+
 
 def _answer_dir_for(task: PublicTask) -> pathlib.Path:
     return _ANSWER_SCRATCH_ROOT / task.task_id / "_answer"
@@ -41,7 +45,7 @@ class AnswerInput(BaseModel):
             default_factory=list,
             description=(
                 "Column header names. Leave empty when using from_csv. "
-                "Inline is rejected for 10+ rows — use from_csv instead."
+                "Inline is rejected above 10 rows or 50 cells — use from_csv instead."
             ),
         ),
     ]
@@ -52,7 +56,7 @@ class AnswerInput(BaseModel):
             description=(
                 "Answer rows; each row's length must match the columns array. "
                 "Leave empty when using from_csv. "
-                "Inline is rejected for 10+ rows — use from_csv instead."
+                "Inline is rejected above 10 rows or 50 cells — use from_csv instead."
             ),
         ),
     ]
@@ -62,8 +66,8 @@ class AnswerInput(BaseModel):
             default=None,
             description=(
                 "Absolute path to a CSV file containing the answer table "
-                "(header row + data rows). REQUIRED for 10+ rows or 50+ cells "
-                "(inline is rejected above this threshold). When set, `columns` "
+                "(header row + data rows). REQUIRED when the answer exceeds "
+                "10 rows or 50 cells. When set, `columns` "
                 "and `rows` MUST be empty. Convention: write the CSV from "
                 "`execute_python` under `os.environ['DABENCH_ANSWER_DIR']`."
             ),
@@ -101,6 +105,62 @@ def _coerce_row(row: list[str], dtypes: list[str]) -> list[Any]:
     return out
 
 
+def _normalize_header_fullwidth_commas(text: str) -> str | None:
+    """Return a copy with unquoted full-width commas fixed in the header only.
+
+    The known recovery case is a hand-written header using `，` while data rows
+    use ASCII commas.  Cell values may legitimately contain `，`, so the fallback
+    is limited to the first CSV record and only runs after pandas reports a
+    header/data width mismatch.
+    """
+    if _FULLWIDTH_COMMA not in text:
+        return None
+    header: list[str] = []
+    rest_start = len(text)
+    in_quotes = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            if in_quotes and i + 1 < n and text[i + 1] == '"':
+                header.append('""')
+                i += 2
+                continue
+            in_quotes = not in_quotes
+            header.append(ch)
+        elif not in_quotes and ch == _FULLWIDTH_COMMA:
+            header.append(",")
+        elif not in_quotes and ch in {"\n", "\r"}:
+            if ch == "\r" and i + 1 < n and text[i + 1] == "\n":
+                header.append("\r\n")
+                rest_start = i + 2
+            else:
+                header.append(ch)
+                rest_start = i + 1
+            break
+        else:
+            header.append(ch)
+        i += 1
+    normalized_header = "".join(header)
+    if normalized_header == text[:rest_start]:
+        return None
+    return normalized_header + text[rest_start:]
+
+
+def _typecast_string_table(
+    header: list[str], data: list[list[str]]
+) -> tuple[list[str], list[list[Any]], list[str]]:
+    """共享的 dtype 推断 + 强转入口：常规路径与 header 救援路径都走这条。"""
+    width = len(header)
+    dtypes: list[str] = []
+    for col_idx in range(width):
+        column_values = [row[col_idx] for row in data]
+        dtypes.append(classify_dtype(column_values))
+    typed = [_coerce_row(row, dtypes) for row in data]
+    return header, typed, dtypes
+
+
 def _from_csv_shape_error(detail: str | None = None) -> str:
     msg = (
         "from_csv rows must have the same number of cells as the header row. "
@@ -111,6 +171,28 @@ def _from_csv_shape_error(detail: str | None = None) -> str:
     if detail:
         msg += f" Parser detail: {detail}"
     return msg
+
+
+def _validate_csv_row_widths(raw: str) -> None:
+    """Reject ragged rows while allowing intentionally preserved blank lines."""
+    reader = csv.reader(io.StringIO(raw))
+    try:
+        header = next(reader)
+    except StopIteration:
+        return
+    except csv.Error as exc:
+        raise ValueError(f"failed to parse from_csv: {exc}") from exc
+
+    width = len(header)
+    try:
+        for row_idx, row in enumerate(reader, start=2):
+            if not row:
+                continue
+            if len(row) != width:
+                detail = f"row {row_idx} has {len(row)} cells; header has {width}"
+                raise ValueError(_from_csv_shape_error(detail))
+    except csv.Error as exc:
+        raise ValueError(f"failed to parse from_csv: {exc}") from exc
 
 
 def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], list[str]]:
@@ -124,37 +206,57 @@ def parse_answer_csv(path: pathlib.Path) -> tuple[list[str], list[list[Any]], li
     if path.stat().st_size > _FROM_CSV_SIZE_LIMIT_BYTES:
         raise ValueError("from_csv exceeds 5MB; split the table or use inline columns/rows")
     try:
+        raw = path.read_text("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"from_csv is not valid UTF-8: {exc}") from exc
+    try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", ParserWarning)
             df = pd.read_csv(
-                path,
+                io.StringIO(raw),
                 dtype=str,
-                engine="python",
+                engine="c",
                 index_col=False,
                 keep_default_na=False,
                 na_filter=False,
+                skip_blank_lines=False,
             )
-    except UnicodeDecodeError as exc:
-        raise ValueError(f"from_csv is not valid UTF-8: {exc}") from exc
     except EmptyDataError as exc:
         raise ValueError("from_csv is empty; expected header row + data rows") from exc
     except ParserWarning as exc:
+        normalized = _normalize_header_fullwidth_commas(raw)
+        if normalized is not None:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", ParserWarning)
+                    df = pd.read_csv(
+                        io.StringIO(normalized),
+                        dtype=str,
+                        engine="c",
+                        index_col=False,
+                        keep_default_na=False,
+                        na_filter=False,
+                        skip_blank_lines=False,
+                    )
+            except (EmptyDataError, ParserError, ParserWarning):
+                pass
+            else:
+                header = [str(column) for column in df.columns]
+                if header and not df.isna().to_numpy().any():
+                    _validate_csv_row_widths(normalized)
+                    data = df.astype(str).values.tolist()
+                    return _typecast_string_table(header, data)
         raise ValueError(_from_csv_shape_error(str(exc))) from exc
     except ParserError as exc:
         raise ValueError(f"failed to parse from_csv: {exc}") from exc
     header = [str(column) for column in df.columns]
     if not header:
         raise ValueError("from_csv header row is empty")
-    width = len(header)
+    _validate_csv_row_widths(raw)
     if df.isna().to_numpy().any():
         raise ValueError(_from_csv_shape_error("one or more rows have fewer cells than the header"))
     data = df.astype(str).values.tolist()
-    dtypes: list[str] = []
-    for col_idx in range(width):
-        column_values = df.iloc[:, col_idx].astype(str).tolist()
-        dtypes.append(classify_dtype(column_values))
-    typed = [_coerce_row(row, dtypes) for row in data]
-    return header, typed, dtypes
+    return _typecast_string_table(header, data)
 
 
 def _prune_null_columns(
@@ -190,29 +292,34 @@ def _inline_threshold_error(columns: list[str], rows: list[list[Any]]) -> str | 
     """Return the inline-size threshold error, or None when the payload is allowed."""
     n_rows = len(rows)
     n_cells = n_rows * len(columns)
-    if n_rows >= INLINE_ANSWER_ROW_LIMIT or n_cells >= INLINE_ANSWER_CELL_LIMIT:
+    if n_rows > INLINE_ANSWER_ROW_LIMIT or n_cells > INLINE_ANSWER_CELL_LIMIT:
         return (
             f"inline rows payload exceeds artifact-handoff threshold "
-            f"(got {n_rows} rows, {n_cells} cells; threshold = "
-            f"{INLINE_ANSWER_ROW_LIMIT} rows or {INLINE_ANSWER_CELL_LIMIT} cells); "
-            f"write the table to "
-            f"{answer_artifact_expression()} from "
-            "execute_python and resubmit with from_csv (no columns/rows)"
+            f"(got {n_rows} rows, {n_cells} cells; inline is allowed only for "
+            f"<= {INLINE_ANSWER_ROW_LIMIT} rows AND <= {INLINE_ANSWER_CELL_LIMIT} cells; "
+            "if either limit is exceeded, use from_csv); "
+            f"write the table with DataFrame.to_csv to "
+            f"{answer_artifact_expression()} in "
+            "execute_python, then resubmit with from_csv (no columns/rows)"
         )
     return None
 
 
+_ANSWER_DESC = (
+    "Submit the final answer table. This is the ONLY way to submit; plain "
+    "text answers are ignored. Returns {status, column_count, row_count}. "
+    f"For small answers ({inline_answer_size_phrase()}): pass inline columns/rows. "
+    f"For {artifact_answer_size_phrase()}: write CSV in execute_python first, "
+    "then pass from_csv (inline is rejected at this threshold). "
+    'Inline example: answer({"columns": ["name", "total"], '
+    '"rows": [["Alice", 100], ["Bob", 200]]}) '
+    'CSV example: answer({"from_csv": '
+    '"/tmp/dabench/<task_id>/_answer/answer.csv"})'
+)
+
+
 @function_tool(
-    description=(
-        "Use this when the final answer table is determined. This is the only "
-        "way to submit; plain text answers are ignored. "
-        f"For small answers ({inline_answer_size_phrase()}): pass inline columns/rows. "
-        f"For {artifact_answer_size_phrase()}: write CSV in execute_python first, "
-        "then pass from_csv (inline is rejected at this threshold). "
-        "IMPORTANT: for content-entity questions "
-        '("what is the comment/post/message/title"), columns must contain '
-        "the text body (Text/Body/Title), NOT a surrogate key (Id/Code)."
-    ),
+    description=_ANSWER_DESC,
     input_model=AnswerInput,
     is_terminal=True,
 )

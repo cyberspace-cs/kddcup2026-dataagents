@@ -35,7 +35,9 @@ def _make_task(tmp_path: Path) -> PublicTask:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False))
+    # Windows 默认 cp936 写,但 read_json 强制 utf-8 读 — helper 必须显式 utf-8
+    # 否则中文 payload 在 zh_CN 机器上读取时 UnicodeDecodeError。
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def test_object_returns_keys_and_value_preview(tmp_path: Path) -> None:
@@ -101,7 +103,7 @@ def test_scalar_json(tmp_path: Path, raw: str, value: Any) -> None:
 
     out = read_json_preview(task, "scalar.json")
 
-    assert out == {"path": "scalar.json", "kind": "scalar", "value": value}
+    assert out == {"kind": "scalar", "value": value}
 
 
 def test_empty_array(tmp_path: Path) -> None:
@@ -345,8 +347,8 @@ def test_max_chars_field_rejected(tmp_path: Path) -> None:
     _write_json(task.context_dir / "x.json", {"a": 1})
     registry = create_default_tool_registry()
 
-    with pytest.raises(ValueError, match=r"read_json: extra field 'max_chars' is not permitted"):
-        registry.execute(task, "read_json", {"path": "x.json", "max_chars": 4000})
+    with pytest.raises(ValueError, match=r"preview_file: extra field 'max_chars' is not permitted"):
+        registry.execute(task, "preview_file", {"path": "x.json", "max_chars": 4000})
 
 
 def test_path_escaping_raises(tmp_path: Path) -> None:

@@ -6,7 +6,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking (internal API only)
+- **ETL post-compression pipeline moved to a structured in-memory table.**
+  `agents.etl._record` introduces `Record`/`EntityTable`: compressed KV text
+  is parsed once (`parse_kv_text`) and the normalize/dedup/retry/verify
+  stages mutate records instead of regex-patching text lines.
+  `dedup_cross_field_copies`, `retry_missing_values` and
+  `verify_field_values` now take an `EntityTable`; `normalize_entity_lines`,
+  `deterministic_kv_to_csv`, `pre_merge_entity_lines`
+  (`agents.etl._merge`) and `repair_csv_numeric_identities`
+  (`agents.etl._schema`) are removed;
+  `unify_csv_synonyms` is replaced by the pure `unify_table_synonyms`
+  (header/rows in, header/rows out — CSV I/O lives in the extractor).
+  The final CSV is materialized exactly once, via an atomic write.
+
 ### Added
+- **`agent.enable_answer_verifier` config field.** When `false`, skips the
+  LLM answer-verifier pass entirely. Default `true` (current behavior).
+- **Answer verifier drops value-sanity check.** The former "Check 4 — VALUE
+  sanity" (magnitude/percentage-range heuristics) is removed; it rejected
+  valid edge-case answers (100%, 0%, large growth rates) more often than it
+  caught real errors. Remaining checks renumbered 5→4, 6→5, 7→6.
 - **`explore_video` sub-agent tool (explorer-only).** On tasks whose context
   contains a video, the explorer can launch a video sub-agent that sees the raw
   video in the leaf context only and returns a validated structured report;
@@ -18,13 +38,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tool_choice` in thinking mode. `"forced"` is an opt-in optimization that
   pins the video sub-agent's tool choice to `report` in one turn, for
   deployments verified via `scripts/smoke_video_tool_choice.py`.
+- **`agent.video_max_tokens` config field.** Video sub-agent calls can use a
+  larger output cap than the main ReAct loop. When rate limiting is enabled and
+  `video_max_tokens` is explicitly higher than `max_tokens`, the video adapter
+  reserves that larger output budget while the prompt estimator still reserves
+  the fixed video input token estimate.
 - **Model adapters accept per-call `tools`.** `ModelAdapter.complete(messages,
   tools=...)` lets the ReAct loop push its own registry on every turn, so the
   request-body tool advertisement and the execution dispatch table are the
   same instance. `tools=None` (or the adapter's constructor registry) keeps
   the byte-stable cached payload; overrides render fresh.
+- **Deterministic video-constraint answer check.** Before the LLM verifier
+  runs, the terminal-policy gate applies two zero-token checks against the
+  latest `explore_video` findings: (1) reject answers whose latest execute
+  step filters by the batch's year alone when the video declared a more
+  specific `batch_id` (e.g. `BATCH-2021-Q4` reduced to
+  `WHERE endate LIKE '2021%'`); (2) reject single-row answers when the video
+  declared multiple `snapshot_dates`/`reporting_dates` and the question is
+  not an aggregate. Comments are stripped before matching so `# batch
+  BATCH-2021-Q4` mentions in reasoning code do not mask the actual filter.
+  Lives in `src/agents/verification/video_constraints.py`; shares the
+  existing `rejections_used` budget so the agent still gets the standard
+  retry quota.
+- **`explore_video` attaches a deterministic filter recipe to its observation.**
+  When `findings.extracted_data.rules` carries enough structure (a field+operator
+  filter pair, a sort_field+top_n ranking pair, or any of group_by / batch_id /
+  snapshot_dates), the tool now adds a `filter_recipe` plaintext block listing
+  the canonical fields and a pandas template skeleton. Closes the
+  rule-translation gap the explorer / main agent used to free-write every run
+  (column-name choice, threshold boundary, forgotten top_n / group_by /
+  batch_id). The recipe always carries a VERIFY-before-use header — downstream
+  code must still confirm exact column names against the source schema via
+  `inspect_files`. Tolerant of the heterogeneous key naming the video sub-agent
+  emits across runs (`filter_field` / `threshold_value` / `ranking_limit` /
+  `output_fields` / `aggregation_field` / Chinese-suffixed variants).
+
+### Fixed
+- **Text-mode file IO defaults to UTF-8.** Multiple call sites used
+  `Path.read_text()` / `path.open(...)` without an `encoding` argument, which
+  falls back to the OS locale codec (cp936 on a zh_CN Windows install). Tasks
+  with Chinese `task.json` questions raised `UnicodeDecodeError` before the
+  agent even started; `prediction.csv` writes silently encoded Chinese column
+  headers as GBK, breaking the grader. Affected files: `benchmark/dataset.py`,
+  `config.py`, `llm/token_bucket.py`, `runs/artifacts.py`,
+  `tools/inspect_files.py`, `tools/read_csv.py`, `tools/read_doc.py`,
+  `tools/read_json.py`. All now pin UTF-8 explicitly.
 
 ### Behavior changes (intentional tightening)
+- **Video report `extracted_data` has a fixed rules/sample shape.** The
+  video `report` tool now normalizes missing extracted data to
+  `{"rules": {}, "displayed_samples": {}}`. Flat legacy payloads
+  (keys outside `rules`/`displayed_samples`) raise a validation error
+  that the agent loop surfaces as a retry prompt, so downstream agents
+  can reliably distinguish query instructions from on-screen preview
+  values.
 - **`run.blocklist` never reaches the judged container.** The submission
   entrypoint force-clears the blocklist baked into the image config: a
   skip-list entry kept from local debugging would otherwise silently
@@ -49,8 +116,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per-key token bucket for tokens they never used. Output above the smaller
   reserve is reconciled against actual usage inside `complete()`, so no quota is
   lost.
+- **Video report `displayed_samples` accepts dict OR list.** TOP-N panels and
+  ordered preview rows are naturally list-shaped (e.g. ranked fund tables);
+  the previous strict ``dict[str, Any]`` schema rejected them and forced the
+  video sub-agent into a retry round that produced degraded findings on ~30%
+  of video tasks. Empirically reproducible: across 4 same-config runs on the
+  30-task video subset, the relax delivers `report`-tool error counts of 1–3
+  vs 3–4 strict, and a small but durable mean-score lift (4-run avg 0.758
+  vs 2-run strict 0.721, ∆ +0.037 with `task_1=1.0` gold-error override).
+  Downstream consumers (templater, video_constraints checker) already
+  normalize both shapes.
+- **`ETL_SCRATCH_ROOT` honours `$DABENCH_SCRATCH_ROOT`.** The path constant
+  in `config.py` now defaults to `/tmp/dabench` but reads the environment
+  variable when set, so non-POSIX dev environments can point at a writable
+  alternative (e.g. `E:/tmp/dabench` on Windows) without patching the source.
 
 ### Changed
+- **ReAct example and ETL defaults increase run throughput.** The example
+  config now leaves `agent.seed` unset, runs six benchmark tasks in parallel,
+  and lowers the per-task timeout to 1200 seconds. Prose ETL now permits
+  eight file-level orchestrator workers so extraction can keep pace with
+  higher task concurrency.
+- **Answer submission guidance and verifier checks updated.** Inline
+  answers now consistently allow up to 10 rows and 50 cells, with larger
+  payloads directed to `from_csv`; error text points models to
+  `DataFrame.to_csv`. Prompt and verifier guidance now reject unit suffixes
+  only on numeric measure cells while preserving requested text, code, and
+  unit-label columns verbatim.
+- **`parse_answer_csv` rescues narrow headers caused by full-width commas.**
+  When `pd.read_csv` reports a header/data width mismatch, the parser retries
+  once after replacing unquoted full-width commas `，` in the header row only.
+  Data cells and other full-width punctuation are not rewritten.
+- **`execute_python` subprocess stdout/stderr hardcoded to UTF-8.**
+  Previously inherited the parent process's encoding (GBK on Windows), making
+  Chinese output unreadable to the model. Now the model can see what it wrote
+  and self-correct encoding issues.
+- **Prompt: CSV artifact rule bans hand-written CSV and full-width commas.**
+  Adds `NEVER hand-write CSV with string concatenation — use DataFrame.to_csv`
+  to the artifact handoff rule in `DATA_OUTPUT_RULES`.
+- **`inspect_files` points video files at `explore_video`, not `execute_python`.**
+  The `UNSUPPORTED_HINT_BY_EXT` table now maps every extension in
+  `agents.runtime.media.VIDEO_EXTENSIONS` (`.mp4`/`.m4v`/`.avi`/`.mov`/`.mkv`/
+  `.webm`/`.flv`/`.wmv`) to "Use explore_video to analyze video content."
+  Previously these fell through to the default "use execute_python or another
+  preview tool" reason — explorer would try pandas / csv on the video file,
+  fail, and burn 1–3 ReAct steps before switching to `explore_video`.
+  Explorer system prompt already directs models to `explore_video` for
+  video-task workflows; this aligns the per-file tool observation so it
+  stops contradicting the system prompt.
 - **Explorer `value_samples` field description disallows non-tabular keys.**
   The schema (`{file.col: [v1, v2]}`) already required column-suffixed keys,
   but the laconic field description left room for the explorer to use a

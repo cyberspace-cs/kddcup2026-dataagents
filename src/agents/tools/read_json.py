@@ -110,7 +110,7 @@ def _summarize_value_for_preview(value: Any) -> Any:
     return value
 
 
-def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, Any]:
+def _streaming_json_schema(path: Path) -> dict[str, Any]:
     """Extract top-level JSON shape for files exceeding the normal load cap."""
     import ijson  # pyright: ignore[reportMissingTypeStubs]
 
@@ -118,7 +118,6 @@ def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, A
         first_event = next(iter(ijson.parse(file)), None)
     if first_event is None:
         return {
-            "path": relative_path,
             "kind": "unknown",
             "streamed": True,
             "reason": "Empty file",
@@ -134,7 +133,6 @@ def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, A
                 if len(sample_value_kinds) < constants.READ_JSON_OBJECT_VALUE_PREVIEW_CAP:
                     sample_value_kinds[key] = type(value).__name__
         return {
-            "path": relative_path,
             "kind": "object",
             "keys": keys[: constants.READ_JSON_OBJECT_KEYS_CAP],
             "key_count": len(keys),
@@ -153,7 +151,6 @@ def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, A
                     first_item_kind = type(item).__name__
                 length += 1
         return {
-            "path": relative_path,
             "kind": "array",
             "length": length,
             "first_item_kind": first_item_kind,
@@ -161,9 +158,8 @@ def _streaming_json_schema(path: Path, relative_path: str | None) -> dict[str, A
             "truncated": True,
         }
 
-    payload = json.loads(path.read_text(errors="replace"))
+    payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     return {
-        "path": relative_path,
         "kind": "scalar",
         "value_kind": type(payload).__name__,
         "streamed": True,
@@ -175,8 +171,8 @@ def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
     path = resolve_context_path(task, relative_path)
     size = path.stat().st_size
     if size > constants.READ_JSON_SIZE_LIMIT:
-        return _streaming_json_schema(path, relative_path)
-    payload = json.loads(path.read_text())
+        return _streaming_json_schema(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
 
     if isinstance(payload, dict):
         payload_dict = cast(dict[str, Any], payload)
@@ -188,7 +184,6 @@ def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
             value_preview[key] = _summarize_value_for_preview(payload_dict[key])
         keys_truncated = key_count > constants.READ_JSON_OBJECT_KEYS_CAP
         return {
-            "path": relative_path,
             "kind": "object",
             "key_count": key_count,
             "keys": listed_keys,
@@ -203,7 +198,6 @@ def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
         head, head_truncation = _array_head_with_caps(payload_list)
         truncated = length > len(head) or head_truncation is not None
         return {
-            "path": relative_path,
             "kind": "array",
             "length": length,
             "head": head,
@@ -214,7 +208,6 @@ def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
     if isinstance(payload, str):
         truncated_text, was_truncated = _truncate_string_value(payload)
         result: dict[str, Any] = {
-            "path": relative_path,
             "kind": "scalar",
             "value": truncated_text,
         }
@@ -222,7 +215,6 @@ def read_json_preview(task: PublicTask, relative_path: str) -> dict[str, Any]:
             result["value_truncated"] = True
         return result
     return {
-        "path": relative_path,
         "kind": "scalar",
         "value": payload,
     }
@@ -232,10 +224,8 @@ def summarize_json(path: Path) -> dict[str, Any]:
     """Extract JSON top-level shape and shallow schema for inspect_files."""
     size = path.stat().st_size
     if size > constants.INSPECT_FILES_JSON_SIZE_LIMIT:
-        result = _streaming_json_schema(path, None)
-        result.pop("path", None)
-        return result
-    payload = json.loads(path.read_text(errors="replace"))
+        return _streaming_json_schema(path)
+    payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     if isinstance(payload, dict):
         payload_dict = cast(dict[str, Any], payload)
         keys: list[str] = list(payload_dict.keys())
@@ -270,13 +260,11 @@ def read_json(
         path_field(file_kind="JSON file", examples=("json/Patient.json", "zip_code.json")),
     ],
 ) -> ToolExecutionResult:
-    """Use when you need to preview a single JSON file: returns a
-    structured summary keyed by `kind` — `array` (length + first 20
-    items), `object` (key_count + first 50 keys + value_preview for
-    first 20 keys), or `scalar` (the value). This is a SAMPLE
-    preview, not full data access. For nested field extraction,
-    filtering, cross-file joins, or deep traversal, use execute_python
-    instead. Files larger than 100MB return a streamed schema
-    (`kind` + `keys` + `sample_value_kinds` for object; `length` +
-    `first_item_kind` for array) without full load."""
+    """Preview a single JSON file. Returns a structured summary keyed by kind:
+    array → {length, head (first 20 items)}, object → {key_count, keys
+    (first 50), value_preview (first 20)}, scalar → {value}. This is a
+    SAMPLE preview, not full data access. For nested field extraction,
+    filtering, cross-file joins, or deep traversal, use execute_python.
+    Files >100MB return a streamed schema without full load.
+    Example: read_json({"path": "json/Patient.json"})"""
     return ToolExecutionResult(ok=True, content=read_json_preview(task, path))

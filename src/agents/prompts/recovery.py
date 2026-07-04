@@ -16,7 +16,7 @@ def _recovery_hint(observation: dict[str, object]) -> str | None:
     if not error_text.strip():
         return None
     if "no such column" in error_text or "no such table" in error_text:
-        return "Re-check schema via inspect_sqlite_schema."
+        return "Re-check schema via preview_file on the .db/.sqlite file."
     if "syntax error" in error_text:
         return "Fix the syntax and retry."
     if "timeout" in error_text or "timed out" in error_text:
