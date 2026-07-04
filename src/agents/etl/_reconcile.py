@@ -18,6 +18,7 @@ from agents.etl._merge import (
     column_fill_counts,
 )
 from agents.etl._record import EntityTable, Reject, parse_kv_text
+from agents.etl._types import is_placeholder
 from agents.llm import ModelMessage, ModelResponse
 
 if TYPE_CHECKING:
@@ -349,7 +350,8 @@ def reconcile_field_names(
             )
             if actual_src is None:
                 continue
-            if dst in record.fields:
+            dst_val = record.fields.get(dst)
+            if dst_val is not None and not is_placeholder(dst_val):
                 logger.warning(
                     "ETL field-name reconciliation: skipped %s → %s for entity %s "
                     "(target already populated)",
@@ -362,6 +364,8 @@ def reconcile_field_names(
             if actual_src in record.approx:
                 record.approx.remove(actual_src)
                 record.approx.add(dst)
+            else:
+                record.approx.discard(dst)
             provenance = record.provenance.pop(actual_src, "reconcile")
             record.provenance[dst] = provenance if provenance != "parse" else "reconcile"
             applied[actual_src] = dst

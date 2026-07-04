@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from agents.etl._reconcile import fix_malformed_lines, reconcile_field_names
-from agents.etl._record import parse_kv_text
+from agents.etl._record import parse_kv_text, records_to_rows
 from agents.llm.types import ModelMessage, ModelResponse
 
 
@@ -84,6 +86,27 @@ def test_reconcile_field_names_renames_case_variants_once() -> None:
     assert all(
         "Alias" not in record.fields and "alias" not in record.fields for record in table.records
     )
+
+
+@pytest.mark.parametrize("target_value", ["", "none", "- (placeholder)"])
+def test_reconcile_field_names_fills_empty_existing_target(target_value: str) -> None:
+    table = parse_kv_text(
+        f"id: 1 | known: {target_value} | Alias: 10",
+        columns=["id", "known"],
+        primary_key="id",
+        anchor_keys=["id"],
+    )
+
+    applied = reconcile_field_names(
+        _ReplyAdapter("Alias=known"),
+        table,
+        schema_field_defs=None,
+    )
+
+    assert applied == {"Alias": "known"}
+    assert table.records[0].fields["known"] == "10"
+    assert "Alias" not in table.records[0].fields
+    assert records_to_rows(table) == (["id", "known"], [["1", "10"]])
 
 
 def test_reconcile_field_names_skips_existing_target() -> None:
