@@ -16,8 +16,8 @@ stability.
 | Tool | Arguments | Purpose |
 | --- | --- | --- |
 | `inspect_files` | _(none)_ | One-shot summary of every file under `context/`: columns, dtypes, row counts, table schemas. |
-| `preview_file` | `path` | Single-file preview by extension: CSV head/tail, JSON structure, SQLite CREATE TABLE statements, or text head. |
-| `execute_context_sql` | `path`, `sql`, `limit` | Read-only SQL against a SQLite/DB file in `context/`. |
+| `preview_file` | `path` | Single-file preview by extension: CSV head/tail, JSON structure, SQLite CREATE TABLE statements with row counts, or text head. |
+| `execute_context_sql` | `path`, `sql`, `limit` | SQL against a SQLite/DB file in virtual `context/`: `SELECT`/`WITH`/`PRAGMA`, `EXPLAIN QUERY PLAN`, and local `CREATE INDEX IF NOT EXISTS` for discovery. |
 | `execute_python` | `code` | Run arbitrary Python with cwd pinned to the task `context/`. |
 | `answer` | `columns`, `rows`, `from_csv` | Submit the final answer table inline or from a CSV artifact. **Terminal**: halts the loop on success. |
 

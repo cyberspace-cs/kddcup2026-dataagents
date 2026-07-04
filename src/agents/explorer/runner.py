@@ -1,6 +1,6 @@
 """Explorer sub-agent runner.
 
-Spawns a short ReAct loop with read-only tools to explore the data
+Spawns a short ReAct loop with discovery tools to explore the data
 landscape for a given task+question, then returns the findings.
 """
 
@@ -73,7 +73,7 @@ def run_explorer(
 ) -> ExplorerResult:
     """Run the Explorer sub-agent on a task and return findings.
 
-    The Explorer uses a read-only tool subset (no execute_python, no answer)
+    The Explorer uses a discovery tool subset (no execute_python, no answer)
     and terminates via a `report` tool. It aims to complete in 3-6 steps.
     """
     registry = create_explorer_tool_registry(video_tool=video_tool)

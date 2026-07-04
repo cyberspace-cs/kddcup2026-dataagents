@@ -1,4 +1,4 @@
-"""Explorer sub-agent: read-only data exploration specialist."""
+"""Explorer sub-agent: discovery-only data exploration specialist."""
 
 from agents.explorer.runner import run_explorer
 

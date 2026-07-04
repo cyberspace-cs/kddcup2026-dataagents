@@ -108,6 +108,24 @@ def test_system_prompt_classifies_data_listing_triggers() -> None:
     assert "非空/不为空/有数据/non-null/not empty" in prompt
 
 
+def test_sqlite_index_prompt_matches_sqlite_plan_output() -> None:
+    prompt = build_native_system_prompt()
+
+    assert "SCAN <table>" in prompt
+    assert "SCAN TABLE" not in prompt
+    assert "idx_<table>_<col>" in prompt
+    assert "idx_<col>" not in prompt
+
+
+def test_system_prompt_keeps_sqlite_guidance_domain_general() -> None:
+    prompt = build_native_system_prompt()
+    lower = prompt.lower()
+
+    assert "encounter scoping" not in lower
+    assert "admission/discharge" not in lower
+    assert "stay id" not in lower
+
+
 # ---------- build_observation_prompt: ok parameter & recovery hints ----------
 
 

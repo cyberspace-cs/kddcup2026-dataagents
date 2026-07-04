@@ -15,7 +15,7 @@ from agents.tools.registry import ToolExecutionResult
 
 
 def inspect_sqlite_database(path: Path) -> dict[str, Any]:
-    """List user tables and their CREATE statements."""
+    """List user tables, CREATE statements, and table row counts."""
     try:
         with connect_read_only(path) as conn:
             rows = conn.execute(
@@ -26,17 +26,22 @@ def inspect_sqlite_database(path: Path) -> dict[str, Any]:
                 ORDER BY name
                 """
             ).fetchall()
+            tables: list[dict[str, Any]] = []
+            for name, create_sql in rows:
+                try:
+                    (count,) = conn.execute(f"SELECT COUNT(*) FROM [{name}]").fetchone()
+                except sqlite3.DatabaseError:
+                    count = None
+                tables.append(
+                    {
+                        "name": name,
+                        "create_sql": create_sql,
+                        "row_count": count,
+                    }
+                )
     except sqlite3.DatabaseError as exc:
         maybe_raise_non_sqlite_path_error(path, exc)
         raise
-    tables: list[dict[str, Any]] = []
-    for name, create_sql in rows:
-        tables.append(
-            {
-                "name": name,
-                "create_sql": create_sql,
-            }
-        )
     return {
         "tables": tables,
     }
@@ -54,10 +59,10 @@ def inspect_sqlite_schema(
     ],
 ) -> ToolExecutionResult:
     """View CREATE TABLE statements for all tables in a SQLite database.
-    Returns {tables: [{name, create_sql}]}. Use this to learn exact
-    column names and types before writing SQL with execute_context_sql.
-    Does NOT return row counts or sample data — use inspect_files for
-    profiles or execute_context_sql for sample queries.
+    Returns {tables: [{name, create_sql, row_count}]}. Use this to learn exact
+    column names, types, and table sizes before writing SQL with execute_context_sql.
+    Does NOT return sample data — use inspect_files for profiles or
+    execute_context_sql for sample queries.
     Do NOT call on .csv/.json/.md/.txt paths.
     Example: inspect_sqlite_schema({"path": "db/clinical.sqlite"})"""
     return ToolExecutionResult(

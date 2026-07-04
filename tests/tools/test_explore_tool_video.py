@@ -39,6 +39,14 @@ def _make_task(tmp_path: Path, *, with_video: bool) -> PublicTask:
     )
 
 
+def test_explore_tool_description_matches_discovery_contract() -> None:
+    tool = create_explore_tool_definition(_Adapter())
+    description = tool.description.lower()
+
+    assert "discovery-only" in description
+    assert "read-only sub-agent" not in description
+
+
 @pytest.fixture
 def recorded(monkeypatch: pytest.MonkeyPatch) -> dict:
     seen: dict = {}

@@ -17,21 +17,22 @@ from pathlib import Path
 
 import pytest
 
-from agents.tools.execute_sql import execute_read_only_sql
+from agents.tools._sqlite_common import validate_subquery_columns
+from agents.tools.execute_sql import execute_sql
 from agents.tools.inspect_sqlite import inspect_sqlite_database
+
+# ---------------------------------------------------------------------------
+# Non-SQLite path translation
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "invoke",
     [
         pytest.param(inspect_sqlite_database, id="inspect_sqlite_schema"),
-        # `SELECT 1` is a constant query and never reads the file, so sqlite never
-        # validates the file header → no "file is not a database" → translation
-        # path doesn't fire. Use a query that touches the file to mirror what real
-        # model-issued SQL would do.
         pytest.param(
-            lambda path: execute_read_only_sql(path, "SELECT * FROM sqlite_master"),
-            id="execute_read_only_sql",
+            lambda path: execute_sql(path, "SELECT * FROM sqlite_master"),
+            id="execute_sql",
         ),
     ],
 )
@@ -101,7 +102,7 @@ def test_real_sqlite_db_still_works(tmp_path: Path) -> None:
     schema = inspect_sqlite_database(db_path)
     assert schema["tables"] and schema["tables"][0]["name"] == "t"
 
-    result = execute_read_only_sql(db_path, "SELECT id, name FROM t ORDER BY id")
+    result = execute_sql(db_path, "SELECT id, name FROM t ORDER BY id")
     assert result["columns"] == ["id", "name"]
     assert result["rows"] == [[1, "a"], [2, "b"]]
 
@@ -115,9 +116,8 @@ def test_other_database_errors_pass_through(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    # 查一张不存在的表 → OperationalError("no such table"), 不是路径类型错
     with pytest.raises(sqlite3.OperationalError) as exc_info:
-        execute_read_only_sql(db_path, "SELECT * FROM nonexistent_table")
+        execute_sql(db_path, "SELECT * FROM nonexistent_table")
     assert "no such table" in str(exc_info.value).lower()
 
 
@@ -130,9 +130,306 @@ def test_empty_result_returns_zero_row_count(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    result = execute_read_only_sql(db_path, "SELECT * FROM items WHERE id = 999")
+    result = execute_sql(db_path, "SELECT * FROM items WHERE id = 999")
     assert result["row_count"] == 0
     assert result["rows"] == []
+
+
+# ---------------------------------------------------------------------------
+# CREATE INDEX
+# ---------------------------------------------------------------------------
+
+
+def test_create_index(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE orders (id INTEGER, customer TEXT, amount REAL)")
+    conn.commit()
+    conn.close()
+
+    result = execute_sql(db_path, "CREATE INDEX idx_customer ON orders(customer)")
+    assert result["ok"] is True
+    assert "created" in result["message"].lower()
+
+    conn = sqlite3.connect(db_path)
+    indexes = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='orders'"
+    ).fetchall()
+    conn.close()
+    assert any(name == "idx_customer" for (name,) in indexes)
+
+
+def test_create_index_already_exists_surfaces_sqlite_error(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE t (id INTEGER)")
+    conn.execute("CREATE INDEX idx_id ON t(id)")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(sqlite3.OperationalError, match="already exists"):
+        execute_sql(db_path, "CREATE INDEX idx_id ON t(id)")
+
+
+def test_create_index_name_conflict_on_other_table_surfaces_error(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE a (id INTEGER)")
+    conn.execute("CREATE TABLE b (id INTEGER)")
+    conn.execute("CREATE INDEX idx_id ON a(id)")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(sqlite3.OperationalError, match="already exists"):
+        execute_sql(db_path, "CREATE INDEX idx_id ON b(id)")
+
+
+def test_create_index_if_not_exists(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE t (id INTEGER)")
+    conn.execute("CREATE INDEX idx_id ON t(id)")
+    conn.commit()
+    conn.close()
+
+    result = execute_sql(db_path, "CREATE INDEX IF NOT EXISTS idx_id ON t(id)")
+    assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# EXPLAIN QUERY PLAN
+# ---------------------------------------------------------------------------
+
+
+def test_explain_query_plan(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("INSERT INTO items VALUES (1, 'a')")
+    conn.commit()
+    conn.close()
+
+    result = execute_sql(db_path, "EXPLAIN QUERY PLAN SELECT * FROM items WHERE id = 1")
+    assert result["ok"] is True
+    assert "plan" in result
+
+
+# ---------------------------------------------------------------------------
+# Write operations still blocked
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "INSERT INTO t VALUES (1)",
+        "UPDATE t SET id = 1",
+        "DELETE FROM t",
+        "DROP TABLE t",
+        "ALTER TABLE t ADD COLUMN x",
+    ],
+)
+def test_write_operations_blocked(tmp_path: Path, sql: str) -> None:
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE t (id INTEGER)")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(ValueError, match="Only SELECT"):
+        execute_sql(db_path, sql)
+
+
+# ---------------------------------------------------------------------------
+# Query timeout
+# ---------------------------------------------------------------------------
+
+
+def test_query_timeout_fires(tmp_path: Path) -> None:
+    """A query exceeding the timeout raises ValueError with actionable hint."""
+    from agents.tools._sqlite_common import _install_query_timeout
+
+    db_path = tmp_path / "slow.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE a (x INTEGER)")
+    conn.executemany("INSERT INTO a VALUES (?)", [(i,) for i in range(5000)])
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(db_path)
+    _install_query_timeout(conn, timeout=0.0)
+    with pytest.raises(sqlite3.OperationalError, match="interrupted"):
+        conn.execute(
+            "SELECT COUNT(*) FROM a AS t1 CROSS JOIN a AS t2 CROSS JOIN a AS t3"
+        ).fetchall()
+    conn.close()
+
+
+def test_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
+    """execute_sql translates 'interrupted' into a ValueError with hints."""
+    from unittest.mock import patch
+
+    from agents.tools._sqlite_common import _install_query_timeout
+
+    db_path = tmp_path / "slow.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE a (x INTEGER)")
+    conn.executemany("INSERT INTO a VALUES (?)", [(i,) for i in range(5000)])
+    conn.commit()
+    conn.close()
+
+    original_connect = __import__(
+        "agents.tools._sqlite_common", fromlist=["connect_read_only"]
+    ).connect_read_only
+
+    def connect_with_tiny_timeout(path: Path) -> sqlite3.Connection:
+        c = original_connect(path)
+        _install_query_timeout(c, timeout=0.0)
+        return c
+
+    with (
+        patch("agents.tools.execute_sql.connect_read_only", connect_with_tiny_timeout),
+        pytest.raises(ValueError, match="timed out"),
+    ):
+        execute_sql(
+            db_path,
+            "SELECT COUNT(*) FROM a AS t1 CROSS JOIN a AS t2 CROSS JOIN a AS t3",
+        )
+
+
+def test_explain_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
+    """EXPLAIN path translates 'interrupted' into a ValueError with hints."""
+    from unittest.mock import MagicMock, patch
+
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE a (x INTEGER)")
+    conn.commit()
+    conn.close()
+
+    mock_conn = MagicMock()
+    mock_conn.execute.side_effect = sqlite3.OperationalError("interrupted")
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch("agents.tools.execute_sql.connect_read_only", return_value=mock_conn),
+        pytest.raises(ValueError, match="timed out"),
+    ):
+        execute_sql(db_path, "EXPLAIN QUERY PLAN SELECT * FROM a")
+
+
+def test_create_index_timeout_translated_to_actionable_error(tmp_path: Path) -> None:
+    """CREATE INDEX path translates 'interrupted' into a ValueError with hints."""
+    from unittest.mock import MagicMock, patch
+
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE a (x INTEGER)")
+    conn.commit()
+    conn.close()
+
+    mock_conn = MagicMock()
+    mock_conn.execute.side_effect = sqlite3.OperationalError("interrupted")
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch("agents.tools.execute_sql.connect_writable", return_value=mock_conn),
+        pytest.raises(ValueError, match="timed out"),
+    ):
+        execute_sql(db_path, "CREATE INDEX idx_a_x ON a(x)")
+
+
+# ---------------------------------------------------------------------------
+# Subquery column validation
+# ---------------------------------------------------------------------------
+
+
+def test_validate_subquery_columns_warns_on_missing_column() -> None:
+    schema = {
+        "orders": ["id", "customer_id", "amount"],
+        "customers": ["id", "name"],
+    }
+    sql = "SELECT * FROM orders WHERE customer_id IN (SELECT customer_id FROM customers)"
+    warnings = validate_subquery_columns(sql, schema)
+    assert len(warnings) == 1
+    assert "customer_id" in warnings[0]
+    assert "customers" in warnings[0]
+    assert "orders" in warnings[0]
+
+
+def test_validate_subquery_columns_no_warning_when_correct() -> None:
+    schema = {
+        "orders": ["id", "customer_id", "amount"],
+        "customers": ["id", "name"],
+    }
+    sql = "SELECT * FROM orders WHERE customer_id IN (SELECT id FROM customers)"
+    warnings = validate_subquery_columns(sql, schema)
+    assert warnings == []
+
+
+def test_validate_subquery_columns_unknown_table_ignored() -> None:
+    schema = {"orders": ["id", "amount"]}
+    sql = "SELECT * FROM orders WHERE id IN (SELECT id FROM unknown_table)"
+    warnings = validate_subquery_columns(sql, schema)
+    assert warnings == []
+
+
+def test_column_validation_blocks_query_before_execution(tmp_path: Path) -> None:
+    """Invalid subquery columns fail hard before SQLite returns poisoned rows."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER)")
+    conn.execute("CREATE TABLE customers (id INTEGER, name TEXT)")
+    conn.execute("INSERT INTO orders VALUES (1, 10)")
+    conn.execute("INSERT INTO orders VALUES (2, 999)")
+    conn.execute("INSERT INTO customers VALUES (10, 'Alice')")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(ValueError) as exc_info:
+        execute_sql(
+            db_path,
+            "SELECT id FROM orders "
+            "WHERE customer_id IN (SELECT customer_id FROM customers) "
+            "ORDER BY id",
+        )
+
+    msg = str(exc_info.value)
+    assert "Unsafe SQL subquery column reference" in msg
+    assert "customer_id" in msg
+    assert "customers" in msg
+
+
+# ---------------------------------------------------------------------------
+# inspect_sqlite_database row_count
+# ---------------------------------------------------------------------------
+
+
+def test_inspect_includes_row_count(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE big (id INTEGER)")
+    for i in range(100):
+        conn.execute("INSERT INTO big VALUES (?)", (i,))
+    conn.execute("CREATE TABLE empty (id INTEGER)")
+    conn.commit()
+    conn.close()
+
+    schema = inspect_sqlite_database(db_path)
+    tables = {t["name"]: t for t in schema["tables"]}
+    assert tables["big"]["row_count"] == 100
+    assert tables["empty"]["row_count"] == 0
+
+
+def test_sqlite_schema_tool_descriptions_include_row_count() -> None:
+    from agents.tools.inspect_sqlite import inspect_sqlite_schema
+    from agents.tools.preview import preview_file
+
+    for description in (inspect_sqlite_schema.description, preview_file.description):
+        assert "{name, create_sql, row_count}" in description
+        assert "does not return row counts" not in description.lower()
 
 
 def test_auto_quote_identifiers_does_not_rewrite_string_literals(tmp_path: Path) -> None:
@@ -144,7 +441,7 @@ def test_auto_quote_identifiers_does_not_rewrite_string_literals(tmp_path: Path)
     conn.commit()
     conn.close()
 
-    result = execute_read_only_sql(db_path, "SELECT A/B FROM t WHERE name = 'A/B'")
+    result = execute_sql(db_path, "SELECT A/B FROM t WHERE name = 'A/B'")
 
     assert result["columns"] == ["A/B"]
     assert result["rows"] == [[7]]
@@ -161,7 +458,7 @@ def test_auto_quote_identifiers_leaves_existing_quoted_identifiers_intact(
     conn.commit()
     conn.close()
 
-    result = execute_read_only_sql(db_path, 'SELECT A/B, "C-D" FROM t')
+    result = execute_sql(db_path, 'SELECT A/B, "C-D" FROM t')
 
     assert result["columns"] == ["A/B", "C-D"]
     assert result["rows"] == [[7, 3]]

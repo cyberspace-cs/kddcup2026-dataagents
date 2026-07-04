@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -10,12 +11,18 @@ from agents.config import ETL_SCRATCH_ROOT
 
 
 def _link_or_copy_file(source: Path, dest: Path) -> None:
-    """Prefer symlinks, but fall back to copying on Windows without link privileges."""
+    """Prefer symlinks; copy SQLite files so the agent can CREATE INDEX."""
+    import shutil
+
+    from agents.tools.constants import SQLITE_EXTS
+
+    if source.suffix.lower() in SQLITE_EXTS:
+        shutil.copy2(source, dest)
+        dest.chmod(dest.stat().st_mode | stat.S_IWUSR)
+        return
     try:
         dest.symlink_to(source)
     except OSError:
-        import shutil
-
         shutil.copy2(source, dest)
 
 

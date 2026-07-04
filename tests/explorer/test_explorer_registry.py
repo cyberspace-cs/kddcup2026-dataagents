@@ -42,6 +42,22 @@ def test_video_tool_injected_when_provided() -> None:
     assert registry.definitions["report"].is_terminal is True
 
 
+def test_execute_context_sql_description_matches_local_index_contract() -> None:
+    registry = create_explorer_tool_registry()
+    description = registry.definitions["execute_context_sql"].description.lower()
+
+    assert "virtual-context sqlite database copy" in description
+    assert "create index if not exists" in description
+    assert "read-only sql query" not in description
+
+
+def test_preview_file_description_matches_sqlite_row_count_shape() -> None:
+    registry = create_explorer_tool_registry()
+    description = registry.definitions["preview_file"].description
+
+    assert "{name, create_sql, row_count}" in description
+
+
 def test_report_now_validated_at_registry_boundary(tmp_path: Path) -> None:
     registry = create_explorer_tool_registry()
     assert registry.definitions["report"].input_model is ReportInput

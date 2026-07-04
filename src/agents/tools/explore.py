@@ -1,7 +1,7 @@
 """Explore tool: wraps the Explorer sub-agent as a main-agent tool.
 
 The `explore` tool replaces `inspect_files` in production: a single call
-runs the Explorer sub-agent (3–10 read-only steps) and returns a complete
+runs the Explorer sub-agent (3–10 discovery steps) and returns a complete
 data map — file inventory, schemas, knowledge extraction, join paths, and
 warnings — so the main agent can skip manual multi-step discovery.
 
@@ -159,7 +159,7 @@ def create_explore_tool_definition(
     return _FunctionTool(
         name="explore",
         description=(
-            "Use FIRST to bootstrap context exploration. Launches a read-only "
+            "Use FIRST to bootstrap context exploration. Launches a discovery-only "
             "sub-agent that inspects every file under context (columns, dtypes, "
             "row counts, table schemas, column_conversions), reads knowledge.md, "
             "samples key values, identifies join paths, and analyzes videos if "
