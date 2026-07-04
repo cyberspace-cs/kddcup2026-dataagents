@@ -139,7 +139,7 @@ def create_default_tool_registry(
     Registration order (fixed by convention):
     1. explore / inspect_files  — first-step exploration
     2. preview_file             — single-file preview (CSV/JSON/SQLite/doc)
-    3. execute_context_sql      — read-only SQL
+    3. execute_context_sql      — virtual-context SQLite queries and indexes
     4. grep_context             — regex search across files
     5. execute_python           — subprocess Python execution
     6. answer                   — terminal: submit answer (only terminal tool)

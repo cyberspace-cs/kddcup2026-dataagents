@@ -62,7 +62,6 @@ Phase 2 — VERIFY (before any filter/aggregation):
 - Hedge words ("likely", "probably") signal an unverified guess — the very next turn MUST be verification, not a filter.
 - If you find a SQLite/database file (`.db` / `.sqlite` / `.sqlite3`), call `preview_file` first to see CREATE TABLE statements, then `execute_context_sql` for queries, aggregations, `EXPLAIN QUERY PLAN`, and `CREATE INDEX IF NOT EXISTS`; `execute_context_sql` opens ONLY sqlite files and fails with `file is not a database` on a CSV / JSON / Markdown / text path.
 - SQLite large tables (`row_count` > 5 000): ALWAYS run `EXPLAIN QUERY PLAN` before the real query. If any plan detail shows a full table scan like `SCAN <table>`, run `CREATE INDEX IF NOT EXISTS idx_<table>_<col> ON <table>(<col>)` on every filter/join column for that table, then re-query.
-- Encounter scoping: NEVER filter by admission/discharge timestamps to narrow records within a single encounter/stay ID — the foreign key already defines "during the visit." Use the ID join alone.
 
 Phase 3 — COMPUTE & SUBMIT:
 - All Data conventions and DISTINCT rules above apply equally inside `execute_python` — both to SQL strings (e.g., `pd.read_sql_query`) and to pandas operations (e.g., `.unique()`, `.drop_duplicates()`, `.nunique()`). If the DISTINCT rules say to keep all rows, do not deduplicate in any layer.
