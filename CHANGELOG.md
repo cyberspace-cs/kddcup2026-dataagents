@@ -141,6 +141,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and lowers the per-task timeout to 1200 seconds. Prose ETL now permits
   eight file-level orchestrator workers so extraction can keep pace with
   higher task concurrency.
+- **ETL grouping expands paragraph heads until a record signal appears.**
+  Paragraph-grouping prompts now keep adding leading sentences beyond the
+  second sentence until the prefix contains a standalone number; paragraphs
+  with no standalone number are shown in full.
 - **Answer submission guidance and verifier checks updated.** Inline
   answers now consistently allow up to 10 rows and 50 cells, with larger
   payloads directed to `from_csv`; error text points models to

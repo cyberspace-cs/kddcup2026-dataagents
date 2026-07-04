@@ -51,23 +51,18 @@ def split_prose_paragraphs(text: str) -> list[str]:
     return [p.strip() for p in text.split("\n\n") if p.strip() and len(p.strip()) > 30]
 
 
-def _leading_sentences(flat: str, count: int) -> str:
+def grouping_head(para: str) -> str:
+    """Paragraph opening rendered for grouping prompts."""
+    flat = " ".join(para.split())
     end = 0
-    for _ in range(count):
+    while True:
         m = GROUPING_SENTENCE_END.search(flat, end)
         if not m:
             return flat
         end = m.end()
-    return flat[:end]
-
-
-def grouping_head(para: str) -> str:
-    """Paragraph opening rendered for grouping prompts."""
-    flat = " ".join(para.split())
-    head = _leading_sentences(flat, 1)
-    if contains_standalone_number(head) or not contains_standalone_number(flat):
-        return head
-    return _leading_sentences(flat, 2)
+        head = flat[:end]
+        if contains_standalone_number(head):
+            return head
 
 
 def make_grouping_batches(

@@ -67,11 +67,20 @@ from agents.llm.types import ModelResponse
             "The asset registered as 1487 used a baseline of 100.",
             id="extends-to-numberless-opener",
         ),
-        # Pure narrative (no standalone number anywhere) stays one sentence.
+        pytest.param(
+            "The investigation now turns to a different methodology. "
+            "A second setup sentence still carries no label. "
+            "The asset registered as 1487 used a baseline of 100. Scope national.",
+            "The investigation now turns to a different methodology. "
+            "A second setup sentence still carries no label. "
+            "The asset registered as 1487 used a baseline of 100.",
+            id="extends-past-two-sentences",
+        ),
+        # Pure narrative keeps expanding until the whole paragraph is shown.
         pytest.param(
             "Purely narrative filler about methodology. More filler follows here.",
-            "Purely narrative filler about methodology.",
-            id="narrative-stays-short",
+            "Purely narrative filler about methodology. More filler follows here.",
+            id="narrative-expands-to-whole-paragraph",
         ),
     ],
 )
