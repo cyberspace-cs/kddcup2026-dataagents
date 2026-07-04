@@ -1,4 +1,4 @@
-"""Explorer sub-agent tool registry: read-only tools + report terminal tool."""
+"""Explorer sub-agent tool registry: discovery tools + report terminal tool."""
 
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def create_explorer_tool_registry(
     *,
     video_tool: FunctionTool | None = None,
 ) -> ToolRegistry:
-    """Read-only tool registry for the Explorer sub-agent.
+    """Discovery tool registry for the Explorer sub-agent.
 
     Includes inspection/preview tools from top-level tool modules, plus ``report``
     as the only terminal tool. Excludes ``execute_python`` and ``answer``.
@@ -123,7 +123,7 @@ def create_explorer_tool_registry(
             "Preview a single context file. Auto-detects format by extension. "
             "CSV → {columns, dtypes, row_count, head (20 rows), tail (5 rows)}. "
             "JSON → {kind, keys/length, head/value_preview}. "
-            "SQLite → {tables: [{name, create_sql}]}. "
+            "SQLite → {tables: [{name, create_sql, row_count}]}. "
             "Text → {total_lines, head (first 100 lines), has_more}. "
             "Sample only, not full data access. Do NOT use for aggregation — "
             "use execute_context_sql for SQL or note in report that full-file "
@@ -131,11 +131,13 @@ def create_explorer_tool_registry(
             'Example: preview_file({"path": "csv/member.csv"})',
         ),
         execute_context_sql.with_description(
-            "Run a read-only SQL query (SELECT/WITH/PRAGMA) on a SQLite database. "
+            "Run SQL on a virtual-context SQLite database copy. Supports "
+            "SELECT/WITH/PRAGMA, EXPLAIN QUERY PLAN, and local "
+            "CREATE INDEX IF NOT EXISTS for faster discovery on large tables. "
             "Returns {columns, rows, row_count, truncated}; default limit 200. "
-            "Use for SELECT DISTINCT, MIN/MAX, sample queries, and aggregations "
-            "to discover value distributions or verify join keys. Do NOT call on "
-            ".csv/.json/.md/.txt paths. "
+            "Use for SELECT DISTINCT, MIN/MAX, sample queries, and lightweight "
+            "aggregations to discover value distributions or verify join keys. "
+            "Do NOT call on .csv/.json/.md/.txt paths. "
             'Example: execute_context_sql({"path": "db/sales.db", '
             '"sql": "SELECT DISTINCT category FROM products"})',
         ),

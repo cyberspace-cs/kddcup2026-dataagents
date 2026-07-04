@@ -423,6 +423,15 @@ def test_inspect_includes_row_count(tmp_path: Path) -> None:
     assert tables["empty"]["row_count"] == 0
 
 
+def test_sqlite_schema_tool_descriptions_include_row_count() -> None:
+    from agents.tools.inspect_sqlite import inspect_sqlite_schema
+    from agents.tools.preview import preview_file
+
+    for description in (inspect_sqlite_schema.description, preview_file.description):
+        assert "{name, create_sql, row_count}" in description
+        assert "does not return row counts" not in description.lower()
+
+
 def test_auto_quote_identifiers_does_not_rewrite_string_literals(tmp_path: Path) -> None:
     """Auto-quoting must not change literal filter values that look like column names."""
     db_path = tmp_path / "quote_retry.db"

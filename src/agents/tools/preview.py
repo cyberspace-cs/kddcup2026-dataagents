@@ -49,8 +49,8 @@ def preview_file(
     CSV → {columns, dtypes, row_count, head (20 rows), tail (5 rows)}.
     JSON → structured summary by kind: array (length + head), object
     (keys + value_preview), scalar (value). Files >100MB streamed.
-    SQLite (.db/.sqlite) → {tables: [{name, create_sql}]} showing
-    CREATE TABLE statements for all tables.
+    SQLite (.db/.sqlite) → {tables: [{name, create_sql, row_count}]}
+    showing CREATE TABLE statements and row counts for all tables.
     Text (md/txt) → {total_lines, head (first 100 lines), has_more};
     knowledge.md is returned in full (never truncated).
     Use when you need to inspect one file's structure or sample values
