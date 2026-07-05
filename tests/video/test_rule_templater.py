@@ -360,3 +360,178 @@ def test_top_n_zero_or_negative_rejected() -> None:
     assert r is not None
     assert r.top_n is None
     assert not r.is_sufficient()  # sort_field alone isn't enough
+
+
+# ---------- structured rules wrapper -----------------------------------------
+
+
+def test_extract_new_canonical_rules_wrapper() -> None:
+    rules = {
+        "canonical": {
+            "filters": [
+                {"field": "AFloats", "operator": ">", "value": "10000000000", "unit": "shares"}
+            ],
+            "group_by": ["SecondIndustryName"],
+            "sort_by": [{"field": "AFloats", "direction": "desc"}],
+            "top_n": 10,
+            "tables": ["lc_freefloat"],
+            "output_fields": ["SecondIndustryName"],
+            "identifiers": {"batch_id": "B-1"},
+            "snapshot_dates": ["2019-12-31"],
+        },
+        "rule_items": [
+            {"id": "r1", "kind": "filter", "description": "AFloats greater than 10000000000"}
+        ],
+        "raw_observations": ["AFloats > 10000000000"],
+        "task_specific": {},
+    }
+
+    r = extract_filter_recipe(rules)
+
+    assert r is not None
+    assert r.field == "AFloats"
+    assert r.operator == ">"
+    assert r.threshold == "10000000000"
+    assert r.threshold_unit == "shares"
+    assert r.group_by == "SecondIndustryName"
+    assert r.sort_field == "AFloats"
+    assert r.sort_descending is True
+    assert r.top_n == 10
+    assert r.table_hint == "lc_freefloat"
+    assert r.export_fields == ("SecondIndustryName",)
+    assert r.batch_id == "B-1"
+    assert r.snapshot_dates == ("2019-12-31",)
+
+
+def _multi_canonical_rules() -> dict:
+    return {
+        "canonical": {
+            "filters": [
+                {
+                    "field": "AFloats",
+                    "operator": ">",
+                    "value": "10000000000",
+                    "unit": "shares",
+                    "source_rule_id": "r1",
+                },
+                {
+                    "field": "ListedDate",
+                    "operator": "<=",
+                    "value": "2019-12-31",
+                    "source_rule_id": "r2",
+                },
+            ],
+            "logic": "AND",
+            "group_by": ["SecondIndustryName", "Market"],
+            "sort_by": [
+                {"field": "AFloats", "direction": "desc"},
+                {"field": "CompanyCode", "direction": "asc"},
+            ],
+            "top_n": 10,
+            "tables": ["lc_freefloat", "lc_exgindustry"],
+            "output_fields": ["SecondIndustryName", "CompanyCode"],
+        },
+        "rule_items": [
+            {"id": "r1", "kind": "filter", "description": "AFloats greater than threshold"},
+            {"id": "r2", "kind": "filter", "description": "Listed before end of 2019"},
+        ],
+        "raw_observations": [],
+        "task_specific": {},
+    }
+
+
+def test_extract_new_canonical_rules_wrapper_preserves_multiple_conditions() -> None:
+    r = extract_filter_recipe(_multi_canonical_rules())
+
+    assert r is not None
+    assert r.field == "AFloats"
+    assert r.operator == ">"
+    assert r.threshold == "10000000000"
+    assert r.logic == "AND"
+    assert len(r.filters) == 2
+    assert r.filters[1].field == "ListedDate"
+    assert r.filters[1].operator == "<="
+    assert r.filters[1].threshold == "2019-12-31"
+    assert r.group_by == "SecondIndustryName"
+    assert r.group_by_fields == ("SecondIndustryName", "Market")
+    assert r.table_hint == "lc_freefloat"
+    assert r.table_hints == ("lc_freefloat", "lc_exgindustry")
+    assert len(r.sorts) == 2
+    assert r.sorts[1].field == "CompanyCode"
+    assert r.sorts[1].descending is False
+
+
+def test_synthesize_new_canonical_rules_wrapper_renders_multiple_conditions() -> None:
+    text = synthesize_filter_recipe(_multi_canonical_rules())
+
+    assert text is not None
+    assert "filter_logic: AND" in text
+    assert "AFloats > 10000000000 shares" in text
+    assert "ListedDate <= 2019-12-31" in text
+    assert "& (df['ListedDate'] <= '2019-12-31')" in text
+    assert "sort_by:" in text
+    assert "sort_values(['AFloats', 'CompanyCode'], ascending=[False, True])" in text
+    assert "table_hints:  ['lc_freefloat', 'lc_exgindustry']" in text
+    assert "group_by:     ['SecondIndustryName', 'Market']" in text
+
+
+def test_canonical_list_values_survive_template_rendering() -> None:
+    text = synthesize_filter_recipe(
+        {
+            "canonical": {
+                "filters": [
+                    {"field": "FundType", "operator": "in", "value": ["ETF", "LOF"]},
+                    {"field": "ReturnPct", "operator": "between", "value": ["0", "10"]},
+                ],
+                "logic": "AND",
+            },
+            "rule_items": [],
+            "raw_observations": [],
+            "task_specific": {},
+        }
+    )
+
+    assert text is not None
+    assert "df['FundType'].isin(['ETF', 'LOF'])" in text
+    assert "df['ReturnPct'].between('0', '10', inclusive='both')" in text
+
+
+def test_new_rules_wrapper_falls_back_to_task_specific_legacy_shape() -> None:
+    rules = {
+        "canonical": {},
+        "rule_items": [],
+        "raw_observations": [],
+        "task_specific": {
+            "field": "dailybenchgr",
+            "operator": ">",
+            "threshold": "0.00%",
+            "table": "mf_benchmarkgrowthrate",
+        },
+    }
+
+    r = extract_filter_recipe(rules)
+
+    assert r is not None
+    assert r.field == "dailybenchgr"
+    assert r.operator == ">"
+    assert r.threshold == "0.00%"
+    assert r.table_hint == "mf_benchmarkgrowthrate"
+
+
+def test_synthesize_uses_new_canonical_rules_wrapper() -> None:
+    text = synthesize_filter_recipe(
+        {
+            "canonical": {
+                "filters": [{"field": "performance", "operator": "<", "value": 0, "unit": "%"}],
+                "identifiers": {"batch_id": "BT-2024-0318"},
+            },
+            "rule_items": [],
+            "raw_observations": [],
+            "task_specific": {},
+        }
+    )
+
+    assert text is not None
+    assert "performance" in text
+    assert "operator:     <" in text
+    assert "BT-2024-0318" in text

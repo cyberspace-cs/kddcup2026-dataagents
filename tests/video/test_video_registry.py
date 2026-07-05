@@ -1,4 +1,4 @@
-"""Video agent registry：仅 report 一个终止工具，带运行时校验与大小兜底。"""
+"""Video agent registry: report-only terminal tool with structured rules."""
 
 from __future__ import annotations
 
@@ -25,6 +25,29 @@ def _make_task(tmp_path: Path) -> PublicTask:
     )
 
 
+def _empty_canonical_rules() -> dict:
+    return {
+        "filters": [],
+        "metrics": [],
+        "group_by": [],
+        "sort_by": [],
+        "periods": [],
+        "identifiers": {},
+        "tables": [],
+        "output_fields": [],
+        "snapshot_dates": [],
+    }
+
+
+def _empty_rules() -> dict:
+    return {
+        "canonical": _empty_canonical_rules(),
+        "rule_items": [],
+        "raw_observations": [],
+        "task_specific": {},
+    }
+
+
 def test_registry_contains_only_terminal_report() -> None:
     registry = create_video_tool_registry()
     assert list(registry.definitions) == ["report"]
@@ -32,7 +55,7 @@ def test_registry_contains_only_terminal_report() -> None:
     assert registry.definitions["report"].input_model is not None
 
 
-def test_valid_report_roundtrips_findings(tmp_path: Path) -> None:
+def test_valid_report_roundtrips_structured_rules(tmp_path: Path) -> None:
     registry = create_video_tool_registry()
     result = registry.execute(
         _make_task(tmp_path),
@@ -41,19 +64,60 @@ def test_valid_report_roundtrips_findings(tmp_path: Path) -> None:
             "summary": "dashboard recording",
             "timeline": [{"time": "00:42", "event": "bar chart"}],
             "extracted_data": {
-                "rules": {"filters": [{"field": "quarter", "op": "=", "value": "Q3"}]},
+                "rules": {
+                    "canonical": {
+                        "filters": [{"field": "quarter", "op": "=", "value": "Q3"}],
+                        "logic": "AND",
+                        "group_by": "region",
+                        "identifiers": {"batch_id": "B-1"},
+                    },
+                    "rule_items": [
+                        {
+                            "id": "r1",
+                            "kind": "filter",
+                            "description": "quarter equals Q3",
+                            "fields": "quarter",
+                        }
+                    ],
+                    "raw_observations": "Rule text: quarter = Q3",
+                },
                 "displayed_samples": {"q3_revenue": {"A": 10, "B": 20}},
             },
         },
     )
     assert result.ok is True and result.is_terminal is True
     findings = json.loads(result.content["findings"])
+    rules = findings["extracted_data"]["rules"]
     assert findings["summary"] == "dashboard recording"
-    assert findings["extracted_data"] == {
-        "rules": {"filters": [{"field": "quarter", "op": "=", "value": "Q3"}]},
-        "displayed_samples": {"q3_revenue": {"A": 10, "B": 20}},
-    }
+    assert rules["canonical"]["filters"] == [{"field": "quarter", "operator": "=", "value": "Q3"}]
+    assert rules["canonical"]["logic"] == "AND"
+    assert rules["canonical"]["group_by"] == ["region"]
+    assert rules["canonical"]["identifiers"] == {"batch_id": "B-1"}
+    assert rules["rule_items"][0]["fields"] == ["quarter"]
+    assert rules["raw_observations"] == ["Rule text: quarter = Q3"]
+    assert findings["extracted_data"]["displayed_samples"] == {"q3_revenue": {"A": 10, "B": 20}}
     assert findings["coverage"] == [] and findings["warnings"] == []
+
+
+def test_legacy_flat_rules_are_preserved_in_task_specific(tmp_path: Path) -> None:
+    registry = create_video_tool_registry()
+    result = registry.execute(
+        _make_task(tmp_path),
+        "report",
+        {
+            "summary": "dashboard recording",
+            "extracted_data": {
+                "rules": {"scheme_id": "Q3-FM-07", "threshold": "100.00"},
+                "displayed_samples": {},
+            },
+        },
+    )
+
+    assert result.ok is True
+    findings = json.loads(result.content["findings"])
+    rules = findings["extracted_data"]["rules"]
+    assert rules["canonical"] == _empty_canonical_rules()
+    assert rules["task_specific"] == {"scheme_id": "Q3-FM-07", "threshold": "100.00"}
 
 
 def test_displayed_samples_accepts_list_shape(tmp_path: Path) -> None:
@@ -65,7 +129,7 @@ def test_displayed_samples_accepts_list_shape(tmp_path: Path) -> None:
         {
             "summary": "ranked panel",
             "extracted_data": {
-                "rules": {"ranking_limit": 2},
+                "rules": {"canonical": {"top_n": 2}},
                 "displayed_samples": samples,
             },
         },
@@ -90,7 +154,7 @@ def test_missing_extracted_data_defaults_to_empty_contract(tmp_path: Path) -> No
 
     assert result.ok is True
     findings = json.loads(result.content["findings"])
-    assert findings["extracted_data"] == {"rules": {}, "displayed_samples": {}}
+    assert findings["extracted_data"] == {"rules": _empty_rules(), "displayed_samples": {}}
 
 
 def test_null_warnings_normalized_to_empty_list(tmp_path: Path) -> None:
@@ -121,7 +185,7 @@ def test_stringified_extracted_data_and_single_coverage_normalized(tmp_path: Pat
             "extracted_data": json.dumps(
                 {
                     "rules": {"scheme_id": "Q3-FM-07"},
-                    "displayed_samples": {"threshold": "100.00亿"},
+                    "displayed_samples": {"threshold": "100.00"},
                 },
                 ensure_ascii=False,
             ),
@@ -132,10 +196,8 @@ def test_stringified_extracted_data_and_single_coverage_normalized(tmp_path: Pat
 
     assert result.ok is True
     findings = json.loads(result.content["findings"])
-    assert findings["extracted_data"] == {
-        "rules": {"scheme_id": "Q3-FM-07"},
-        "displayed_samples": {"threshold": "100.00亿"},
-    }
+    assert findings["extracted_data"]["rules"]["task_specific"] == {"scheme_id": "Q3-FM-07"}
+    assert findings["extracted_data"]["displayed_samples"] == {"threshold": "100.00"}
     assert findings["coverage"] == ["Threshold details were visible but partly abbreviated."]
     assert findings["warnings"] == []
 
