@@ -7,7 +7,7 @@ constrained decoding（`adapt_model_response` 的 recovered 调用路径会绕�
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -18,6 +18,22 @@ from agents.tools.schema_normalize import normalize_for_vllm
 # 报告序列化总量兜底（≈ schema 密集型 explorer findings 实测体量的 2 倍）：
 # observation 会被逐字回放进 explorer 后续每一轮消息且消息层无截断，必须在执行边界拦截。
 VIDEO_REPORT_MAX_BYTES = 64 * 1024
+
+
+def _empty_filters() -> list[VideoCanonicalFilter]:
+    return []
+
+
+def _empty_metrics() -> list[VideoCanonicalMetric]:
+    return []
+
+
+def _empty_sorts() -> list[VideoCanonicalSort]:
+    return []
+
+
+def _empty_rule_items() -> list[VideoRuleItem]:
+    return []
 
 
 class VideoCanonicalFilter(BaseModel):
@@ -57,7 +73,8 @@ class VideoCanonicalFilter(BaseModel):
     def _accept_common_aliases(cls, value: Any) -> Any:
         if not isinstance(value, dict):
             return value
-        out = dict(value)
+        source = cast(dict[str, Any], value)
+        out: dict[str, Any] = dict(source)
         op = out.pop("op", None)
         if "operator" not in out and op is not None:
             out["operator"] = op
@@ -91,7 +108,8 @@ class VideoCanonicalMetric(BaseModel):
     def _accept_common_aliases(cls, value: Any) -> Any:
         if not isinstance(value, dict):
             return value
-        out = dict(value)
+        source = cast(dict[str, Any], value)
+        out: dict[str, Any] = dict(source)
         agg = out.pop("agg", None)
         if "aggregation" not in out and agg is not None:
             out["aggregation"] = agg
@@ -119,7 +137,8 @@ class VideoCanonicalSort(BaseModel):
             return {"field": value}
         if not isinstance(value, dict):
             return value
-        out = dict(value)
+        source = cast(dict[str, Any], value)
+        out: dict[str, Any] = dict(source)
         sort_field = out.pop("sort_field", None)
         if "field" not in out and sort_field is not None:
             out["field"] = sort_field
@@ -133,7 +152,7 @@ class VideoCanonicalRules(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     filters: list[VideoCanonicalFilter] = Field(
-        default_factory=list,
+        default_factory=_empty_filters,
         description=(
             "Only fully representable executable filters. Leave empty for rules "
             "with exceptions, formulas, visual-only logic, or ambiguous mapping."
@@ -143,9 +162,9 @@ class VideoCanonicalRules(BaseModel):
         default=None,
         description="How filters combine, e.g. AND or OR. Omit when unknown.",
     )
-    metrics: list[VideoCanonicalMetric] = Field(default_factory=list)
+    metrics: list[VideoCanonicalMetric] = Field(default_factory=_empty_metrics)
     group_by: list[str] = Field(default_factory=list)
-    sort_by: list[VideoCanonicalSort] = Field(default_factory=list)
+    sort_by: list[VideoCanonicalSort] = Field(default_factory=_empty_sorts)
     top_n: int | str | None = Field(default=None)
     periods: list[Any] = Field(
         default_factory=list,
@@ -220,7 +239,7 @@ class VideoRules(BaseModel):
         ),
     )
     rule_items: list[VideoRuleItem] = Field(
-        default_factory=list,
+        default_factory=_empty_rule_items,
         description="Flexible rule descriptions that preserve complex or task-specific logic.",
     )
     raw_observations: list[str] = Field(
@@ -247,11 +266,12 @@ class VideoRules(BaseModel):
                 return value
         if not isinstance(value, dict):
             return value
-        if not value:
+        rules = cast(dict[str, Any], value)
+        if not rules:
             return {}
         wrapper_keys = {"canonical", "rule_items", "raw_observations", "task_specific"}
-        if wrapper_keys.intersection(value):
-            return value
+        if wrapper_keys.intersection(rules):
+            return rules
         canonical_keys = {
             "filters",
             "logic",
@@ -265,9 +285,9 @@ class VideoRules(BaseModel):
             "output_fields",
             "snapshot_dates",
         }
-        if set(value).issubset(canonical_keys):
-            return {"canonical": value}
-        return {"task_specific": value}
+        if set(rules).issubset(canonical_keys):
+            return {"canonical": rules}
+        return {"task_specific": rules}
 
     @field_validator("rule_items", mode="before")
     @classmethod

@@ -829,16 +829,18 @@ def _render_filter_expression(condition: RecipeFilter) -> tuple[str | None, str 
     if op == "in":
         if value is None:
             return None, f"IN filter missing values: {_format_recipe_filter(condition)}"
-        values = value if isinstance(value, list) else [value]
+        values = cast(list[Any], value) if isinstance(value, list) else [value]
         return f"(df[{field_repr}].isin({values!r}))", None
     if op == "contains":
         if value is None:
             return None, f"contains filter missing text: {_format_recipe_filter(condition)}"
         return f"(df[{field_repr}].astype(str).str.contains({value!r}, na=False))", None
     if op == "between":
-        if isinstance(value, list) and len(value) == 2:
-            low, high = value
-            return f"(df[{field_repr}].between({low!r}, {high!r}, inclusive='both'))", None
+        if isinstance(value, list):
+            values = cast(list[Any], value)
+            if len(values) == 2:
+                low, high = values
+                return f"(df[{field_repr}].between({low!r}, {high!r}, inclusive='both'))", None
         return None, f"between filter needs [low, high]: {_format_recipe_filter(condition)}"
     return None, f"unsupported operator for template: {_format_recipe_filter(condition)}"
 
