@@ -203,7 +203,8 @@ def preview_file(
     This is a SAMPLE preview, not full data access
     — for filtering, aggregation, joins, or full-file scans, use
     execute_python. For SQL queries on SQLite, use execute_context_sql.
-    Example: preview_file({"path": "csv/member.csv"})"""
+    Example: preview_file({"path": "csv/a.csv"})
+    Example: preview_file({"path": "doc/b.pdf"})"""
     resolved = resolve_context_path(task, path)
     suffix = resolved.suffix.lower()
 
