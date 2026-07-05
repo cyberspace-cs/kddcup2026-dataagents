@@ -48,6 +48,23 @@ def _write_sqlite(path: Path) -> None:
         conn.commit()
 
 
+def _write_pdf(path: Path, pages: list[list[str]]) -> None:
+    import pymupdf  # pyright: ignore[reportMissingImports]
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = pymupdf.open()  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+    try:
+        for page_lines in pages:
+            page = doc.new_page()  # pyright: ignore[reportUnknownMemberType]
+            y = 72
+            for text in page_lines:
+                page.insert_text((72, y), text, fontsize=11)  # pyright: ignore[reportUnknownMemberType]
+                y += 36
+        doc.save(str(path))  # pyright: ignore[reportUnknownMemberType]
+    finally:
+        doc.close()  # pyright: ignore[reportUnknownMemberType]
+
+
 @pytest.fixture
 def task_with_mixed_context(tmp_path: Path) -> PublicTask:
     task = _make_task(tmp_path)
@@ -219,6 +236,41 @@ def test_inspect_files_markdown_head(task_with_mixed_context: PublicTask) -> Non
     # knowledge.md < 32KB → full_text preloaded
     assert schema["knowledge_preloaded"] is True
     assert "# Topic" in schema["full_text"]
+
+
+def test_inspect_files_pdf_uses_entity_group_samples(tmp_path: Path) -> None:
+    task = _make_task(tmp_path)
+    _write_pdf(
+        task.context_dir / "doc" / "profiles.pdf",
+        [
+            [
+                "Record 101 management scale is",
+            ],
+            [
+                "123.45 billion yuan.",
+                "Record 102 management scale is 88.00 billion yuan.",
+                "Record 103 management scale is 9.50 billion yuan.",
+            ],
+        ],
+    )
+
+    result = inspect_context_files(task)
+
+    entry = next(e for e in result["files"] if e["path"] == "doc/profiles.pdf")
+    assert entry["format"] == "pdf"
+    assert entry["supported"] is True
+    schema = entry["schema"]
+    assert "head" not in schema
+    assert "page_char_counts" not in schema
+    assert schema["page_count"] == 2
+    assert schema["paragraph_count"] == 3
+    assert schema["entity_grouping"] == "record_id_contiguous_paragraphs"
+    assert schema["entity_group_count"] == 3
+    assert schema["entity_sample_size"] == 3
+    groups = {group["entity_id"]: group for group in schema["entity_groups_sample"]}
+    assert set(groups) == {"101", "102", "103"}
+    record_101_text = "\n\n".join(paragraph["text"] for paragraph in groups["101"]["paragraphs"])
+    assert "Record 101 management scale is 123.45 billion yuan." in record_101_text
 
 
 def test_inspect_files_non_knowledge_md_no_fulltext(tmp_path: Path) -> None:

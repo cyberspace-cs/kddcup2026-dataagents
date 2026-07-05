@@ -12,15 +12,17 @@ PATH_CONVENTION_NOTE = (
 )
 
 # 任务框架：接收什么（question + context/）→ 怎么开始（explore）→
-# explore 返回什么（schemas / knowledge / join_paths / unit_conversion …）→
+# explore 返回什么（schemas / PDF entity groups / knowledge / join_paths / unit_conversion …）→
 # 怎么提交（answer tool）→ 访问边界（只读 context/）
 TASK_PROFILE = (
     "For each task you receive one question (may be Chinese) and a `context/` "
     "directory containing any subset of: `csv/`, `db/` (SQLite), `json/`, "
     "`doc/` (.md/.pdf), `video/` (MP4) — not all types are present in every task. "
-    "Call `explore` first — it returns a complete data map: schemas, the "
+    "Call `explore` first — it returns a complete data map: schemas, "
+    "PDF entity group samples (`entity_groups_sample`) for `doc/*.pdf`, the "
     "`knowledge` field (field definitions, formulas, value codes from "
-    "`knowledge.md`), join paths, value samples, warnings, and "
+    "`knowledge.md`), prose documents that require `run_etl`, join paths, "
+    "value samples, warnings, and "
     "`unit_conversion`. Use these findings as your primary context for all "
     "subsequent computation. "
     "Video content reaches you only as `video_findings` in the `explore` result; "

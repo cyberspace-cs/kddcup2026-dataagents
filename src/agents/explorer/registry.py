@@ -8,6 +8,10 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agents.benchmark.schema import PublicTask
+from agents.explorer.etl_sources import (
+    ensure_knowledge_doc_etl_sources,
+    required_knowledge_doc_etl_sources,
+)
 from agents.tools.execute_sql import execute_context_sql
 from agents.tools.grep_context import grep_context
 from agents.tools.inspect_files import inspect_files
@@ -56,6 +60,17 @@ class ReportInput(BaseModel):
         default_factory=dict,
         description="Extracted mappings, formulas, units, thresholds from docs.",
     )
+    etl_sources: list[dict[str, str]] = Field(  # pyright: ignore[reportUnknownVariableType]
+        default_factory=list,
+        description=(
+            "Documents that the main agent must convert with run_etl before "
+            "analysis. If knowledge.md names exact table X, no structured "
+            "source named X exists, and a same-stem doc/X.pdf exists, include "
+            "that document; similar table names are not substitutes. "
+            "Example: [{'path': 'doc/source.pdf', 'reason': 'contains the "
+            "required transaction table'}]."
+        ),
+    )
     join_paths: list[dict[str, str]] = Field(  # pyright: ignore[reportUnknownVariableType]
         default_factory=list,
         description='Discovered relationships, e.g. [{"left": "a.col", "right": "b.col"}].',
@@ -77,7 +92,15 @@ class ReportInput(BaseModel):
 
 REPORT_SCHEMA = normalize_for_vllm(ReportInput.model_json_schema())
 
-REPORT_KEYS = ("files", "schema_map", "knowledge", "join_paths", "value_samples", "warnings")
+REPORT_KEYS = (
+    "files",
+    "schema_map",
+    "knowledge",
+    "etl_sources",
+    "join_paths",
+    "value_samples",
+    "warnings",
+)
 
 
 def handle_report(_task: PublicTask, args: Any) -> ToolExecutionResult:
@@ -86,13 +109,37 @@ def handle_report(_task: PublicTask, args: Any) -> ToolExecutionResult:
         args if isinstance(args, dict) else {k: getattr(args, k, None) for k in REPORT_KEYS},
     )
     report = ReportInput.model_validate(d)
-    findings = json.dumps(
-        {
-            k: getattr(report, k, {} if k in ("schema_map", "knowledge") else [])
-            for k in REPORT_KEYS
-        },
-        ensure_ascii=False,
-    )
+    content = {
+        k: getattr(report, k, {} if k in ("schema_map", "knowledge") else []) for k in REPORT_KEYS
+    }
+    required_etl_sources = required_knowledge_doc_etl_sources(_task, content)
+    existing_paths = {
+        str(entry.get("path"))
+        for entry in content["etl_sources"]
+        if isinstance(entry, dict) and entry.get("path")
+    }
+    missing_etl_sources = [
+        source for source in required_etl_sources if source["path"] not in existing_paths
+    ]
+    if missing_etl_sources:
+        missing_paths = ", ".join(source["path"] for source in missing_etl_sources)
+        return ToolExecutionResult(
+            ok=False,
+            content={
+                "status": "rejected",
+                "error": (
+                    "report.etl_sources is missing required same-stem document "
+                    f"source(s): {missing_paths}. knowledge.md named an exact "
+                    "table that is absent from structured schemas; similar "
+                    "CSV/JSON/SQLite table names are not substitutes. Call "
+                    "report again with these required_etl_sources."
+                ),
+                "required_etl_sources": missing_etl_sources,
+            },
+            is_terminal=False,
+        )
+    ensure_knowledge_doc_etl_sources(_task, content)
+    findings = json.dumps(content, ensure_ascii=False)
     return ToolExecutionResult(
         ok=True,
         content={"status": "reported", "findings": findings},
@@ -115,7 +162,8 @@ def create_explorer_tool_registry(
             "every file under context: {path, size, format, schema} where schema "
             "contains columns, dtypes, row_count, profile (min/max/null_rate/ "
             "distinct values) for CSV/SQLite, keys/length for JSON, line_count/ "
-            "head for docs. Includes column_conversions when unit metadata is "
+            "head for docs, and page_count/paragraph_count/entity_groups_sample "
+            "for PDF. Includes column_conversions when unit metadata is "
             "available. Does NOT read full data — use preview_file or "
             "execute_context_sql for deeper inspection.",
         ),
@@ -124,6 +172,9 @@ def create_explorer_tool_registry(
             "CSV → {columns, dtypes, row_count, head (20 rows), tail (5 rows)}. "
             "JSON → {kind, keys/length, head/value_preview}. "
             "SQLite → {tables: [{name, create_sql, row_count}]}. "
+            "PDF → {page_count, paragraph_count, entity_groups_sample}; "
+            "inspect_files already returns this PDF entity-group shape, so use "
+            "preview_file on a PDF only for a targeted single-file re-check. "
             "Text → {total_lines, head (first 100 lines), has_more}. "
             "Sample only, not full data access. Do NOT use for aggregation — "
             "use execute_context_sql for SQL or note in report that full-file "
@@ -163,6 +214,9 @@ def create_explorer_tool_registry(
                 "Pass each field as a separate parameter: files (flat list of file "
                 "entries), schema_map (per-table/file columns with dtypes and "
                 "semantics), knowledge (extracted mappings/formulas/units from docs), "
+                "etl_sources (documents the caller must convert with run_etl; "
+                "empty is rejected when knowledge.md names a missing exact table "
+                "that exists as a same-stem document), "
                 "join_paths (discovered relationships), value_samples (sampled "
                 "distinct values for filter-relevant columns), warnings (data-quality "
                 "observations)."

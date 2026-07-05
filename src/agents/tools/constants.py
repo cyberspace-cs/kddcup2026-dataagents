@@ -9,8 +9,6 @@ INSPECT_FILES_DTYPE_SAMPLE = 5
 INSPECT_FILES_PROFILE_SAMPLE = 100
 INSPECT_FILES_DISTINCT_VALUES_CAP = 20
 INSPECT_FILES_DOC_HEAD_LINES = 3
-INSPECT_FILES_PDF_HEAD_PAGES = 2
-INSPECT_FILES_PDF_HEAD_CHARS = 500
 KNOWLEDGE_MD_PRELOAD_LIMIT = 32 * 1024
 SQLITE_PROFILE_MAX_COLUMNS = 50
 
@@ -39,6 +37,11 @@ READ_JSON_STRING_VALUE_CAP = 200
 READ_DOC_KEYWORD_MATCH_CAP = 20
 READ_DOC_KEYWORD_PARAGRAPH_BYTES = 2 * 1024
 READ_DOC_KEYWORD_TOTAL_BYTES = 8 * 1024
+
+# ---------------------------------------------------------------------------
+# preview_file PDF
+# ---------------------------------------------------------------------------
+PREVIEW_PDF_ENTITY_SAMPLE_SIZE = 3
 
 # ---------------------------------------------------------------------------
 # 扩展名集合

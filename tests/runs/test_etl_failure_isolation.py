@@ -1,4 +1,4 @@
-"""ETL 编排层异常不得杀死任务本体。"""
+"""ETL must be on-demand rather than an eager task-start hook."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from agents.config import AgentConfig, AppConfig, RunConfig
 from agents.runs import subprocess as runs_subprocess
 
 
-def test_task_survives_etl_orchestration_crash(tmp_path: Path, monkeypatch: Any) -> None:
+def test_task_startup_does_not_run_eager_etl(tmp_path: Path, monkeypatch: Any) -> None:
     context_dir = tmp_path / "task_1" / "context"
     context_dir.mkdir(parents=True)
     task = PublicTask(
@@ -60,7 +60,7 @@ def test_task_survives_etl_orchestration_crash(tmp_path: Path, monkeypatch: Any)
     import agents.tools.context as context_mod
 
     def _boom(*_args: Any, **_kwargs: Any) -> None:
-        raise RuntimeError("corrupted schema_kb.db")
+        raise AssertionError("run_etl_for_task must only run through the run_etl tool")
 
     monkeypatch.setattr(extractor, "run_etl_for_task", _boom)
     monkeypatch.setattr(context_mod, "build_virtual_context", lambda task: task.context_dir)

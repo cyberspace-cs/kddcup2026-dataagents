@@ -243,7 +243,7 @@ def _extract_findings(steps: list[Any]) -> str | None:
     import json as _json
 
     for step in reversed(steps):
-        if getattr(step, "action", None) == "report":
+        if getattr(step, "action", None) == "report" and getattr(step, "ok", False):
             raw_args: Any = getattr(step, "action_input", None)
             if not isinstance(raw_args, dict):
                 continue

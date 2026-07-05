@@ -109,6 +109,35 @@ def test_run_etl_for_task_keeps_success_when_other_files_fail(
     assert [item.source_file for item in result] == ["good.md"]
 
 
+def test_run_etl_for_task_processes_selected_files_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = _make_task(tmp_path)
+    _stub_run_etl_dependencies(tmp_path, monkeypatch)
+    wanted = task.context_dir / "wanted.md"
+    ignored = task.context_dir / "ignored.md"
+    wanted.write_text("wanted prose\n", encoding="utf-8")
+    ignored.write_text("ignored prose\n", encoding="utf-8")
+    processed: list[str] = []
+
+    def fake_extract(_adapter: object, path: Path, *_args: object, **_kwargs: object) -> object:
+        processed.append(path.name)
+        return extractor.ETLResult(
+            source_file=path.name,
+            csv_path=str(tmp_path / "etl" / task.task_id / "_etl" / f"{path.stem}.csv"),
+            columns=["id"],
+            row_count=1,
+        )
+
+    monkeypatch.setattr(extractor, "extract_prose_file", fake_extract)
+
+    result = extractor.run_etl_for_task(task, object(), selected_prose_files=[wanted])
+
+    assert result is not None
+    assert [item.source_file for item in result] == ["wanted.md"]
+    assert processed == ["wanted.md"]
+
+
 def test_run_etl_for_task_timeout_skips_unfinished_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

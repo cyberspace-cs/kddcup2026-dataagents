@@ -96,6 +96,16 @@ def test_system_prompt_observed_data_overrides_conflicting_knowledge() -> None:
     assert "re-derive from evidence" in lower
 
 
+def test_system_prompt_requires_on_demand_etl_after_explore() -> None:
+    prompt = build_native_system_prompt()
+
+    assert "etl_sources" in prompt
+    assert "PDF entity group samples (`entity_groups_sample`)" in prompt
+    assert "call `run_etl` with exactly those document paths before computing" in prompt
+    assert "csv_files[*].csv_path" in prompt
+    assert "Do NOT ETL documents that are not listed" in prompt
+
+
 def test_system_prompt_classifies_data_listing_triggers() -> None:
     prompt = build_native_system_prompt()
     lower = prompt.lower()

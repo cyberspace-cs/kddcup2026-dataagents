@@ -2,8 +2,9 @@
 
 The `explore` tool replaces `inspect_files` in production: a single call
 runs the Explorer sub-agent (3–10 discovery steps) and returns a complete
-data map — file inventory, schemas, knowledge extraction, join paths, and
-warnings — so the main agent can skip manual multi-step discovery.
+data map — file inventory, schemas, PDF entity group samples, knowledge
+extraction, ETL sources, join paths, and warnings — so the main agent can
+skip manual multi-step discovery.
 
 Heavy imports (``agents.explorer.runner``) are deferred to call-time to
 break the circular import chain: ``registry`` → ``explore`` → ``explorer``
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import BaseModel, ConfigDict
 
 from agents.benchmark.schema import PublicTask
+from agents.explorer.etl_sources import ensure_knowledge_doc_etl_sources
 from agents.tools.registry import ToolExecutionResult
 from agents.tools.schema_normalize import normalize_for_vllm
 from agents.tools.units import load_conversions
@@ -153,6 +155,7 @@ def create_explore_tool_definition(
                 # 确定性透传：视频精确数值不经 explorer 二次转写直达主 agent
                 content["video_findings"] = list(result.video_findings)
             _ensure_column_conversions(task, content)
+            ensure_knowledge_doc_etl_sources(task, content)
         else:
             content = result.to_tool_content()
         return ToolExecutionResult(ok=result.success, content=content)
@@ -162,10 +165,12 @@ def create_explore_tool_definition(
         description=(
             "Use FIRST to bootstrap context exploration. Launches a discovery-only "
             "sub-agent that inspects every file under context (columns, dtypes, "
-            "row counts, table schemas, column_conversions), reads knowledge.md, "
-            "samples key values, identifies join paths, and analyzes videos if "
-            "present — all in one call. Returns {files, schema_map, knowledge, "
-            "join_paths, value_samples, warnings, unit_conversion}. No parameters "
+            "row counts, table schemas, PDF entity_groups_sample, "
+            "column_conversions), reads knowledge.md, samples key values, "
+            "identifies document ETL needs and join paths, and analyzes videos "
+            "if present — all in one call. Returns {files, schema_map, knowledge, "
+            "etl_sources, join_paths, value_samples, warnings, unit_conversion}. "
+            "No parameters "
             "needed. This replaces manual multi-step discovery. "
             "Example: explore({})"
         ),

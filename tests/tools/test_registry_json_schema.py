@@ -23,6 +23,7 @@ from agents.tools.registry import (
 
 EXPECTED_REQUIRED: dict[str, set[str]] = {
     "inspect_files": set(),
+    "run_etl": {"paths"},
     "preview_file": {"path"},
     "execute_context_sql": {"path", "sql"},
     "execute_python": {"code"},

@@ -413,14 +413,30 @@ def extract_prose_file(
 def run_etl_for_task(
     task: PublicTask,
     model_adapter: Any,
+    *,
+    selected_prose_files: list[Path] | None = None,
 ) -> list[ETLResult] | None:
     """Orchestrator: detect prose files, extract each, return metadata list.
 
     Returns None if no prose files were converted. Individual file failures are
     logged and skipped so one bad document does not block usable ETL output from
-    sibling documents.
+    sibling documents. When ``selected_prose_files`` is provided, only those
+    caller-selected files are processed; otherwise all detected prose files are
+    considered.
     """
-    prose_files = detect_prose_files(task)
+    if selected_prose_files is None:
+        prose_files = detect_prose_files(task)
+        selection_mode = "all"
+    else:
+        seen: set[Path] = set()
+        prose_files: list[Path] = []
+        for pf in selected_prose_files:
+            resolved = pf.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            prose_files.append(pf)
+        selection_mode = "selected"
     if not prose_files:
         return None
 
@@ -433,14 +449,7 @@ def run_etl_for_task(
         with contextlib.suppress(OSError):
             km_text = km_path.read_text(encoding="utf-8")
 
-    # Route: select only relevant prose files for ETL.
-    # if len(prose_files) >= 2:
-    #     from agents.etl._router import route_prose_files
-    #
-    #     prose_files = route_prose_files(adapter, task.question, prose_files, km_text)
-    # if not prose_files:
-    #     return None
-    logger.info("ETL: processing all %d prose files (routing disabled)", len(prose_files))
+    logger.info("ETL: processing %d %s prose files", len(prose_files), selection_mode)
 
     # Observe once how sibling structured sources store proportions; the
     # per-subfamily verdicts deterministically override the heuristic

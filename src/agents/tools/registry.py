@@ -133,16 +133,18 @@ class ToolRegistry:
 def create_default_tool_registry(
     *,
     explore_tool: FunctionTool | None = None,
+    run_etl_tool: FunctionTool | None = None,
 ) -> ToolRegistry:
     """Build the default tool registry from top-level tool specs.
 
     Registration order (fixed by convention):
     1. explore / inspect_files  — first-step exploration
-    2. preview_file             — single-file preview (CSV/JSON/SQLite/doc)
-    3. execute_context_sql      — virtual-context SQLite queries and indexes
-    4. grep_context             — regex search across files
-    5. execute_python           — subprocess Python execution
-    6. answer                   — terminal: submit answer (only terminal tool)
+    2. run_etl                  — on-demand prose-to-CSV conversion
+    3. preview_file             — single-file preview (CSV/JSON/SQLite/doc/PDF)
+    4. execute_context_sql      — virtual-context SQLite queries and indexes
+    5. grep_context             — regex search across files
+    6. execute_python           — subprocess Python execution
+    7. answer                   — terminal: submit answer (only terminal tool)
     """
     from agents.tools.answer import answer
     from agents.tools.execute_python import execute_python
@@ -150,10 +152,13 @@ def create_default_tool_registry(
     from agents.tools.grep_context import grep_context
     from agents.tools.inspect_files import inspect_files
     from agents.tools.preview import preview_file
+    from agents.tools.run_etl import create_run_etl_tool_definition
 
     first_tool = explore_tool or inspect_files
+    etl_tool = run_etl_tool or create_run_etl_tool_definition()
     definitions: list[FunctionTool] = [
         first_tool,
+        etl_tool,
         preview_file,
         execute_context_sql,
         grep_context,

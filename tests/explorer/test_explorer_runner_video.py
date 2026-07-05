@@ -24,6 +24,26 @@ def _make_task(tmp_path: Path) -> PublicTask:
     )
 
 
+def _make_scale_task(tmp_path: Path) -> PublicTask:
+    question = "管理基金规模超过100亿的基金经理最高学历分布情况"
+    task_dir = tmp_path / "task_3"
+    context_dir = task_dir / "context"
+    context_dir.mkdir(parents=True)
+    (context_dir / "knowledge.md").write_text(
+        "### Use Case 3\n"
+        f"Business Question: {question}\n"
+        "Formula: `mf_fmscaleanalysisn.totalfundnv`\n",
+        encoding="utf-8",
+    )
+    doc_dir = context_dir / "doc"
+    doc_dir.mkdir()
+    (doc_dir / "mf_fmscaleanalysisn.pdf").write_bytes(b"%PDF-1.4\n")
+    return PublicTask(
+        record=TaskRecord(task_id="task_3", difficulty="easy", question=question),
+        assets=TaskAssets(task_dir=task_dir, context_dir=context_dir),
+    )
+
+
 def _call(call_id: str, name: str, arguments: dict) -> ModelResponse:
     raw = {
         "id": call_id,
@@ -123,6 +143,72 @@ def test_each_turn_omits_video_tool_when_not_injected(tmp_path: Path) -> None:
     per_turn = _advertised_names_per_turn(adapter)
     assert per_turn
     assert all("explore_video" not in names for names in per_turn)
+
+
+def test_report_rejection_forces_explorer_to_resubmit_etl_sources(tmp_path: Path) -> None:
+    task = _make_scale_task(tmp_path)
+    adapter = ScriptedNativeModelAdapter(
+        [
+            _call(
+                "bad_report",
+                "report",
+                {
+                    "files": [{"path": "json/mf_fmretscaleanalysis.json", "format": "JSON"}],
+                    "schema_map": {"mf_fmretscaleanalysis": {"columns": {}}},
+                    "knowledge": {
+                        "knowledge_md_evidence": [
+                            {
+                                "source": "knowledge.md",
+                                "kind": "formula",
+                                "text": "`mf_fmscaleanalysisn.totalfundnv`",
+                            }
+                        ]
+                    },
+                    "etl_sources": [],
+                },
+            ),
+            _call(
+                "good_report",
+                "report",
+                {
+                    "files": [{"path": "json/mf_fmretscaleanalysis.json", "format": "JSON"}],
+                    "schema_map": {"mf_fmretscaleanalysis": {"columns": {}}},
+                    "knowledge": {
+                        "knowledge_md_evidence": [
+                            {
+                                "source": "knowledge.md",
+                                "kind": "formula",
+                                "text": "`mf_fmscaleanalysisn.totalfundnv`",
+                            }
+                        ]
+                    },
+                    "etl_sources": [
+                        {
+                            "path": "doc/mf_fmscaleanalysisn.pdf",
+                            "reason": (
+                                "knowledge.md exact table mf_fmscaleanalysisn has no "
+                                "structured source and exists as a same-stem PDF"
+                            ),
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+
+    result = run_explorer(task, task.question, adapter)
+
+    assert result.success is True
+    findings = json.loads(result.findings)
+    assert findings["etl_sources"] == [
+        {
+            "path": "doc/mf_fmscaleanalysisn.pdf",
+            "reason": (
+                "knowledge.md exact table mf_fmscaleanalysisn has no "
+                "structured source and exists as a same-stem PDF"
+            ),
+        }
+    ]
 
 
 def test_final_budget_prompt_names_report_for_explorer(tmp_path: Path) -> None:

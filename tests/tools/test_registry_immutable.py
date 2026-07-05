@@ -1,7 +1,7 @@
 """测试 ToolRegistry 在构造完成后不可变。
 
 覆盖点：
-- 默认 8 件套按规范的注册顺序排布
+- 默认工具集按规范的注册顺序排布
 - 仅 `answer` 的 FunctionTool.is_terminal 为 True
 - registry.definitions 是 MappingProxyType，对其增/删/改均抛 TypeError
 - registry 自身是 frozen dataclass，重新赋值 definitions 字段也会被拒绝
@@ -25,6 +25,7 @@ from agents.tools.registry import (
 
 _EXPECTED_ORDER = [
     "inspect_files",
+    "run_etl",
     "preview_file",
     "execute_context_sql",
     "grep_context",

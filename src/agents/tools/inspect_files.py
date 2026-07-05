@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from agents.benchmark.schema import PublicTask
 from agents.config import ETL_SCRATCH_ROOT
 from agents.tools import constants
 from agents.tools.decorator import function_tool
+from agents.tools.preview import _preview_pdf
 from agents.tools.read_csv import profile_columns, summarize_csv
 from agents.tools.read_doc import summarize_doc
 from agents.tools.read_json import summarize_json
@@ -18,40 +19,10 @@ from agents.tools.units import load_conversions
 
 
 def _summarize_pdf(path: Path) -> dict[str, Any]:
-    """Summarize a PDF for inspect_files."""
-    import pymupdf  # pyright: ignore[reportMissingImports]
-
-    doc = pymupdf.open(str(path))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-    try:
-        page_count: int = len(doc)  # pyright: ignore[reportUnknownArgumentType]
-        raw_meta = cast(dict[str, str], doc.metadata or {})  # pyright: ignore[reportUnknownMemberType]
-        meta_filtered: dict[str, str] = {
-            key: value
-            for key, value in raw_meta.items()
-            if value and key in ("title", "author", "subject", "keywords")
-        }
-
-        page_char_counts: list[int] = []
-        head_texts: list[str] = []
-        for index in range(page_count):
-            text: str = cast(str, doc[index].get_text())  # pyright: ignore[reportUnknownMemberType,reportIndexIssue]
-            page_char_counts.append(len(text))
-            if index < constants.INSPECT_FILES_PDF_HEAD_PAGES:
-                preview: str = text[: constants.INSPECT_FILES_PDF_HEAD_CHARS]
-                if len(text) > constants.INSPECT_FILES_PDF_HEAD_CHARS:
-                    preview += "\n..."
-                head_texts.append(preview)
-
-        result: dict[str, Any] = {
-            "page_count": page_count,
-            "page_char_counts": page_char_counts,
-            "head": head_texts,
-        }
-        if meta_filtered:
-            result["metadata"] = meta_filtered
-        return result
-    finally:
-        doc.close()  # pyright: ignore[reportUnknownMemberType]
+    """Summarize a PDF using record-id entity paragraph samples."""
+    summary = _preview_pdf(path)
+    summary.pop("format", None)
+    return summary
 
 
 def _summarize_sqlite(path: Path) -> dict[str, Any]:
@@ -200,10 +171,10 @@ def inspect_files(task: PublicTask) -> ToolExecutionResult:
     of every file under context: {path, size, format, schema} where schema
     contains columns, dtypes, row_count, profile (min/max/null_rate/distinct
     values) for CSV/SQLite, keys/length for JSON, line_count/head for docs,
-    and page_count/head for PDF. Also includes column_conversions when unit
-    metadata is available. This replaces calling preview_file on each file
-    individually for initial discovery. Does NOT read full data — for
-    deeper inspection use preview_file, for filtering or aggregation use
-    execute_context_sql or execute_python.
+    and page_count/entity_groups_sample for PDF. Also includes
+    column_conversions when unit metadata is available. This replaces calling
+    preview_file on each file individually for initial discovery. Does NOT read
+    full data — for deeper inspection use preview_file, for filtering or
+    aggregation use execute_context_sql or execute_python.
     Example: inspect_files({})"""
     return ToolExecutionResult(ok=True, content=inspect_context_files(task))

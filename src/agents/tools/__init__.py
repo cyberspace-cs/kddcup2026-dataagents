@@ -26,16 +26,19 @@ from agents.tools.registry import (
     ToolRegistry,
     create_default_tool_registry,
 )
+from agents.tools.run_etl import RunETLInput, create_run_etl_tool_definition
 
 __all__ = [
     "AnswerInput",
     "FunctionTool",
+    "RunETLInput",
     "ToolExecutionResult",
     "ToolRegistry",
     "answer",
     "build_answer_table_without_side_effects",
     "cleanup_answer_artifacts",
     "create_default_tool_registry",
+    "create_run_etl_tool_definition",
     "dispatch_tool_call",
     "execute_context_sql",
     "execute_python",

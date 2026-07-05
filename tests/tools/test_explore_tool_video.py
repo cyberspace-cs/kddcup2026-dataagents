@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,8 @@ def test_explore_tool_description_matches_discovery_contract() -> None:
 
     assert "discovery-only" in description
     assert "read-only sub-agent" not in description
+    assert "pdf entity_groups_sample" in description
+    assert "etl_sources" in description
 
 
 @pytest.fixture
@@ -108,3 +111,116 @@ def test_explore_tool_marks_fallback_findings(
     assert result.ok is True
     assert result.content["explorer_steps_used"] == 11
     assert result.content["explorer_fallback_used"] is True
+
+
+def test_explore_tool_forces_same_stem_doc_etl_for_missing_knowledge_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run_explorer(task, question, model, *, video_tool=None, **kwargs):
+        del task, question, model, video_tool, kwargs
+        return ExplorerResult(
+            findings=json.dumps(
+                {
+                    "files": [
+                        {
+                            "path": "json/mf_fmretscaleanalysis.json",
+                            "format": "JSON",
+                            "row_count": 6041,
+                        }
+                    ],
+                    "schema_map": {"mf_fmretscaleanalysis": {"columns": {}}},
+                    "knowledge": {
+                        "knowledge_md_evidence": [
+                            {
+                                "source": "knowledge.md",
+                                "kind": "example_sql",
+                                "text": (
+                                    "SELECT a.education, COUNT(*) FROM "
+                                    "`mf_personalinfo` AS a JOIN "
+                                    "`mf_fmscaleanalysisn` AS b "
+                                    "WHERE b.totalfundnv > 100"
+                                ),
+                            }
+                        ]
+                    },
+                    "etl_sources": [],
+                }
+            ),
+            steps_used=4,
+            success=True,
+        )
+
+    monkeypatch.setattr(runner_mod, "run_explorer", fake_run_explorer)
+    task = _make_task(tmp_path, with_video=False)
+    (task.context_dir / "knowledge.md").write_text(
+        "### Use Case 3\n"
+        "Business Question: 管理基金规模超过100亿的基金经理最高学历分布情况\n"
+        "Formula: `mf_fmscaleanalysisn.totalfundnv`\n"
+        "### Use Case 4\n"
+        "Business Question: 任职天数超过1000天的基金经理所管理的基金名称和基金风险等级\n"
+        "Formula: `mf_fundmanagernew.managementtime`",
+        encoding="utf-8",
+    )
+    doc_dir = task.context_dir / "doc"
+    doc_dir.mkdir()
+    (doc_dir / "mf_fmscaleanalysisn.pdf").write_bytes(b"%PDF-1.4\n")
+    (doc_dir / "mf_fundmanagernew.md").write_text("unrelated use case", encoding="utf-8")
+
+    tool = create_explore_tool_definition(_Adapter())
+    result = tool.handler(task, ExploreInput())
+
+    assert result.ok is True
+    assert result.content["etl_sources"] == [
+        {
+            "path": "doc/mf_fmscaleanalysisn.pdf",
+            "reason": (
+                "knowledge.md references table mf_fmscaleanalysisn, no exact "
+                "structured source named mf_fmscaleanalysisn was reported, and "
+                "this same-stem document contains the table records"
+            ),
+        }
+    ]
+
+
+def test_explore_tool_does_not_force_doc_etl_when_exact_structured_table_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run_explorer(task, question, model, *, video_tool=None, **kwargs):
+        del task, question, model, video_tool, kwargs
+        return ExplorerResult(
+            findings=json.dumps(
+                {
+                    "files": [
+                        {
+                            "path": "db/sub_db.sqlite",
+                            "format": "SQLite",
+                            "tables": ["mf_fmscaleanalysisn"],
+                        }
+                    ],
+                    "knowledge": {
+                        "knowledge_md_evidence": [
+                            {
+                                "source": "knowledge.md",
+                                "kind": "formula",
+                                "text": "`mf_fmscaleanalysisn.totalfundnv`",
+                            }
+                        ]
+                    },
+                    "etl_sources": [],
+                }
+            ),
+            steps_used=3,
+            success=True,
+        )
+
+    monkeypatch.setattr(runner_mod, "run_explorer", fake_run_explorer)
+    task = _make_task(tmp_path, with_video=False)
+    doc_dir = task.context_dir / "doc"
+    doc_dir.mkdir()
+    (doc_dir / "mf_fmscaleanalysisn.pdf").write_bytes(b"%PDF-1.4\n")
+
+    tool = create_explore_tool_definition(_Adapter())
+    result = tool.handler(task, ExploreInput())
+
+    assert result.ok is True
+    assert result.content["etl_sources"] == []

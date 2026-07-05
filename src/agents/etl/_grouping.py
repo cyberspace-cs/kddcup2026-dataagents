@@ -7,6 +7,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
+from agents.etl._anchors import RecordIdPattern, discover_record_id_patterns, paragraph_record_ids
 from agents.etl._constants import (
     ENTITY_CHUNK_TOKEN_BUDGET,
     ENTITY_SEPARATOR,
@@ -21,12 +22,10 @@ from agents.etl._constants import (
     LLM_CALL_TIMEOUT,
     MAX_WORKERS,
     NONE_LINE,
-    RECORD_ID_INLINE,
 )
 from agents.etl._threading import submit_in_context
 from agents.etl._types import (
     contains_standalone_number,
-    first_standalone_match,
     has_standalone_id as _has_standalone_id,
 )
 
@@ -122,9 +121,15 @@ def parse_grouping_response(raw: str) -> tuple[dict[str, list[int]], list[int], 
 def verify_paragraph_groups(
     groups: dict[str, list[int]],
     paras: list[str],
+    anchor_patterns: list[RecordIdPattern] | None = None,
 ) -> dict[str, list[int]] | None:
     """Deterministically verify LLM-proposed paragraph groups."""
+    if anchor_patterns is None:
+        anchor_patterns = discover_record_id_patterns(paras)
     valid_indices = set(range(1, len(paras) + 1))
+
+    def has_anchor(text: str, rid: str) -> bool:
+        return rid in paragraph_record_ids(text, anchor_patterns) or _has_standalone_id(text, rid)
 
     claims: dict[int, list[str]] = {}
     out_of_range = 0
@@ -142,7 +147,7 @@ def verify_paragraph_groups(
     for idx, rids in claims.items():
         if len(rids) == 1:
             continue
-        anchored = [rid for rid in rids if _has_standalone_id(paras[idx - 1], rid)]
+        anchored = [rid for rid in rids if has_anchor(paras[idx - 1], rid)]
         if not anchored:
             invalidated.add(idx)
             continue
@@ -164,7 +169,7 @@ def verify_paragraph_groups(
     verified: dict[str, list[int]] = {}
     dropped_groups: list[str] = []
     for rid, idxs in cleaned.items():
-        anch = [i for i in idxs if _has_standalone_id(paras[i - 1], rid)]
+        anch = [i for i in idxs if has_anchor(paras[i - 1], rid)]
         if anch:
             anchors[rid] = anch
             verified[rid] = idxs
@@ -181,7 +186,7 @@ def verify_paragraph_groups(
             for other_rid in verified:
                 if other_rid == rid:
                     continue
-                if _has_standalone_id(paras[idx - 1], other_rid) and idx not in verified[other_rid]:
+                if has_anchor(paras[idx - 1], other_rid) and idx not in verified[other_rid]:
                     verified[other_rid].append(idx)
                     anchors.setdefault(other_rid, []).append(idx)
                     auto_shared += 1
@@ -199,7 +204,7 @@ def verify_paragraph_groups(
             if idx in anchors[rid]:
                 continue
             other = next(
-                (g for g in verified if g != rid and _has_standalone_id(paras[idx - 1], g)),
+                (g for g in verified if g != rid and has_anchor(paras[idx - 1], g)),
                 None,
             )
             if other is not None:
@@ -275,8 +280,11 @@ def verify_paragraph_groups(
 def group_paragraphs_by_llm(
     adapter: ModelAdapter,
     paras: list[str],
+    anchor_patterns: list[RecordIdPattern] | None = None,
 ) -> tuple[dict[str, list[int]] | None, bool]:
     """Number paragraphs, batch them to the LLM, verify the claimed groups."""
+    if anchor_patterns is None:
+        anchor_patterns = discover_record_id_patterns(paras)
     if len(paras) < 3:
         return None, True
 
@@ -320,7 +328,7 @@ def group_paragraphs_by_llm(
     if unparsed_total:
         logger.info("ETL compress: grouping responses had %d unparsed lines", unparsed_total)
 
-    return verify_paragraph_groups(merged, paras), True
+    return verify_paragraph_groups(merged, paras, anchor_patterns), True
 
 
 def group_paragraphs_by_entity(
@@ -331,16 +339,17 @@ def group_paragraphs_by_entity(
     paras = split_prose_paragraphs(text)
     if not paras:
         return None
+    anchor_patterns = discover_record_id_patterns(paras)
 
     if adapter is not None:
-        verified, llm_responded = group_paragraphs_by_llm(adapter, paras)
+        verified, llm_responded = group_paragraphs_by_llm(adapter, paras, anchor_patterns)
         if verified:
             recovered = 0
             for i, para in enumerate(paras, start=1):
-                m = first_standalone_match(RECORD_ID_INLINE, para)
-                if m and m.group(1) in verified and i not in verified[m.group(1)]:
-                    verified[m.group(1)].append(i)
-                    recovered += 1
+                for record_id in paragraph_record_ids(para, anchor_patterns):
+                    if record_id in verified and i not in verified[record_id]:
+                        verified[record_id].append(i)
+                        recovered += 1
             if recovered:
                 logger.info(
                     "ETL compress: deterministic recovery added %d paragraphs "
@@ -358,15 +367,18 @@ def group_paragraphs_by_entity(
             return grouped, unassigned
         if llm_responded:
             return None
-        logger.warning("ETL compress: all grouping batches failed; falling back to record-ID regex")
+        logger.warning(
+            "ETL compress: all grouping batches failed; falling back to record-ID patterns"
+        )
 
     groups: dict[str, list[str]] = {}
     leftover: list[str] = []
     tagged = 0
     for para in paras:
-        match = first_standalone_match(RECORD_ID_INLINE, para)
-        if match:
-            groups.setdefault(match.group(1), []).append(para)
+        record_ids = paragraph_record_ids(para, anchor_patterns)
+        if record_ids:
+            for record_id in record_ids:
+                groups.setdefault(record_id, []).append(para)
             tagged += 1
         elif contains_standalone_number(para):
             leftover.append(para)

@@ -31,3 +31,20 @@ def test_explorer_prompt_mentions_sqlite_preview_row_counts() -> None:
     prompt = EXPLORER_SYSTEM_PROMPT
 
     assert "returns CREATE TABLE plus row_count" in prompt
+
+
+def test_explorer_prompt_reports_on_demand_etl_sources() -> None:
+    prompt = EXPLORER_SYSTEM_PROMPT
+    lower = prompt.lower()
+
+    assert "`etl_sources`" in prompt
+    assert "run_etl" in prompt
+    assert "do not include `knowledge.md`" in lower
+    assert "grouped record-id entity paragraph samples" in prompt
+    assert "For PDFs, `inspect_files` already" in prompt
+    assert "same-stem document" in lower
+    assert "not treat a similarly named structured table" in lower
+    assert "reporting `etl_sources: []` in this situation is invalid" in lower
+    assert "name similarity is irrelevant" in lower
+    assert "mf_fmscaleanalysisn" in prompt
+    assert "mf_fmretscaleanalysis" in prompt

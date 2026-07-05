@@ -21,6 +21,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The final CSV is materialized exactly once, via an atomic write.
 
 ### Added
+- **On-demand document ETL tool.** The main agent now receives a `run_etl`
+  tool and the explorer report includes `etl_sources`, so Markdown/text/PDF
+  documents are converted only when exploration marks them as required.
+  Eager pre-agent prose ETL is removed; `run_etl` exposes generated CSVs back
+  into the task context via relative `csv_path` values.
 - **`agent.enable_answer_verifier` config field.** When `false`, skips the
   LLM answer-verifier pass entirely. Default `true` (current behavior).
 - **Answer verifier drops value-sanity check.** The former "Check 4 — VALUE

@@ -5,7 +5,7 @@ agent:
   model: YOUR_MODEL_NAME                   # str (e.g. qwen3.5-35b-a3b)
   api_base: YOUR_API_BASE_URL              # str（OpenAI 兼容 chat.completions 端点）
   api_key: YOUR_API_KEY                    # str；若启用 api_keys 池则忽略此字段
-  max_steps: 48                            # int >= 1; 28 gives enough budget for complex multi-step tasks
+  max_steps: 50                            # int >= 1; 28 gives enough budget for complex multi-step tasks
   allow_parallel_tool_calls: true          # bool；个别后端不支持 parallel_tool_calls 时设 false
   max_tokens: 32768                        # int >= 0；0=不下发上限走服务端默认
   enable_thinking: true                    # bool | null；null = 不下发 extra_body
@@ -57,7 +57,7 @@ run:
   output_dir: artifacts/runs               # 相对路径以 PROJECT_ROOT 为基锚定
   run_id: null                             # str | null；null = 自动生成 `<UTC YYYYMMDD>-<NNN>`
   max_workers: 8                           # int >= 1; 8 with dual-key keeps throughput high
-  task_timeout_seconds: 1800               # int；<= 0 关闭单任务超时
+  task_timeout_seconds: 2000               # int；<= 0 关闭单任务超时
 
   # 跳过名单：问题歧义 / gold 错误 / 数据缺失的题，提交时移除不影响评分。
   blocklist:

@@ -29,7 +29,7 @@ from agents.llm import (
 )
 from agents.llm.openai import resolve_backend_kind
 from agents.runtime import StepCallback
-from agents.tools import ToolRegistry, create_default_tool_registry
+from agents.tools import ToolRegistry, create_default_tool_registry, create_run_etl_tool_definition
 from agents.tools.explore import create_explore_tool_definition
 from agents.tools.explore_video import create_explore_video_tool_definition
 from agents.verification import AnswerVerifier
@@ -355,16 +355,31 @@ def build_application(
     """
     dataset = DABenchPublicDataset(config.dataset.root_path)
 
+    model_ref: dict[str, ModelAdapter] | None = None
     if tools is not None:
         registry = tools
     else:
+        model_ref = {}
+
+        def get_main_model() -> ModelAdapter:
+            assert model_ref is not None
+            try:
+                return model_ref["model"]
+            except KeyError as exc:
+                raise RuntimeError(
+                    "run_etl requested before model adapter was initialized"
+                ) from exc
+
         video_adapter = _build_video_adapter(config)
         video_tool = create_explore_video_tool_definition(video_adapter)
         explorer_adapter = _build_explorer_adapter(config)
         explore_def = create_explore_tool_definition(explorer_adapter, video_tool=video_tool)
-        registry = create_default_tool_registry(explore_tool=explore_def)
+        run_etl_def = create_run_etl_tool_definition(get_main_model)
+        registry = create_default_tool_registry(explore_tool=explore_def, run_etl_tool=run_etl_def)
 
     model_adapter = model if model is not None else build_model_adapter(config, tools=registry)
+    if model_ref is not None:
+        model_ref["model"] = model_adapter
     verifier = answer_verifier
     if verifier is None and model is None and config.agent.enable_answer_verifier:
         verifier = build_answer_verifier(config)

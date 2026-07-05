@@ -431,6 +431,27 @@ def test_grouping_multi_membership_routes_group_para_to_each_entity() -> None:
     assert leftover == []
 
 
+def test_grouping_recovery_uses_shared_auto_anchor_patterns() -> None:
+    paras = [
+        "The case file associated with patient unit stay 101 reports a first metric.",
+        "The follow-up note for unit stay 101 reports a second metric.",
+        "The case file associated with patient unit stay 102 reports a first metric.",
+        "The follow-up note for unit stay 102 reports a second metric.",
+        "The case file associated with patient unit stay 103 reports a first metric.",
+        "The follow-up note for unit stay 103 reports a second metric.",
+    ]
+    adapter = _PromptDispatchAdapter([("numbered paragraph openings", "101: 1\n102: 3\n103: 5")])
+
+    result = group_paragraphs_by_entity("\n\n".join(paras), adapter=cast(Any, adapter))
+
+    assert result is not None
+    groups, leftover = result
+    assert groups["101"] == [paras[0], paras[1]]
+    assert groups["102"] == [paras[2], paras[3]]
+    assert groups["103"] == [paras[4], paras[5]]
+    assert leftover == []
+
+
 def test_grouping_ignores_number_fragments_and_returns_leftover() -> None:
     paras = [
         "Record 16 held a combined ReserveAssets total of 8,693,705 overall.",
@@ -451,6 +472,27 @@ def test_grouping_ignores_number_fragments_and_returns_leftover() -> None:
     # standalone number, so it must come back as leftover for positional
     # processing.
     assert leftover == [paras[3]]
+
+
+def test_grouping_fallback_uses_shared_auto_anchor_patterns() -> None:
+    paras = [
+        "The case file associated with patient unit stay 101 reports a first metric.",
+        "The follow-up note for unit stay 101 reports a second metric.",
+        "The case file associated with patient unit stay 102 reports a first metric.",
+        "The follow-up note for unit stay 102 reports a second metric.",
+        "The case file associated with patient unit stay 103 reports a first metric.",
+        "The follow-up note for unit stay 103 reports a second metric.",
+    ]
+
+    result = group_paragraphs_by_entity("\n\n".join(paras))
+
+    assert result is not None
+    groups, leftover = result
+    assert sorted(groups) == ["101", "102", "103"]
+    assert groups["101"] == [paras[0], paras[1]]
+    assert groups["102"] == [paras[2], paras[3]]
+    assert groups["103"] == [paras[4], paras[5]]
+    assert leftover == []
 
 
 class _RecoveryAdapter:
