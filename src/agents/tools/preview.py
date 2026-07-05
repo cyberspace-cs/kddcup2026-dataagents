@@ -10,7 +10,7 @@ from typing import Annotated, Any
 
 from agents.benchmark.schema import PublicTask
 from agents.etl._anchors import discover_record_id_patterns, paragraph_record_ids
-from agents.etl._pdf import _page_to_paragraphs, _stitch_page_paragraphs
+from agents.etl._pdf import page_to_paragraphs, stitch_page_paragraphs
 from agents.tools import constants
 from agents.tools._fields import path_field
 from agents.tools.context import resolve_context_path
@@ -65,12 +65,12 @@ def _extract_pdf_paragraphs(path: Path) -> tuple[int, list[dict[str, Any]]]:
         page_count: int = len(doc)  # pyright: ignore[reportUnknownArgumentType]
         pages: list[tuple[int, list[str]]] = []
         for index in range(page_count):
-            paragraphs = _page_to_paragraphs(doc[index])  # pyright: ignore[reportIndexIssue]
+            paragraphs = page_to_paragraphs(doc[index])  # pyright: ignore[reportIndexIssue]
             if paragraphs:
                 pages.append((index + 1, paragraphs))
 
         extracted: list[dict[str, Any]] = []
-        for page_no, paragraphs in _stitch_page_paragraphs(pages):
+        for page_no, paragraphs in stitch_page_paragraphs(pages):
             for paragraph in paragraphs:
                 text = paragraph.strip()
                 if not text:
@@ -142,7 +142,7 @@ def _sample_pdf_entity_ids(path: Path, entity_ids: list[str]) -> list[str]:
     return [entity_id for entity_id in entity_ids if entity_id in sampled]
 
 
-def _preview_pdf(path: Path) -> dict[str, Any]:
+def preview_pdf_summary(path: Path) -> dict[str, Any]:
     page_count, paragraphs = _extract_pdf_paragraphs(path)
     groups, ungrouped_count, anchor_patterns = _group_pdf_paragraphs_by_entity(paragraphs)
     entity_ids = list(groups)
@@ -224,7 +224,7 @@ def preview_file(
         return ToolExecutionResult(ok=True, content=inspect_sqlite_database(resolved))
 
     if suffix in constants.PDF_EXTS:
-        return ToolExecutionResult(ok=True, content=_preview_pdf(resolved))
+        return ToolExecutionResult(ok=True, content=preview_pdf_summary(resolved))
 
     if suffix in constants.DOC_EXTS:
         return ToolExecutionResult(ok=True, content=_preview_doc(resolved))

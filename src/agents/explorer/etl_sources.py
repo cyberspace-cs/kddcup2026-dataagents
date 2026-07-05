@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,9 +19,11 @@ def _flatten_strings(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        return "\n".join(_flatten_strings(v) for v in value.values())
+        mapping = cast(dict[Any, Any], value)
+        return "\n".join(_flatten_strings(item) for item in mapping.values())
     if isinstance(value, list | tuple):
-        return "\n".join(_flatten_strings(v) for v in value)
+        sequence = cast(Sequence[Any], value)
+        return "\n".join(_flatten_strings(item) for item in sequence)
     return ""
 
 
@@ -73,32 +76,37 @@ def _prose_sources_by_stem(task: PublicTask) -> dict[str, str]:
 
 def _add_sqlite_table_names(names: set[str], tables: Any) -> None:
     if isinstance(tables, dict):
-        names.update(str(name).lower() for name in tables)
+        table_map = cast(dict[Any, Any], tables)
+        names.update(str(name).lower() for name in table_map)
         return
     if not isinstance(tables, list):
         return
-    for table in tables:
+    table_list = cast(list[Any], tables)
+    for table in table_list:
         if isinstance(table, str):
             names.add(table.lower())
         elif isinstance(table, dict):
-            name = table.get("name")
-            if name:
+            table_info = cast(dict[str, Any], table)
+            name = table_info.get("name")
+            if name is not None:
                 names.add(str(name).lower())
 
 
 def _structured_source_names(content: dict[str, Any]) -> set[str]:
     names: set[str] = set()
 
-    schema_map = content.get("schema_map", {})
-    if isinstance(schema_map, dict):
+    raw_schema_map = content.get("schema_map")
+    if isinstance(raw_schema_map, dict):
+        schema_map = cast(dict[Any, Any], raw_schema_map)
         for key in schema_map:
             key_text = str(key)
             names.add((Path(key_text).stem if "/" in key_text else key_text).lower())
 
-    files = content.get("files", [])
-    if not isinstance(files, list):
+    raw_files = content.get("files")
+    if not isinstance(raw_files, list):
         return names
 
+    files = cast(list[Any], raw_files)
     for raw_entry in files:
         if not isinstance(raw_entry, dict):
             continue
@@ -107,7 +115,8 @@ def _structured_source_names(content: dict[str, Any]) -> set[str]:
 
         schema = entry.get("schema")
         if isinstance(schema, dict):
-            _add_sqlite_table_names(names, schema.get("tables"))
+            schema_info = cast(dict[str, Any], schema)
+            _add_sqlite_table_names(names, schema_info.get("tables"))
 
         path = entry.get("path")
         fmt = str(entry.get("format", "")).lower()
@@ -163,11 +172,7 @@ def ensure_knowledge_doc_etl_sources(task: PublicTask, content: dict[str, Any]) 
         etl_sources = []
         content["etl_sources"] = etl_sources
 
-    existing_paths = {
-        str(entry.get("path"))
-        for entry in etl_sources
-        if isinstance(entry, dict) and entry.get("path")
-    }
+    existing_paths = {str(entry.get("path")) for entry in etl_sources if entry.get("path")}
     for source in required:
         path = source["path"]
         if path in existing_paths:

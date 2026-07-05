@@ -124,7 +124,7 @@ def _paragraphs_from_positioned_lines(lines: list[_Line]) -> list[str]:
     return paragraphs
 
 
-def _page_to_paragraphs(page: Any) -> list[str]:
+def page_to_paragraphs(page: Any) -> list[str]:
     """Extract one PDF page as paragraphs using layout gaps as boundaries."""
     paragraphs = _paragraphs_from_positioned_lines(_extract_page_lines(page))
     if paragraphs:
@@ -138,7 +138,7 @@ def _is_complete_sentence(paragraph: str) -> bool:
     return bool(PDF_SENTENCE_END.search(paragraph))
 
 
-def _stitch_page_paragraphs(pages: list[tuple[int, list[str]]]) -> list[tuple[int, list[str]]]:
+def stitch_page_paragraphs(pages: list[tuple[int, list[str]]]) -> list[tuple[int, list[str]]]:
     """Join paragraphs split across page boundaries using punctuation only."""
     stitched: list[tuple[int, list[str]]] = []
     for page_no, paragraphs in pages:
@@ -159,6 +159,10 @@ def _stitch_page_paragraphs(pages: list[tuple[int, list[str]]]) -> list[tuple[in
     return stitched
 
 
+_page_to_paragraphs = page_to_paragraphs
+_stitch_page_paragraphs = stitch_page_paragraphs
+
+
 def pdf_to_markdown(path: Path) -> str:
     """Extract text from a PDF and return it as markdown with page headings."""
     import pymupdf  # pyright: ignore[reportMissingImports]
@@ -168,13 +172,13 @@ def pdf_to_markdown(path: Path) -> str:
         pages: list[tuple[int, list[str]]] = []
         page_count: int = len(doc)  # pyright: ignore[reportUnknownArgumentType]
         for i in range(page_count):
-            paragraphs = _page_to_paragraphs(doc[i])  # pyright: ignore[reportIndexIssue]
+            paragraphs = page_to_paragraphs(doc[i])  # pyright: ignore[reportIndexIssue]
             if not paragraphs:
                 continue
             pages.append((i + 1, paragraphs))
         parts = [
             f"## Page {page_no}\n\n" + "\n\n".join(paragraphs)
-            for page_no, paragraphs in _stitch_page_paragraphs(pages)
+            for page_no, paragraphs in stitch_page_paragraphs(pages)
         ]
         return "\n\n".join(parts)
     finally:

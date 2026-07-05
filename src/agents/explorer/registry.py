@@ -109,15 +109,18 @@ def handle_report(_task: PublicTask, args: Any) -> ToolExecutionResult:
         args if isinstance(args, dict) else {k: getattr(args, k, None) for k in REPORT_KEYS},
     )
     report = ReportInput.model_validate(d)
-    content = {
-        k: getattr(report, k, {} if k in ("schema_map", "knowledge") else []) for k in REPORT_KEYS
+    content: dict[str, Any] = {
+        "files": report.files,
+        "schema_map": report.schema_map,
+        "knowledge": report.knowledge,
+        "etl_sources": report.etl_sources,
+        "join_paths": report.join_paths,
+        "value_samples": report.value_samples,
+        "warnings": report.warnings,
     }
     required_etl_sources = required_knowledge_doc_etl_sources(_task, content)
-    existing_paths = {
-        str(entry.get("path"))
-        for entry in content["etl_sources"]
-        if isinstance(entry, dict) and entry.get("path")
-    }
+    etl_sources = report.etl_sources
+    existing_paths = {str(entry.get("path")) for entry in etl_sources if entry.get("path")}
     missing_etl_sources = [
         source for source in required_etl_sources if source["path"] not in existing_paths
     ]

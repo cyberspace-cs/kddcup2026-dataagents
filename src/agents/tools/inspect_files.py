@@ -10,7 +10,7 @@ from agents.benchmark.schema import PublicTask
 from agents.config import ETL_SCRATCH_ROOT
 from agents.tools import constants
 from agents.tools.decorator import function_tool
-from agents.tools.preview import _preview_pdf
+from agents.tools.preview import preview_pdf_summary
 from agents.tools.read_csv import profile_columns, summarize_csv
 from agents.tools.read_doc import summarize_doc
 from agents.tools.read_json import summarize_json
@@ -20,7 +20,7 @@ from agents.tools.units import load_conversions
 
 def _summarize_pdf(path: Path) -> dict[str, Any]:
     """Summarize a PDF using record-id entity paragraph samples."""
-    summary = _preview_pdf(path)
+    summary = preview_pdf_summary(path)
     summary.pop("format", None)
     return summary
 
