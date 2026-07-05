@@ -31,6 +31,7 @@ class ExplorerResult:
     steps_used: int
     success: bool
     failure_reason: str | None = None
+    fallback_used: bool = False
     # explore_video 成功 observation 的确定性透传（None = 本次运行没有视频调用）
     video_findings: tuple[dict[str, Any], ...] | None = None
 
@@ -85,6 +86,7 @@ def run_explorer(
         config=ReActAgentConfig(
             max_steps=max_steps,
             max_empty_tool_call_retries=3,
+            stop_after_final_step_retries=True,
         ),
         system_prompt=EXPLORER_SYSTEM_PROMPT,
         step_callback=step_callback,
@@ -101,6 +103,7 @@ def run_explorer(
             findings=findings,
             steps_used=len(result.steps),
             success=True,
+            fallback_used=False,
             video_findings=video_findings,
         )
 
@@ -112,6 +115,7 @@ def run_explorer(
             findings=synthesized,
             steps_used=len(result.steps),
             success=True,
+            fallback_used=True,
             video_findings=video_findings,
         )
 

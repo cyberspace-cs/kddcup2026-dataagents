@@ -74,6 +74,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `output_fields` / `aggregation_field` / Chinese-suffixed variants).
 
 ### Fixed
+- **Explorer final-step retries now target `report`.** Budget-pressure prompts
+  and final-step blocking use the active registry's terminal tool instead of
+  hard-coding `answer`, so explorer sub-agents are told to submit `report` and
+  stop after exhausted final-step retries. The `explore` observation now marks
+  synthesized fallback findings with `explorer_fallback_used`.
 - **ETL drops placeholder-only rows.** The placeholder vocabulary now treats
   `null` as an empty generated value, and ETL CSV cache validation rejects rows
   where no entity or measured value survived. This prevents all-null records

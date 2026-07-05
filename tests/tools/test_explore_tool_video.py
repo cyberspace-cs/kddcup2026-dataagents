@@ -85,3 +85,26 @@ def test_video_tool_injected_only_when_task_has_video(
     else:
         assert recorded["video_tool"] is None
         assert "video_findings" not in result.content
+
+
+def test_explore_tool_marks_fallback_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run_explorer(task, question, model, *, video_tool=None, **kwargs):
+        del task, question, model, video_tool, kwargs
+        return ExplorerResult(
+            findings='{"files": []}',
+            steps_used=11,
+            success=True,
+            fallback_used=True,
+        )
+
+    monkeypatch.setattr(runner_mod, "run_explorer", fake_run_explorer)
+    tool = create_explore_tool_definition(_Adapter())
+    task = _make_task(tmp_path, with_video=False)
+
+    result = tool.handler(task, ExploreInput())
+
+    assert result.ok is True
+    assert result.content["explorer_steps_used"] == 11
+    assert result.content["explorer_fallback_used"] is True
