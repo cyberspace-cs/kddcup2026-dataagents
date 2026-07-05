@@ -51,7 +51,7 @@ DEFAULT_OUTPUT = Path("/output")
 DEFAULT_LOGS = Path("/logs")
 DEFAULT_CONFIG = Path("/app/configs/react.example.yaml")
 # A榜是 2h；B榜前改成 43_200.0（12h）再提交。
-DEFAULT_GLOBAL_BUDGET_SECONDS = 7_200.0
+DEFAULT_GLOBAL_BUDGET_SECONDS = 43_200.0
 
 _LOG_LOCK = threading.Lock()
 
