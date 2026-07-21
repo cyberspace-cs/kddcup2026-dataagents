@@ -1,7 +1,7 @@
 # KDD Cup 2026 Data Agents
 
 <div align="center">
-  <img src="docs/assets/mamba-agent.avif" alt="Mamba Agent" width="760">
+  <img src="docs/assets/mamba-agent.avif" alt="Mamba Agent" width="480">
   <br>
   <strong>Mamba Agent</strong>
   <br>
