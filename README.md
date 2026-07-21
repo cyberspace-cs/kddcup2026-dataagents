@@ -5,7 +5,7 @@
   <br>
   <strong>Mamba Agent</strong>
   <br>
-  <em>In memory of basketball legend Kobe Bryant.</em>
+  <em>Mamba Never Out — in memory of basketball legend Kobe Bryant.</em>
 </div>
 
 ReAct-style data agent for the DABench benchmark. The runner reads tasks from
